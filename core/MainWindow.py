@@ -169,6 +169,10 @@ class MainWindow(QMainWindow):
             'pen_color': '#008000',  # Qt.green
             'fill_color': '#006400',  # Qt.darkGreen
             'vector_color': '#FFFF00',  # Qt.yellow
+            'anchor_select': False,
+            'anchor_shape': 'square',
+            'anchor_size' : 5,
+            'anchor_method': 'mean',
             'angle_step': 0.7853981633974483,  # pi/4
             'fill': False,
             'vector_width': 2,
@@ -1362,6 +1366,7 @@ class MainWindow(QMainWindow):
     def canvas_signal_connect(self):
         self.roi_pick.clear()
         for canvas in self.image_display.display_canvas:
+            canvas.disconnect()
             canvas.mouse_position_signal.connect(self._handle_hover)
             canvas.mouse_clicked_signal.connect(self._handle_click)
             canvas.current_canvas_signal.connect(self.image_display.set_cursor_id)
@@ -1888,7 +1893,7 @@ class MainWindow(QMainWindow):
         shape = 'square' if self.region_shape_combo.currentText() == "正方形" else 'circle'
         size = self.region_size_input.value()
         model_type = 'single' if self.model_combo.currentText() == "单指数衰减" else 'double'
-        mask = PublicEasyMethod.quick_mask(aim_data, center = center, shape = shape,size = size)
+        mask = PublicEasyMethod.quick_mask(aim_data.framesize, center = center, shape = shape,size = size)
         self.image_display.display_canvas[self.focus_canvas].add_fast_selection(*center,mask)
         self.start_reg_cal_signal.emit(aim_data,self.time_step,mask,model_type)
         return None
@@ -2307,6 +2312,7 @@ class MainWindow(QMainWindow):
             self.tDgf_btn.setEnabled(True)
             self.sscs_btn.setEnabled(True)
             QMessageBox.warning(self,"运算错误",f"在{data['type']}处理中报错：\n{data['error']}")
+            logging.error("运算因错误而终止")
             self.update_progress(-1) # 进度条重置
             return False
         self.processed_data = data

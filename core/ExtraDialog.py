@@ -758,7 +758,7 @@ class CWTComputePop(QDialog):
             self.cwt_size_input.setValue(1)
 
         self.wavelet = QComboBox()
-        self.wavelet.addItems(['cmor3-3','cmor8-3 ','cmor1.5-1.0','cgau8','mexh','morl'])
+        self.wavelet.addItems(['cmor1-1.0','cmor1.5-1.0','cmor3-3','cmor8-3 ','cgau8','mexh','morl'])
         self.wavelet.setCurrentText(self.params['cwt_type'])
 
         layout.addRow(QLabel("目标频率"),self.target_freq_input)

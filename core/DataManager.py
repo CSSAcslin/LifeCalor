@@ -1192,9 +1192,9 @@ class ColorMapManager:
 class PublicEasyMethod:
     """各种简单的算法v.11.10加入"""
     @staticmethod
-    def quick_mask(data,**kwargs):
-        '''快速选取简易ROI'''
-        h, w = data.framesize
+    def quick_mask(framesize,**kwargs):
+        """快速选取简易ROI"""
+        h, w = framesize
         y, x = kwargs.get('center',(h//2,w//2))
         shape = kwargs.get('shape','circle')
         size = kwargs.get('size',5)

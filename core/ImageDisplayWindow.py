@@ -11,12 +11,12 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QToolBar, QAction, QDockWidget, QStyle,
                              QGraphicsRectItem, QActionGroup, QGraphicsLineItem, QGraphicsEllipseItem, QGraphicsItem,
                              QGraphicsPathItem, QMenu, QInputDialog, QColorDialog, QToolButton, QDialogButtonBox,
-                             QDialog, QMessageBox, QGraphicsTextItem, QSizePolicy
+                             QDialog, QMessageBox, QGraphicsTextItem, QSizePolicy, QCheckBox
                              )
 from PyQt5.QtCore import Qt, pyqtSignal, QRectF, QSize, QTimer, QDateTime, QLineF, QPointF, QPoint
 
 
-from DataManager import ImagingData, ColorMapManager
+from DataManager import ImagingData, ColorMapManager, PublicEasyMethod
 from ExtraDialog import ROIInfoDialog, ColorMapDialog, DataExportDialog
 from widget.AdvancedTimeline import AdvancedTimeline
 
@@ -181,6 +181,9 @@ class ImageDisplayWindow(QMainWindow):
             if tool_name == 'V-line':
                 width_action = menu.addAction(f"设置选区宽度 (当前: {self.tool_parameters['vector_width']}像素)")
                 width_action.triggered.connect(lambda: self.set_vector_width())
+            elif tool_name == 'Anchor':
+                width_action = menu.addAction(f"设置快速提取功能")
+                width_action.triggered.connect(lambda: self.set_anchor_select())
 
             vector_color_action = menu.addAction("设置矢量颜色")
             vector_color_action.triggered.connect(lambda: self.set_vector_color())
@@ -261,6 +264,13 @@ class ImageDisplayWindow(QMainWindow):
         if color.isValid():
             self.tool_parameters['fill_color'] = color.name()
             self.params_update_signal.emit(self.tool_parameters)
+
+    def set_anchor_select(self):
+        """锚点快速提取功能设置"""
+        self.dialog = AnchorSelectDialog(self.tool_parameters, self)
+        self.dialog.show()
+        self.dialog.raise_()
+        self.dialog.activateWindow()
 
     def set_cursor_id(self,cursor_id):
         self.cursor_id = cursor_id
@@ -550,7 +560,7 @@ class SubImageDisplayWidget(QDockWidget):
     mouse_clicked_signal = pyqtSignal(int, int, int)
     current_canvas_signal = pyqtSignal(int)
     draw_result_signal = pyqtSignal(str,int,object,dict)
-    plot_series_signal = pyqtSignal(int, int, int, np.ndarray)
+    plot_series_signal = pyqtSignal(int, int, int, np.ndarray, str)
     def __init__(self, parent=None,canvas_id = None,name = None, data :ImagingData = None, args_dict :dict = None):
         super().__init__(name, parent)
         self.parent_window = parent
@@ -596,20 +606,7 @@ class SubImageDisplayWidget(QDockWidget):
         self.vector_line = None # 向量线item
 
         # 绘图设置
-        self.args_dict = args_dict if args_dict else {
-            'pen_size': 1,
-            'pen_color': QColor(Qt.green),
-            'fill_color': QColor(Qt.darkGreen),
-            'vector_color': QColor(Qt.yellow),
-            'angle_step':pi/4,
-            'fill': False,
-            'vector_width':2,
-            'colormap': 'jet',
-            'use_colormap': False,
-            'auto_boundary_set': True,
-            'min_value': None,
-            'max_value': None,
-        }
+        self.args_dict = args_dict
         self.set_toolset(self.args_dict)
 
         # 播放相关
@@ -906,17 +903,24 @@ class SubImageDisplayWidget(QDockWidget):
                 if 0 <= x < w and 0 <= y < h:
                     # 清除现有十字标
                     self.clear_anchor()
+                    if self.args_dict['anchor_select']:
+                        v_color = Qt.red
+                    else:
+                        v_color = QColor(self.vector_color)
 
                     # 创建新的十字标
-                    pen = QPen(QColor(self.vector_color), 0.1, Qt.SolidLine)
+                    pen = QPen(v_color, 0.1, Qt.SolidLine)
                     # 水平线
                     h_line = QGraphicsLineItem(x-1, y,x+1, y)
                     h_line.setPen(pen)
+                    h_line.setZValue(60)
                     # 垂直线
                     v_line = QGraphicsLineItem(x, y-1, x, y + 1)
                     v_line.setPen(pen)
+                    v_line.setZValue(60)
                     circle = QGraphicsEllipseItem(x-0.4, y-0.4, 0.8, 0.8)
                     circle.setPen(pen)
+                    circle.setZValue(60)
 
                     # 添加到场景
                     self.scene.addItem(h_line)
@@ -930,12 +934,15 @@ class SubImageDisplayWidget(QDockWidget):
                     # 获取并发射图像数据
                     self.get_value(y_int, x_int)
 
-                    if self.anchor_active and self.data.is_temporary:
+                    if self.anchor_active and self.data.is_temporary and self.args_dict['anchor_select']:
                         # anchor模式下取值快速绘图
-                        series_value = self.data.image_backup[:, self.y_img, self.x_img]
-                        plot_data = np.column_stack((self.data.time_point, series_value))
-                        self.plot_series_signal.emit(self.id, self.x_img, self.y_img, plot_data)
-
+                        mask = PublicEasyMethod.quick_mask(self.data.framesize,
+                                                                                shape= self.args_dict['anchor_shape'],
+                                                                                size=self.args_dict['anchor_size'],
+                                                                                center = (y_int,x_int))
+                        self.add_fast_selection(x_int,y_int,mask)
+                        self.get_fast_selection(mask)
+                        logging.info(f'取{x, y}的{self.args_dict['anchor_method']}绘图完成')
                     return
 
             else: # 无工具选中的纯单机模式
@@ -1396,6 +1403,55 @@ class SubImageDisplayWidget(QDockWidget):
             self.max_label.setPos(w_point + width-8, h_point -5-size)
             self.max_label.setDefaultTextColor(Qt.black)
 
+    def get_fast_selection(self,mask):
+        """本函数是获取快速选取数据并发射的函数"""
+        aim_data = self.data.image_backup.copy()
+        T, H, W = aim_data.shape
+        mask_flat = mask.reshape(-1)
+        method = self.args_dict['anchor_method']
+
+        # 获取蒙版内的索引
+        mask_indices = np.where(mask_flat)[0]
+
+        # 重塑数据以便于提取蒙版区域
+        data_reshaped = aim_data.reshape(T, -1)
+
+        # 提取蒙版内的数据
+        masked_data = data_reshaped[:, mask_indices]
+
+        # 根据不同的统计方法计算结果
+        result = np.zeros(T, dtype=aim_data.dtype)
+
+        for t in range(T):
+            frame_data = masked_data[t, :]
+
+            if len(frame_data) == 0:
+                result[t] = np.nan
+                continue
+
+            if method == 'mean':
+                result[t] = np.mean(frame_data)
+            elif method == 'max':
+                result[t] = np.max(frame_data)
+            elif method == 'min':
+                result[t] = np.min(frame_data)
+            elif method == 'median':
+                result[t] = np.median(frame_data)
+            elif method == 'quantile_075':
+                result[t] = np.quantile(frame_data, 0.75)
+            elif method == 'std':
+                result[t] = np.std(frame_data)
+            elif method == 'sum':
+                result[t] = np.sum(frame_data)
+            elif method == 'var':
+                result[t] = np.var(frame_data)
+            else:
+                raise ValueError(f"不支持的统计方法: {method}。"
+                                 f"支持的方法: mean, max, min, median, quantile_075, std, sum, var")
+
+        plot_data = np.column_stack((self.data.time_point, result))
+        self.plot_series_signal.emit(self.id, self.x_img, self.y_img, plot_data, method)
+
     def add_fast_selection(self, y: int, x: int, mask: np.ndarray, color=None, auto_clear=True):
         """
         以独立图元形式显示布尔蒙版区域和中心点
@@ -1426,9 +1482,9 @@ class SubImageDisplayWidget(QDockWidget):
         # Qt ARGB32 (Little Endian) -> B G R A
         buffer[mask] = [c.blue(), c.green(), c.red(), 120]
 
-        # 4.2 标记中心点像素 (红色，不透明)
+        # 4.2 标记中心点像素 (红色，不透明)，如果是anchor模式就不标记了
         # 确保坐标在图像范围内
-        if 0 <= x < w and 0 <= y < h:
+        if 0 <= x < w and 0 <= y < h and not self.anchor_active:
             buffer[y, x] = [0, 0, 255, 150]  # Red=255, Alpha=255 (BGRA顺序: B=0, G=0, R=255, A=255)
 
         # 5. 生成 QImage 和 QPixmap
@@ -1662,6 +1718,69 @@ class WidthSliderDialog(QDialog):
     def get_value(self):
         return self.slider.value()
 
+
+class AnchorSelectDialog(QDialog):
+    """锚点快速提取功能设置"""
+    def __init__(self,param, parent=None):
+        super().__init__()
+        self.setWindowTitle("快速提取并绘制功能设置")
+        self.setWindowFlags(Qt.Dialog |
+                            Qt.WindowCloseButtonHint |
+                            Qt.WindowContextHelpButtonHint)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.param = param
+        self.parent = parent
+        self.shape_items = ['square','circle']
+        self.method_items = ['mean', 'max', 'min', 'median', 'quantile_075', 'std', 'sum', 'var']
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        active_layout = QHBoxLayout()
+        active_layout.addWidget(QLabel("是否开启快速提取功能："))
+        self.active_check = QCheckBox()
+        active_layout.addWidget(self.active_check)
+        self.active_check.setChecked(self.param["anchor_select"])
+
+        self.region_shape_combo = QComboBox()
+        self.region_shape_combo.addItems(["正方形", "圆形"])
+        self.region_shape_combo.setCurrentIndex(self.shape_items.index(self.param["anchor_shape"]))
+        self.region_size_input = QSpinBox()
+        self.region_size_input.setMinimum(1)
+        self.region_size_input.setMaximum(50)
+        self.region_size_input.setValue(self.param['anchor_size'])
+
+        shape_layout = QHBoxLayout()
+        shape_layout.addWidget(QLabel("区域形状:"))
+        shape_layout.addWidget(self.region_shape_combo)
+        size_layout = QHBoxLayout()
+        size_layout.addWidget(QLabel("区域大小:"))
+        size_layout.addWidget(self.region_size_input)
+
+        method_layout = QHBoxLayout()
+        method_layout.addWidget(QLabel("提取方法"))
+        self.method_combo = QComboBox()
+        self.method_combo.addItems(['平均值', '最大值', '最小值', '中位值', '0.75分位数', '标准差', '求和', '方差'])
+        self.method_combo.setCurrentIndex(self.method_items.index(self.param["anchor_method"]))
+        method_layout.addWidget(self.method_combo)
+
+        layout.addLayout(active_layout)
+        layout.addLayout(shape_layout)
+        layout.addLayout(size_layout)
+        layout.addLayout(method_layout)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def accept(self):
+        self.param["anchor_select"] = self.active_check.isChecked()
+        self.param["anchor_shape"] = self.shape_items[self.region_shape_combo.currentIndex()]
+        self.param["anchor_size"] = self.region_size_input.value()
+        self.parent.params_update_signal.emit(self.param)
+        self.parent.tool_parameters = self.param
+        self.close()
 
 
 

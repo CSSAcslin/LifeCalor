@@ -267,12 +267,13 @@ class MassDataProcessor(QObject):
         try:
             logging.info("开始预处理...")
             self.processing_progress_signal.emit(0, 100)
-
+            data_origin = data.data_origin.copy() if isinstance(data, Data) else data.data_processed.copy()
+            parameters = data.parameters if isinstance(data, Data) else data.out_processed
             # 1. 提取前n帧计算背景帧
             if data.datatype != np.float32:
-                data_origin = data.data_origin.astype(np.float32) # 注意这里开始原本Uint8 转为了F32
+                data_origin = data_origin.astype(np.float32) # 注意这里开始原本Uint8 转为了F32
             else:
-                data_origin = data.data_origin
+                data_origin = data_origin
             total_frames = data.timelength
 
             # 计算背景帧 (前n帧的平均) 并添加遇0处理
@@ -322,9 +323,9 @@ class MassDataProcessor(QObject):
                                                   time_point=data.time_point,
                                                   data_processed=processed_data,
                                                   out_processed={
-                                                      'fps' : data.parameters['fps'],
+                                                      'fps' : parameters['fps'],
                                                       'bg_frame': bg_frame,
-                                                      'unfolded_data': unfolded_data,**data.parameters
+                                                      'unfolded_data': unfolded_data,**parameters
                                                   })
 
             self.processed_result.emit(processed)
@@ -342,7 +343,7 @@ class MassDataProcessor(QObject):
         try:
             unfolded_data = data.out_processed['unfolded_data']  # [像素数 x 帧数]
         except:
-            processed_data = data.data_origin.copy() if isinstance(data, Data) else data.processed_data.copy()
+            processed_data = data.data_origin.copy() if isinstance(data, Data) else data.data_processed.copy()
             T, H, W = processed_data.shape
             unfolded_data = processed_data.reshape((T, H * W)).T
 
@@ -414,7 +415,7 @@ class MassDataProcessor(QObject):
                 try:
                     unfolded_data = data.out_processed['unfolded_data']  # [像素数 x 帧数]
                 except:
-                    processed_data = data.data_origin.copy() if isinstance(data, Data) else data.processed_data.copy()
+                    processed_data = data.data_origin.copy() if isinstance(data, Data) else data.data_processed.copy()
                     T, H, W = processed_data.shape
                     unfolded_data = processed_data.reshape((T, H * W)).T  # Shape: [Pixels, Frames]
 
@@ -594,7 +595,7 @@ class MassDataProcessor(QObject):
                 try:
                     unfolded_data = data.out_processed['unfolded_data']  # [像素数 x 帧数]
                 except:
-                    processed_data = data.data_origin.copy() if isinstance(data, Data) else data.processed_data.copy()
+                    processed_data = data.data_origin.copy() if isinstance(data, Data) else data.data_processed.copy()
                     T, H, W = processed_data.shape
                     unfolded_data = processed_data.reshape((T, H * W)).T  # Shape: [Pixels, Frames]
 
@@ -723,7 +724,7 @@ class MassDataProcessor(QObject):
             try:
                 unfolded_data = data.out_processed['unfolded_data']  # [像素数 x 帧数]
             except:
-                processed_data = data.data_origin.copy() if isinstance(data, Data) else data.processed_data.copy()
+                processed_data = data.data_origin.copy() if isinstance(data, Data) else data.data_processed.copy()
                 T, H, W = processed_data.shape
                 unfolded_data = processed_data.reshape((T, H * W)).T
             frame_size = data.framesize  # (宽度, 高度)
@@ -775,7 +776,7 @@ class MassDataProcessor(QObject):
             try:
                 unfolded_data = data.out_processed['unfolded_data']  # [像素数 x 帧数]
             except:
-                processed_data = data.data_origin.copy() if isinstance(data, Data) else data.processed_data.copy()
+                processed_data = data.data_origin.copy() if isinstance(data, Data) else data.data_processed.copy()
                 T, H, W = processed_data.shape
                 unfolded_data = processed_data.reshape((T, H * W)).T
             frame_size = data.framesize  # (宽度, 高度)
@@ -829,6 +830,7 @@ class MassDataProcessor(QObject):
                                                                                 'total_scales': totalscales,
                                                                                 'wavelet_name':wavelet,
                                                                                 'scale_range': cwt_scale_range,
+                                                                                'target_freq': target_freq,
                                                                                 **{k: data.out_processed.get(k)
                                                                                    for k in data.out_processed if
                                                                                    k not in {"unfolded_data"}},**data.parameters}))

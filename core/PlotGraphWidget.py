@@ -2,9 +2,9 @@ import sys
 import numpy as np
 import pyqtgraph as pg
 from PyQt5.QtWidgets import (QTabWidget, QWidget, QVBoxLayout, QApplication,
-                             QPushButton, QHBoxLayout, QCheckBox, QLabel)
+                             QPushButton, QHBoxLayout, QCheckBox, QLabel, QAction)
 from PyQt5.QtCore import Qt, pyqtSignal
-
+from scipy import signal
 
 # 全局配置：白色背景，黑色前景色 (符合科研论文习惯)
 pg.setConfigOption('background', 'w')
@@ -35,12 +35,14 @@ class PlotGraphWidget(QWidget):
         }
         self.base_unit = None  # 用于存储第一个添加的数据的单位
         self.data_items = []
+        self.data_cache = {}
 
         #十字光标相关
         self.v_line = pg.InfiniteLine(angle=90, movable=False, pen='g')  # 垂直线
         self.h_line = pg.InfiniteLine(angle=0, movable=False, pen='g')  # 水平线
         self.label = pg.TextItem(anchor=(0, 1), color='k')  # 坐标显示文本
         self._crosshair_enabled = False
+        self.init_custom_context_menu()
 
     def toggle_crosshair(self, enable):
         """开启/关闭鼠标跟随的十字光标"""
@@ -75,9 +77,9 @@ class PlotGraphWidget(QWidget):
         """很简单的一个解包函数"""
         self.plot_data(data,**dict)
 
-    def handle_from_image(self,id,x,y,data):
+    def handle_from_image(self,id,x,y,data,method):
         """从图像直接获取的数据"""
-        name = f'canvas{id}-({x},{y})'
+        name = f'canvas{id}-({x},{y}){method}'
         self.plot_data(data, name = name)
 
     def plot_data(self, array:np.ndarray, **kwargs):
@@ -145,8 +147,104 @@ class PlotGraphWidget(QWidget):
             name=name
         )
         self.data_items.append(item)
+        # 加入缓存
+        self.data_cache[item] = (x_data, y_data)
+
+        # 如果当前已经是 PSD 模式，新加的数据也要立即转换
+        if self.psd_action.isChecked():
+            self._apply_psd_to_item(item)
 
     def clear_all(self):
         """清空所有绘图内容"""
         self.plot_widget.clear()
         self.data_items.clear()
+
+    def init_custom_context_menu(self):
+        """向右键菜单添加自定义功能"""
+        # 获取 ViewBox 的菜单
+        self.vb = self.plot_widget.plotItem.vb
+
+        # 创建一个动作
+        self.psd_action = QAction("Show PSD (功率谱密度)", self.plot_widget)
+        self.psd_action.setCheckable(True)  # 设为复选框模式
+        self.psd_action.triggered.connect(self.toggle_psd_mode)
+
+        # 将动作添加到菜单顶部 (或者你可以加到子菜单里)
+        # 注意：pyqtgraph 的菜单构建是懒加载的，直接 addAction 可能需要在 menu 创建后
+        # 这里使用 ViewBox 自带的扩展接口
+        self.vb.menu.addAction(self.psd_action)
+
+    def toggle_psd_mode(self):
+        """切换 PSD 模式和普通模式"""
+        is_psd = self.psd_action.isChecked()
+
+        if is_psd:
+            # === 切换到 PSD 模式 ===
+            self.plot_widget.setLabel('bottom', "Frequency (Hz)")
+            self.plot_widget.setLabel('left', "PSD (V²/Hz)")
+            self.plot_widget.setLogMode(x=False, y=True)  # PSD 通常看对数坐标
+
+            for item in self.data_items:
+                self._apply_psd_to_item(item)
+        else:
+            # === 恢复到 时域 模式 ===
+            label_unit = self.base_unit if self.base_unit else 's'
+            self.plot_widget.setLabel('bottom', "Time", units=label_unit)
+            self.plot_widget.setLabel('left', "Amplitude")
+            self.plot_widget.setLogMode(x=False, y=False)
+
+            for item in self.data_items:
+                self._restore_item_data(item)
+
+        # 重新适应坐标范围
+        self.plot_widget.autoRange()
+
+    def _apply_psd_to_item(self, item):
+        """计算并应用 PSD 到单个 Item"""
+        if item not in self.data_cache:
+            return
+
+        x_time, y_amp = self.data_cache[item]
+
+        # === PSD 计算逻辑 (自定义) ===
+        # 这里演示一个基于 numpy 的简单周期图法
+        # 实际建议使用: f, Pxx = scipy.signal.welch(y_amp, fs=fs)
+
+        # 1. 计算采样率 (假设均匀采样)
+        if len(x_time) > 1:
+            dt = np.mean(np.diff(x_time))
+            if self.base_unit in ['ms']:
+                dt *= 1e-3
+            elif self.base_unit in ['us', 'μs']:
+                dt *= 1e-6
+            elif self.base_unit in ['ns']:
+                dt *= 1e-9
+            fs = 1.0 / dt
+        else:
+            fs = 1.0
+
+        # # 2. 计算 FFT
+        # n = len(y_amp)
+        # fft_res = np.fft.fft(y_amp)
+        # fft_freq = np.fft.fftfreq(n, d=1 / fs)
+        #
+        # # 3. 计算功率谱密度 (Power Spectral Density)
+        # # 只取正频率部分
+        # pos_mask = fft_freq > 0
+        # freqs = fft_freq[pos_mask]
+        # # 简单的归一化: |FFT|^2 / (fs * N)
+        # psd = (np.abs(fft_res[pos_mask]) ** 2) / (fs * n)
+        # # 4. 更新绘图数据
+        # item.setData(freqs, psd)
+        seg_len = min(4096, len(y_amp))
+        f, Pxx_den = signal.welch(y_amp, fs, nperseg=seg_len)  # Welch 方法更平滑
+        item.setData(f, Pxx_den)
+
+
+
+
+    def _restore_item_data(self, item):
+        """从缓存恢复原始数据"""
+        if item in self.data_cache:
+            x, y = self.data_cache[item]
+            item.setData(x, y)
