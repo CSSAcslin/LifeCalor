@@ -846,7 +846,7 @@ class MassDataProcessor(QObject):
         self.processed_result.emit(ProcessedData(data.timestamp,
                                          f'{data.name}@atam',
                                          "Accumulated_time_amplitude_map",
-                                         time_point=data.time_point,
+                                         time_point=np.array([0]),
                                          data_processed=np.mean(data.data_processed if isinstance(data,ProcessedData) else data.data_origin, axis=0),
                                          out_processed={**data.out_processed}
                                                              ))

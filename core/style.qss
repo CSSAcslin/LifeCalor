@@ -153,9 +153,11 @@ QPushButton {
     border-radius: 4px;
     padding: 3px 4px 3px 4px;
 }
+
 QPushButton:hover {
     border-color: #4CAF50;
 }
+
 QPushButton:pressed {
     border: 2px solid #4CAF50;
     background-color: #F1F8E9;
@@ -165,6 +167,7 @@ QPushButton:disabled {
     background-color: #F5F5F5;
     color: #BDBDBD;
 }
+
 #treebutton {
     padding: 0px;
 }
@@ -203,7 +206,6 @@ QComboBox::drop-down {
 
 QComboBox::down-arrow {
 }
-
 
 /* 下拉菜单样式 */
 QComboBox QAbstractItemView {
@@ -259,20 +261,25 @@ QScrollArea {
     border: none;
     background-color: white;
 }
+
 QScrollBar:vertical {
     width: 12px;
     background: #f0f0f0;
 }
+
 QScrollBar::handle:vertical {
     background: #C8E6C9;
     min-height: 20px;
 }
+
 QScrollBar::handle:vertical:hover {
     background: #A5D6A7;      /* 悬停时稍深 */
 }
+
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0px;
 }
+
 /* ========== QDialog 样式 ========== */
 QDialog {
     background-color: white;

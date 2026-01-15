@@ -581,6 +581,7 @@ class CalculationThread(QObject):
             self.processed_result.emit(ProcessedData(data.timestamp,
                                                       f'{data.name}@d-lft',
                                                       'lifetime_distribution',
+                                                     time_point=np.array([0]),
                                                       data_processed=lifetime_map_cov,
                                                      out_processed={'lifetime_map': lifetime_map,
                                                                     **(data.out_processed if isinstance(data,ProcessedData) else data.parameters)}))
@@ -667,6 +668,7 @@ class CalculationThread(QObject):
                 self.processed_result.emit(ProcessedData(data.timestamp,
                                                          f'{data.name}@heat',
                                                          'heat_transfer',
+                                                         time_point=np.array([0]),
                                                          data_processed=heat_transfer_cov,
                                                          out_processed={'heat_transfer_map': heat_transfer,
                                                                         **(data.out_processed if isinstance(data,ProcessedData) else data.parameters)}))
@@ -709,6 +711,7 @@ class CalculationThread(QObject):
             self.processed_result.emit(ProcessedData(data.timestamp,
                                                      f'{data.name}@heat',
                                                      'heat_transfer',
+                                                     time_point=np.array([0]),
                                                      data_processed=heat_transfer_cov,
                                                      out_processed={'heat_transfer_map': heat_transfer, }))
         except Exception as e:

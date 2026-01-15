@@ -1,4 +1,4 @@
-from PyQt5.QtCore import pyqtSignal, Qt, QRectF, QPointF
+from PyQt5.QtCore import pyqtSignal, Qt, QRectF, QPointF, QPoint
 from PyQt5.QtGui import QColor, QPainter, QPen, QBrush
 from PyQt5.QtWidgets import QWidget, QSizePolicy
 
@@ -8,6 +8,7 @@ class AdvancedTimeline(QWidget):
     # 信号：当前帧改变，区间改变
     positionChanged = pyqtSignal(int)
     selectionChanged = pyqtSignal(int, int)
+    rightClicked = pyqtSignal(int, str, QPoint)
 
     # 定义交互模式常量
     MODE_NONE = 0
@@ -304,8 +305,8 @@ class AdvancedTimeline(QWidget):
 
         if event.button() == Qt.RightButton:
             if y > ruler_h and start_x + self.handle_width < x < end_x - self.handle_width:
-                # 留给右键截取数据用
-                pass
+                in_selection = 'handle'
+                self.rightClicked.emit(int(frame), in_selection, event.globalPos()) # 右键截取数据
 
     def mouseMoveEvent(self, event):
         x = event.x()
@@ -436,4 +437,16 @@ class AdvancedTimeline(QWidget):
     def set_selection(self, start, end):
         self.selection_start = start
         self.selection_end = end
+        self.update()
+
+    def update_data_range(self, new_total_frames):
+        """当外部数据发生变化时调用"""
+        self.total_frames = new_total_frames
+        self.current_frame = 0
+        self.selection_start = 0
+        self.selection_end = new_total_frames if new_total_frames > 0 else 0
+
+        # 重置视图状态
+        self.zoom_level = self.get_min_zoom()
+        self.scroll_offset = 0
         self.update()

@@ -2,6 +2,8 @@ import logging
 import os
 import time
 import copy
+import weakref
+
 import numpy as np
 import tifffile as tiff
 import sif_parser
@@ -476,7 +478,9 @@ class DataManager(QObject):
                     self.data_progress_signal.emit(i, total_frames)
 
         data_processed = np.squeeze(np.array(data_roi))
-
+        if 'unfolded_data' in out_processed:
+            T, H, W = data_processed.shape
+            out_processed['unfolded_data'] = data_processed.reshape((T, H * W)).T
         self.processed_result.emit(ProcessedData(data.timestamp,
                                                  f'{data.name}@ROIed',
                                                  'Roi_applied',
@@ -620,6 +624,43 @@ class Data:
             name=f"{current_values.get('name')}@"
         )
         return new_instance
+
+    def trim_time(self, start_idx: int, end_idx: int):
+        """
+        沿时间轴裁剪数据 (原地修改)
+        :param start_idx: 起始帧索引 (包含)
+        :param end_idx: 结束帧索引 (不包含，即 Python 切片逻辑 [start:end])
+        """
+        if self.ndim != 3:
+            raise ValueError("当前数据不支持时间裁剪")
+
+        # 1. 边界检查
+        total = self.timelength
+        if start_idx < 0: start_idx = 0
+        if end_idx > total: end_idx = total
+        if start_idx >= end_idx:
+            raise ValueError("无效的裁剪区间")
+
+        # 2. 裁剪原始数据 (image_backup)
+        # 注意：这里我们使用 copy() 确保释放掉不需要的内存，否则 numpy 可能会持有原大数组的视图
+        self.data_origin = self.data_origin[start_idx:end_idx].copy()
+
+        # 4. 裁剪时间点数据 (如果有)
+        if self.time_point is not None and len(self.time_point) == total:
+            self.time_point = self.time_point[start_idx:end_idx] - self.time_point[start_idx]
+
+        # 5. 更新元数据
+        self.datashape = self.data_origin.shape
+        self.timelength = self.datashape[0]
+
+        # 6. (可选) 重新计算最大最小值，防止裁剪后亮度范围变化导致显示不准
+        self.datamin = self.data_origin.min()
+        self.datamax = self.data_origin.max()
+        self.name = f'{self.name}@trimmed'
+        self.format_import = f'{self.format_import}@trimmed'
+
+        logging.info(f"Data数据已裁剪: 帧数变为 {self.timelength}")
+        self._update_history()
 
     def __setitem__(self, key, value):
         """字典式赋值支持"""
@@ -828,34 +869,53 @@ class ProcessedData:
         """清空所有历史记录"""
         cls.history.clear()
 
-    #
-    # @classmethod
-    # def get_by_name(cls, name: str) -> Optional['ProcessedData']:
-    #     """通过名称获取处理数据"""
-    #     return cls.history.get(name)
-    #
-    # @classmethod
-    # def get_by_original_timestamp(cls, timestamp: float) -> List['ProcessedData']:
-    #     """通过原始数据时间戳获取所有相关处理数据"""
-    #     return [data for data in cls.history.values()
-    #             if abs(data.timestamp_inherited - timestamp) < 1e-6]
-    #
-    # @classmethod
-    # def get_by_processing_type(cls, processing_type: str) -> List['ProcessedData']:
-    #     """通过处理类型获取所有相关处理数据"""
-    #     return [data for data in cls.history.values()
-    #             if data.type_processed == processing_type]
-    #
-    # @classmethod
-    # def get_history_names(cls) -> List[str]:
-    #     """获取所有历史记录的名称列表"""
-    #     return list(cls.history.keys())
     @classmethod
     def get_history_list(cls) -> list:
         """获取当前历史记录列表（按从新到旧排序）"""
         history_list = list(cls.history)
         history_list.reverse()
         return history_list
+
+    def trim_time(self, start_idx: int, end_idx: int):
+        """
+        沿时间轴裁剪数据 (原地修改)
+        :param start_idx: 起始帧索引 (包含)
+        :param end_idx: 结束帧索引 (不包含，即 Python 切片逻辑 [start:end])
+        """
+        if not self.ndim != 3:
+            raise ValueError("当前数据不支持时间裁剪")
+
+        # 1. 边界检查
+        total = self.timelength
+        if start_idx < 0: start_idx = 0
+        if end_idx > total: end_idx = total
+        if start_idx >= end_idx:
+            raise ValueError("无效的裁剪区间")
+
+        # 2. 裁剪原始数据 (image_backup)
+        self.data_processed = self.data_processed[start_idx:end_idx].copy()
+
+        # 4. 裁剪时间点数据 (如果有)
+        if self.time_point is not None and len(self.time_point) == total:
+            self.time_point = self.time_point[start_idx:end_idx] - self.time_point[start_idx]
+
+        # 如果有多个存储结果，都需要裁剪
+        if hasattr(self, 'out_processed') and isinstance(self.out_processed, dict):
+            for key, val in self.out_processed.items():
+                if isinstance(val, np.ndarray) and len(val) > end_idx and len(val) == self.timelength:
+                    self.out_processed[key] = val[start_idx:end_idx]
+
+        # 5. 更新元数据
+        self.datashape = self.data_processed.shape
+        self.timelength = self.datashape[0]
+
+        # 6. (可选) 重新计算最大最小值，防止裁剪后亮度范围变化导致显示不准
+        self.datamin = self.data_processed.min()
+        self.datamax = self.data_processed.max()
+        self.name = f'{self.name}@trimmed'
+        self.type_processed = f'{self.type_processed}@trimmed'
+
+        logging.info(f"Processed数据已裁剪: 帧数变为 {self.timelength}")
 
     def __repr__(self):
         return (
@@ -906,6 +966,7 @@ class ImagingData:
 
         instance = cls.__new__(cls)
         instance.timestamp = time.time()
+        instance.parent_data = weakref.ref(data_obj)
         # 设置图像数据
         if isinstance(data_obj, Data):
             # instance.image_data = data_obj.data_origin.copy()
@@ -916,6 +977,7 @@ class ImagingData:
             instance.source_format = data_obj.format_import
             # instance.fps = getattr(data_obj, 'parameters', {}).get('fps', 10) # 优雅
             instance.fps = (getattr(data_obj, 'parameters') or {}).get('fps', 10) # 改进版
+            instance.image_type = 'from_data'
         elif isinstance(data_obj, ProcessedData):
             if arg:
                 # instance.image_data = data_obj.out_processed[arg].copy()
@@ -928,8 +990,12 @@ class ImagingData:
             instance.source_name = data_obj.name
             instance.source_format = data_obj.type_processed
             instance.fps = (getattr(data_obj, 'out_processed') or {}).get('fps', 10)
+            if data_obj.ROI_applied:
+                instance.image_type = 'from_ROIed'
+            else:
+                instance.image_type = 'from_processed'
 
-        instance.time_point = data_obj.time_point.copy()
+        instance.time_point = data_obj.time_point.copy() if data_obj.time_point is not None else None
         # 调用后初始化
         instance.__post_init__()
         return instance
@@ -987,61 +1053,43 @@ class ImagingData:
         # result = np.clip(np.round(scaled), 0, 255).astype(np.uint8)
         return result
 
-    # def to_colormap(self,colormode,min_value=None,max_value=None):
-    #     """伪色彩实现（其实仅在生成视图时才会更新）"""
-    #     logging.info("请稍等片刻，更换样式需重载数据")
-    #     color_map_manager = ColorMapManager()
-    #     if colormode is None:
-    #         return None
-    #     if self.is_temporary:
-    #         T,H,W = self.imageshape
-    #         self._signals.data_progress_signal(0,T)
-    #         new_data = np.zeros((T,H,W, 4), dtype=np.uint8)
-    #         for i,image in enumerate(self.image_backup):
-    #             new_data[i] = color_map_manager.apply_colormap(
-    #                                                                 image,
-    #                                                                 colormode,
-    #                                                                 min_value,
-    #                                                                 max_value
-    #                                                             )
-    #             self._signals.data_progress_signal(i, T)
-    #         self.image_data = new_data
-    #         self._signals.data_progress_signal(T, T)
-    #         return None
-    #     else:
-    #         H, W = self.imageshape
-    #         new_data = np.zeros((H, W, 4), dtype=np.uint8)
-    #         new_data = color_map_manager.apply_colormap(
-    #             self.image_backup,
-    #             colormode,
-    #             min_value,
-    #             max_value
-    #         )
-    #         self.image_data = new_data
-    #         return None
+    def trim_time(self, start_idx: int, end_idx: int):
+        """
+        沿时间轴裁剪数据 (原地修改)
+        :param start_idx: 起始帧索引 (包含)
+        :param end_idx: 结束帧索引 (不包含，即 Python 切片逻辑 [start:end])
+        """
+        if not self.is_temporary or self.ndim != 3:
+            raise ValueError("当前数据不支持时间裁剪")
 
-    # def export_image(self,type):
-    #     pass
+        # 1. 边界检查
+        total = self.totalframes
+        if start_idx < 0: start_idx = 0
+        if end_idx > total: end_idx = total
+        if start_idx >= end_idx:
+            raise ValueError("无效的裁剪区间")
 
-    # @classmethod
-    # def from_array(cls, image_array: np.ndarray, **metadata) -> 'ImageData':
-    #     """从 NumPy 数组创建 ImageData"""
-    #     instance = cls.__new__(cls)
-    #     instance.image_data = image_array.copy()
-    #     instance.source_type = "RawArray"
-    #
-    #     # 设置可选元数据
-    #     instance.source_name = metadata.get('name')
-    #     instance.source_serial = metadata.get('serial')
-    #     instance.source_format = metadata.get('format', "Unknown")
-    #
-    #     # 初始化其他字段
-    #     instance.ROI_mask = None
-    #     instance.ROI_applied = False
-    #
-    #     # 调用后初始化
-    #     instance.__post_init__()
-    #     return instance
+        # 2. 裁剪原始数据 (image_backup)
+        # 注意：这里我们使用 copy() 确保释放掉不需要的内存，否则 numpy 可能会持有原大数组的视图
+        self.image_backup = self.image_backup[start_idx:end_idx].copy()
+
+        # 3. 裁剪显示数据 (image_data)
+        self.image_data = self.image_data[start_idx:end_idx].copy()
+
+        # 4. 裁剪时间点数据 (如果有)
+        if self.time_point is not None and len(self.time_point) == total:
+            self.time_point = self.time_point[start_idx:end_idx] - self.time_point[start_idx]
+
+        # 5. 更新元数据
+        self.imageshape = self.image_data.shape
+        self.totalframes = self.imageshape[0]
+
+        # 6. (可选) 重新计算最大最小值，防止裁剪后亮度范围变化导致显示不准
+        self.imagemin = self.image_backup.min()
+        self.imagemax = self.image_backup.max()
+        self.image_type = f'{self.image_type}@trimmed'
+
+        logging.info(f"数据已裁剪: 帧数变为 {self.totalframes}")
 
     def __repr__(self):
         return (

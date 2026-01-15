@@ -670,10 +670,12 @@ class SubImageDisplayWidget(QDockWidget):
         self.reset_button.clicked.connect(self.reset_auto_play)
         self.reset_button.setEnabled(False)  # 初始不可用
 
+        # 全新时间轴
         # self.time_slider = QSlider(Qt.Horizontal)
         # self.time_slider.setMinimum(0)
         # self.time_slider.setMaximum(self.max_time_idx-1)
         self.time_slider = AdvancedTimeline(total_frames=self.max_time_idx,fps=self.data.fps)
+        self.time_slider.rightClicked.connect(self.on_timeline_right_click)
         self.time_label = QLabel(f"{self.current_time_idx}/{self.max_time_idx-1}")
         slider_layout.addWidget(self.start_button)
         slider_layout.addWidget(self.pause_button)
@@ -1257,6 +1259,132 @@ class SubImageDisplayWidget(QDockWidget):
             image_data = self.data.image_data[idx] if self.data.is_temporary else self.data.image_data
         self.update_display(image_data)
 
+    def on_timeline_right_click(self, frame, in_selection, global_pos):
+        """处理时间轴右键点击"""
+        menu = QMenu(self)
+
+        # 1. 创建菜单项
+        if in_selection == 'handle': # 拖动句柄
+            # 计算选区长度
+            sel_len = self.time_slider.selection_end - self.time_slider.selection_start
+
+            crop_action = QAction(QIcon.fromTheme("edit-cut"), f"裁剪图像(至{sel_len} 帧)", self)
+            crop_action.triggered.connect(self.crop_image)
+            menu.addAction(crop_action)
+
+            # 你可以在这里加更多功能，比如 "导出选区"
+            strong_crop_action = QAction(f"强劲裁剪数据(至{sel_len} 帧)", self)
+            strong_crop_action.triggered.connect(self.crop_data)
+            menu.addAction(strong_crop_action)
+        else:
+            # 如果没点在选区里，可以显示一些通用功能
+            return
+            reset_zoom_action = QAction("重置视图", self)
+            reset_zoom_action.triggered.connect(lambda: self.time_slider.reset_view())  # 假设你在Timeline里写了这个方法
+            menu.addAction(reset_zoom_action)
+
+        # 2. 弹出菜单
+        menu.exec_(global_pos)
+
+    def crop_image(self):
+        """执行裁剪逻辑"""
+        # 1. 获取当前选区
+        start = self.time_slider.selection_start
+        end = self.time_slider.selection_end
+        length = end - start
+
+        if length <= 0:
+            QMessageBox.warning(self, "无法裁剪", "选区长度无效。")
+            return
+
+        # 2. 弹出确认对话框 (重要！防止误操作)
+        reply = QMessageBox.question(
+            self,
+            "确认裁剪",
+            f"确定要裁剪图像数据吗？\n保留范围: {start} - {end}\n\n注意：此操作将丢弃设定区间外的所有数据！\n只对图像有效，不修改源数据，关闭后需要重新裁剪！",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            try:
+                # 3. 调用数据类的裁剪方法
+                # 注意：end 是闭区间索引，切片通常是左闭右开，所以传 end+1 或者根据你的业务逻辑调整
+                # Timeline 闭区间 [start, end]，所以切片应该是 [start : end + 1]
+                self.data.trim_time(start, end + 1)
+
+                # 4. 更新 UI 状态
+                self.refresh_trimmed_image()
+
+                QMessageBox.information(self, "成功", "数据裁剪完成。")
+
+            except Exception as e:
+                QMessageBox.critical(self, "错误", f"裁剪失败: {str(e)}")
+
+    def crop_data(self):
+        """裁剪母数据"""
+        # 1. 获取当前选区
+        start = self.time_slider.selection_start
+        end = self.time_slider.selection_end
+        length = end - start
+
+        if length <= 0:
+            QMessageBox.warning(self, "无法裁剪", "选区长度无效。")
+            return
+
+        # 2. 弹出确认对话框 (重要！防止误操作)
+        reply = QMessageBox.question(
+            self,
+            "确认强劲裁剪",
+            f"确定要裁剪源数据吗？\n保留范围: {start} - {end}\n\n注意：此操作将同时修改图像和源数据！\n 源数据会被裁剪！！！",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            reply_confirm = QMessageBox.question(
+                self,
+                '再次确认',
+                "源数据会被裁剪！无法撤销！\n（原始的文件不会被修改，可以重新导入）",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply_confirm == QMessageBox.Yes:
+                try:
+                    # 3. 调用数据类的裁剪方法
+                    # 注意：end 是闭区间索引，切片通常是左闭右开，所以传 end+1 或者根据你的业务逻辑调整
+                    # Timeline 闭区间 [start, end]，所以切片应该是 [start : end + 1]
+                    self.data.trim_time(start, end + 1)
+                    # 4. 更新 UI 状态
+                    self.refresh_trimmed_image()
+                    # 5. 裁剪父数据
+                    parent_data = self.data.parent_data()
+                    if parent_data is not None:
+                        parent_data.trim_time(start, end + 1)
+                    else:
+                        logging.error("图像数据已裁剪，但未找到源数据")
+                        raise KeyError('其源数据已不存在于当前内存中！')
+
+                    QMessageBox.information(self, "成功", "数据裁剪完成。")
+
+                except Exception as e:
+                    QMessageBox.critical(self, "错误", f"裁剪失败: {str(e)}")
+
+    def refresh_trimmed_image(self):
+        """数据改变后刷新整个界面"""
+        # 1. 更新最大帧数记录
+        self.max_time_idx = self.data.totalframes
+        self.current_time_idx = 0  # 重置到开头
+
+        # 2. 更新时间轴控件
+        self.time_slider.update_data_range(self.max_time_idx-1)
+
+        # 3. 更新标签
+        self.time_label.setText(f"0/{self.max_time_idx - 1}")
+
+        # 4. 刷新图像显示
+        self.update_time_slice(0)
+
     def display_image(self):
         """显示图像数据 (使用QPixmap)并记录当前时间索引
         ROI_applied 暂时放弃"""
@@ -1781,6 +1909,4 @@ class AnchorSelectDialog(QDialog):
         self.parent.params_update_signal.emit(self.param)
         self.parent.tool_parameters = self.param
         self.close()
-
-
 
