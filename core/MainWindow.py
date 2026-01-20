@@ -53,14 +53,14 @@ class MainWindow(QMainWindow):
     tDgf_signal = pyqtSignal(object,int,float,bool)
     sscs_signal = pyqtSignal(object, int, float, bool)
     tDFT_signal = pyqtSignal(object)
-    heartbeat_signal = pyqtSignal(object, int, int ,list)
+    heartbeat_signal = pyqtSignal(object, int, int ,list, str, str)
     easy_process = pyqtSignal(object, str)
     roi_processed_signal = pyqtSignal(object,np.ndarray,float,bool,bool,float)
 
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "0.12.1"  # 当前程序版本
+        self.current_version = "0.12.2"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = "Bearer <your PAT>"
@@ -1522,7 +1522,7 @@ class MainWindow(QMainWindow):
         if assign_data is not None:
             data_display = ImagingData.create_image(assign_data)
             data_display.colormode = self.tool_params['colormap'] if self.tool_params['use_colormap'] else None
-            logging.info("数据选择成功（原初）")
+            logging.info("数据选择成功（原初）") if isinstance(assign_data, Data) else logging.info("数据选择成功（处理）""")
         else:
             dialog = DataViewAndSelectPop(datadict=self.get_data_all(),
                                           processed_datadict=self.get_processed_data_all(), add_canvas=True)
@@ -1600,7 +1600,7 @@ class MainWindow(QMainWindow):
         self.region_x_input.setMaximum(self.data.datashape[1])
         self.region_y_input.setMaximum(self.data.datashape[2])
 
-    def other_imports(self):
+    def other_imports(self): # 没用
         msg_box = QMessageBox()
         msg_box.setWindowTitle("画布操作")
         msg_box.setText("请选择是否要覆盖当前画布或新建画布")
@@ -2265,7 +2265,9 @@ class MainWindow(QMainWindow):
                          data.type_processed in aim_type),
                         None)
             case 1:
-                if self.data.timestamp > self.processed_data.timestamp:
+                if self.processed_data is None:
+                    aim_data = self.data
+                elif self.data.timestamp > self.processed_data.timestamp:
                     aim_data = self.data
                 else:
                     aim_data = self.processed_data
@@ -2457,15 +2459,26 @@ class MainWindow(QMainWindow):
 
     def data_plot_add(self):
         """选取数据送入结果显示（graphplot驱动）"""
-        self.data_plot_selector = DataPlotSelectDialog(self)
+        self.data_plot_selector = DataTreeViewDialog(self)
         # 连接信号：当数据管理器中的“导出绘图”被点击时
         self.data_plot_selector.sig_plot_request.connect(self.proc_thread.plot_data_prepare)
+        self.data_plot_selector.sig_canvas_signal.connect(self.upgrade_and_imaging)
         self.data_plot_selector.refresh_data()
         self.data_plot_selector.show()
 
     def data_plot_clear(self):
         """plot清空"""
         self.graph_plot.clear_all()
+
+    def upgrade_and_imaging(self, data:ProcessedData, key:str):
+        """从树结构选择器中来，出新成像"""
+        processed_data = data.upgrade_processed(key)
+        if processed_data is not None:
+            self.processed_data = processed_data
+            self.add_new_canvas(self.processed_data)
+            return None
+        else:
+            return logging.error("导入成像失败")
 
     '''其他功能'''
     def is_thread_active(self, thread_name: str) -> bool:

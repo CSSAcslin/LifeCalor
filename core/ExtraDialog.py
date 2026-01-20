@@ -14,7 +14,9 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGroupBox,
                              QFileDialog, QWhatsThis, QTextBrowser, QTableWidget, QDialogButtonBox, QTableWidgetItem,
                              QHeaderView, QAbstractItemView, QTabWidget, QWidget, QListWidget, QListWidgetItem,
                              QSizePolicy, QTreeWidget, QTreeWidgetItem, QTextEdit)
-from PyQt5.QtCore import Qt, QEvent, QTimer, QModelIndex, pyqtSignal
+from PyQt5.QtCore import Qt, QEvent, QTimer, QModelIndex, pyqtSignal, QSize
+from fontTools.merge import layoutPreMerge
+
 from DataManager import Data,ProcessedData
 import re
 
@@ -25,8 +27,8 @@ class ToolBucket:
         获取可用（闲置）CPU核心数（放在整理意味着目前这条命令只需要在弹窗级别使用）
 
         参数:
-        threshold: CPU使用率阈值，低于此值认为核心可用
-        check_interval: 检查CPU使用率的时间间隔
+        :param threshold: CPU使用率阈值，低于此值认为核心可用
+        :param check_interval: 检查CPU使用率的时间间隔
 
         返回:
         可用CPU核心数
@@ -41,7 +43,19 @@ class ToolBucket:
 
     @staticmethod
     def parse_frame_input(input:str, max_frame, parse_type="frame", freq=None, parent = None):
-        """解析用户输入的帧数，输出set集合"""
+        """
+        解析用户输入的帧数或频率范围，输出集合或索引数组。
+        支持格式：
+            - 单点: 5
+            - 范围: 10-20
+            - 带步长的范围: 10-50-2 (在10到50之间每隔1个取一个，即步长为2)
+        :param input: 输入文字
+        :param max_frame: 最大帧数
+        :param parse_type: 处理模式（分为帧模式和频率模式）
+        :param freq: 频率模式需要输入的频率表
+        :param parent: QMessageBox 用到的
+        :return: 排序后不重复的所有解包值
+            """
         try:
             text = input
             max_frame = int(max_frame)
@@ -51,6 +65,8 @@ class ToolBucket:
             elif parse_type == 'freq':
                 if not text:
                     raise ValueError("请输入有效的频率范围")
+
+            # 全选
             if text == 'all':
                 if parse_type == 'frame':
                     return list(range(max_frame + 1))
@@ -64,34 +80,53 @@ class ToolBucket:
             parts = text.split(',')
 
             for part in parts:
+                part = part.strip()  # 去除前后空格
                 if not part:
                     continue
+
                 # 处理范围输入 (e.g., "5-10", "20-25")
                 if '-' in part:
                     range_parts = part.split('-')
-                    if len(range_parts) != 2:
-                        raise ValueError(f"无效的范围格式: {part}")
+                    length = len(range_parts)
 
-                    start = int(range_parts[0])
-                    end = int(range_parts[1])
+                    if length not in [2, 3]:   # 3是带步长
+                        raise ValueError(f"无效的范围格式: {part} (应为 '起始-结束' 或 '起始-结束-步长')")
+
+                    try:
+                        start = int(range_parts[0])
+                        end = int(range_parts[1])
+                        step = 1  # 默认步长
+                        if length == 3:
+                            step = int(range_parts[2])
+                    except ValueError:
+                        raise ValueError(f"范围包含非数字字符: {part}")
 
                     if start > end:
                         raise ValueError(f"起始帧({start})不能大于结束帧({end})")
+
+                    if step < 1:
+                        raise ValueError(f"步长({step})必须为正整数")
 
                     if parse_type == 'frame':
                         # 确保范围在有效区间内
                         if start < 0 or end > max_frame:
                             raise ValueError(f"范围 {part} 超出有效帧范围 (0-{max_frame})")
-                        frames.update(range(start, end + 1))
+                        frames.update(range(start, end + 1, step))
 
                     elif parse_type == 'freq':
+                        if freq is None:
+                            raise ValueError("内部错误: 频率数组未提供")
+
                         if start < min(freq) or end > max(freq):
                             raise ValueError(f"范围 {part} 超出有效频率范围 ({min(freq)}-{max(freq)})")
-                        f_list = np.where((freq >= start) & (freq <= end))[0]
-                        if isinstance(f_list, np.ndarray):
-                            target_idx.extend(f_list)
-                        else:
-                            target_idx.append(f_list)
+                        indices_in_range = np.where((freq >= start) & (freq <= end))[0]
+
+                        if len(indices_in_range) == 0:
+                            continue  # 该范围内没有对应的频率点
+
+                        stepped_indices = indices_in_range[::step]
+                        target_idx.extend(stepped_indices)
+
                 # 处理单帧数字
                 else:
                     if parse_type == 'frame':
@@ -100,33 +135,42 @@ class ToolBucket:
                             raise ValueError(f"帧号 {frame} 超出有效范围 (0-{max_frame})")
                         frames.add(frame)
                     elif parse_type == 'freq':
-                        target_idx.append(np.argmin(np.abs(freq - int(part))))
+                        val = float(part)  # 频率可能是浮点数输入
+                        target_idx.append(np.argmin(np.abs(freq - val)))
+
             return sorted(frames) if parse_type == 'frame' else np.unique(target_idx)
 
         except ValueError as e:
+            error_msg = str(e)
             if parse_type == 'frame':
-                QMessageBox.warning(
-                    parent,
-                    "输入错误",
-                    f"无效输入: {str(e)}\n\n正确格式示例:\n"
+                msg = (
+                    f"无效输入: {error_msg}\n\n正确格式示例:\n"
                     "• 单帧: 5\n"
-                    "• 序列: 1,3,5,7\n"
-                    "• 范围: 10-15,20-25\n"
-                    "• 混合: 1,3-5,7,9-10\n"
-                    f"• 所有帧: all\n\n有效帧范围: 0-{max_frame}"
+                    "• 序列: 1,3,5\n"
+                    "• 范围: 10-15\n"
+                    "• 间隔取值: 10-50-5 (10到50每5帧取1帧)\n"
+                    "• 混合: 1, 10-20-2, 30-35\n"
+                    f"• 所有帧: all\n\n当前有效范围: 0-{max_frame}"
                 )
-                logging.warning(f"帧数输入错误: {str(e)} - 输入内容: {text}")
+                if parent:
+                    QMessageBox.warning(parent, "输入错误", msg)
+                logging.warning(f"帧数输入错误: {error_msg} - 原文: {text}")
+
             if parse_type == 'freq':
-                QMessageBox.warning(
-                    parent,
-                    "输入错误",
-                    f"无效输入: {str(e)}\n\n正确格式示例:\n"
-                    "• 单频率（离此频率最近的频率）: 30\n"
-                    "• 范围（再此范围内的频率）:10-15,20-25\n"
-                    "• 混合: 10,30-50,70,90-100\n"
-                    f"• 全频率: all，即: {min(freq)}-{max(freq)}"
+                freq_min = min(freq) if freq is not None else 0
+                freq_max = max(freq) if freq is not None else 0
+                msg = (
+                    f"无效输入: {error_msg}\n\n正确格式示例:\n"
+                    "• 单频率: 30 (取最近似值)\n"
+                    "• 范围: 10-20 (取范围内所有点)\n"
+                    "• 间隔取值: 10-100-2 (10-100Hz范围内每隔1个点取值)\n"
+                    "• 混合: 10, 30-50-5, 80\n"
+                    f"• 全频率: all ({freq_min:.1f}-{freq_max:.1f})"
                 )
-                logging.warning(f"频率输入错误: {str(e)} - 输入内容: {text}")
+                if parent:
+                    QMessageBox.warning(parent, "输入错误", msg)
+                logging.warning(f"频率输入错误: {error_msg} - 原文: {text}")
+
             return None
 
 # 坏帧处理对话框
@@ -1521,6 +1565,7 @@ class ROIProcessedDialog(QDialog):
         self.crop_check = QCheckBox()
         self.inverse_check = QCheckBox()
         self.reset_value = QDoubleSpinBox()
+        self.reset_value.setRange(-1000.0,9999.0)
         self.reset_value.setValue(1)
         self.zoom_check = QCheckBox()
         self.zoom_check.setText("插值放大|倍数")
@@ -1734,9 +1779,11 @@ class ColorMapDialog(QDialog):
             'min_value':self.low_boundary_set.value() if not self.auto_boundary_set else None,
             'max_value':self.up_boundary_set.value() if not self.auto_boundary_set else None,}
 
-# 选择数据绘制plot
-class DataPlotSelectDialog(QDialog):
+# 数据树结构显示
+class DataTreeViewDialog(QDialog):
+    """.12.2版本从原来专为plot使用的，现在加入多功能。改名为树结构显示，原来叫DataPlotSelectDialog"""
     sig_plot_request = pyqtSignal(np.ndarray,str, object)
+    sig_canvas_signal = pyqtSignal(object, str)
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("数据流管理与导出")
@@ -1812,7 +1859,6 @@ class DataPlotSelectDialog(QDialog):
 
         # 关键点：必须按【创建时间正序】排序。
         # 这样保证在处理 "子ProcessedData" 时，它的 "父ProcessedData" 已经被创建并加入到 self.node_map 中了。
-        # 假设 ProcessedData 也有 .timestamp 属性代表其创建时间
         sorted_processed = sorted(processed_data_history, key=lambda x: getattr(x, 'timestamp', 0))
 
         orphan_processed = []  # 记录找不到爹的孤儿数据
@@ -1849,7 +1895,7 @@ class DataPlotSelectDialog(QDialog):
                 # 没找到父节点，暂时放入孤儿列表
                 orphan_processed.append(proc_obj)
 
-        # --- 第三步：处理真正的孤儿数据 (原始数据已被删除或丢失) ---
+        # --- 第三步：处理孤儿数据 (原始数据已被删除或丢失) ---
         if orphan_processed:
             orphan_root = QTreeWidgetItem(self.tree)
             orphan_root.setText(0, "历史处理记录 (无关联源数据)")
@@ -1896,7 +1942,7 @@ class DataPlotSelectDialog(QDialog):
         item.setText(4, time_str)
 
         # 检查是否线性数据并添加按钮
-        self._check_and_add_plot_button(item, data_obj.data_origin, data_obj.name, data_obj)
+        self._check_and_add_button(item, data_obj.data_origin, data_obj.name, data_obj)
 
     def _setup_processed_item(self, item: QTreeWidgetItem, proc_obj: ProcessedData):
         """配置 ProcessedData 类型的行显示"""
@@ -1912,7 +1958,7 @@ class DataPlotSelectDialog(QDialog):
 
         # 检查是否线性数据并添加按钮
         if proc_obj.data_processed is not None:
-            self._check_and_add_plot_button(item, proc_obj.data_processed, proc_obj.name, proc_obj)
+            self._check_and_add_button(item, proc_obj.data_processed, proc_obj.name, proc_obj)
 
     def _fill_dict_items(self, parent_item: QTreeWidgetItem, data_dict: dict, original_obj):
         """递归填充字典数据"""
@@ -1927,7 +1973,7 @@ class DataPlotSelectDialog(QDialog):
                 child.setText(3, f'{v.min():.2f} ~ {v.max():.2f}')
                 child.setText(4, "Array Data")
                 # 如果是一维数组，也允许导出
-                self._check_and_add_plot_button(child, v, str(k), original_obj)
+                self._check_and_add_button(child, v, str(k), original_obj, False)
             elif isinstance(v, dict):
                 child.setText(1, "dict")
                 self._fill_dict_items(child, v, original_obj)  # 递归
@@ -1946,44 +1992,67 @@ class DataPlotSelectDialog(QDialog):
                 child.setText(1, type(v).__name__)
                 child.setText(4, str(v))
 
-    def _check_and_add_plot_button(self, item: QTreeWidgetItem, data_array: np.ndarray, name: str, original_obj):
+    def _check_and_add_button(self, item: QTreeWidgetItem, data_array: np.ndarray, name: str, original_obj, is_father = True):
         """
         判断数据是否为线性（1D），如果是，在最后一列添加按钮
+        判断是否是图像，如果是，加导出成像按钮
         """
         if not isinstance(data_array, np.ndarray):
             return
 
         is_linear = False
+        is_image = False
         # 判断逻辑：一维数组，或者二维数组中有一维是1 (例如 (1000, 1))
         if data_array.ndim == 1:
             is_linear = True
         elif data_array.ndim == 2:
             if data_array.shape[0] == 1 or data_array.shape[1] == 1:
                 is_linear = True
+            else:
+                is_image = True
+        elif data_array.ndim == 3:
+            is_image = True
 
         if is_linear:
             linear_layout = QHBoxLayout()
             new_name = QLineEdit()
             new_name.setPlaceholderText("请为数据重命名（默认为原名，建议改名）")
             new_name.setToolTip("重命名数据仅在可视化窗口内应用")
-            btn = QPushButton("     数据可视化    ")
+            linear_btn = QPushButton("     数据可视化(线性)    ")
             linear_layout.addWidget(new_name)
-            linear_layout.addWidget(btn)
+            linear_layout.addWidget(linear_btn)
             linear_widget = QWidget()
             linear_widget.setLayout(linear_layout)
             # 使用 lambda 捕获数据
             # 注意：lambda 中的变量绑定问题，需要默认参数
-            btn.clicked.connect(lambda _, d=data_array, o=original_obj: self.emit_plot_signal(d, new_name.text() or name, o))
-            btn.setStyleSheet("padding: 0px;")
+            linear_btn.clicked.connect(lambda _, d=data_array, o=original_obj: self.emit_plot_signal(d, new_name.text() or name, o))
+            linear_btn.setStyleSheet("padding: 0px;")
 
             # 因为 QTreeWidget 是 ItemView，需要用 setItemWidget 将 Widget 放入单元格
             self.tree.setItemWidget(item, 5, linear_widget)
 
+        elif is_image and not is_father: # 不要父节点那些，只要参数字典里面的
+            image_layout = QHBoxLayout()
+            image_btn = QPushButton("     数据可视化(图像)    ")
+            image_layout.addWidget(image_btn)
+            image_btn.setToolTip("点击会创建新画布呈现选中的数据，同时新增ProcessedData")
+            image_widget = QWidget()
+            image_widget.setLayout(image_layout)
+            image_btn.clicked.connect(lambda _, data = original_obj, key = name: self.emit_canvas_signal(data, key))
+            image_btn.setStyleSheet("padding: 0px;")
+            image_btn.setMinimumHeight(14)
+
+            self.tree.setItemWidget(item, 5, image_widget)
+
     def emit_plot_signal(self, data, name, obj):
         """发射信号"""
         data = np.squeeze(data)
-        print(f"要呈现的数据: {name}, 大小: {data.shape}")
+        logging.info(f"要呈现的数据: {name}, 大小: {data.shape}")
         self.sig_plot_request.emit(data, name, obj)
+
+    def emit_canvas_signal(self, data, key):
+        logging.info(f"要呈现的数据: {data.name}-{key}")
+        self.sig_canvas_signal.emit(data, key)
 
     def event(self, e):
         """拦截 ContextHelp 事件（即点击了标题栏的 ? 号）"""
@@ -2033,7 +2102,7 @@ class HeartBeatFrameSelectDialog(QDialog):
     def __init__(self, data, parent=None):
         super().__init__()
         self.setWindowTitle("心肌细胞分析设置")
-        self.setGeometry(1000, 800, 300, 20)
+        self.setGeometry(1000, 650, 300, 20)
         self.setModal(False)
         self.setWindowFlags(Qt.Dialog |
                             Qt.WindowCloseButtonHint |
@@ -2042,6 +2111,7 @@ class HeartBeatFrameSelectDialog(QDialog):
         self.data = data
         self.parent = parent
         self.setAttribute(Qt.WA_DeleteOnClose)
+        self.mode_map = {0: 'video', 1: 'images', 2: 'both'}
         self.init_ui()
 
     def init_ui(self):
@@ -2049,20 +2119,52 @@ class HeartBeatFrameSelectDialog(QDialog):
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(5)
         step_layout = QHBoxLayout()
-        step_layout.addWidget(QLabel("处理间距（不宜太短）："))
+        step_layout.addWidget(QLabel("采样间距（不宜太短）："))
         self.step_input = QSpinBox()
         self.step_input.setRange(1,min(self.data.framesize))
         self.step_input.setValue(5)
         step_layout.addWidget(self.step_input)
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("处理模式:"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["比较模式","连续分析"])
+        self.mode_combo.currentIndexChanged.connect(self.mode_changed)
+        mode_layout.addWidget(self.mode_combo)
         layout.addLayout(step_layout)
-        layout.addWidget(QLabel("请输入基准帧"))
+        layout.addLayout(mode_layout)
+        self.base_label = QLabel("请输入基准帧:")
+        layout.addWidget(self.base_label)
         self.base_frame_input = QSpinBox()
-        self.base_frame_input.setRange(0, self.data.timelength)
+        self.base_frame_input.setRange(-1, self.data.timelength)
+        self.base_frame_input.setValue(0)
         layout.addWidget(self.base_frame_input)
-        layout.addWidget(QLabel("请输入所有后续需要比较的帧"))
+        self.compare_label = QLabel("请输入所有后续需要比较的帧")
+        layout.addWidget(self.compare_label)
         self.motion_frame_input = QTextEdit()
-        self.motion_frame_input.setPlaceholderText("输入帧位（起始帧位为0），以逗号或分号分隔，范围用-\n输入all选取全部帧")
+        self.motion_frame_input.setPlaceholderText("输入帧位（图像第一帧是0）; 以逗号或分号分隔，范围用-; 间隔取值: 10-50-5 (10到50每5帧取1帧); 输入all选取全部帧")
         layout.addWidget(self.motion_frame_input)
+
+        save_layout = QHBoxLayout()
+        save_layout.addWidget(QLabel("快速保存："))
+        self.save_check = QCheckBox()
+        save_layout.addWidget(self.save_check)
+        self.save_check.clicked.connect(self.save_changed)
+        save_layout.addWidget(QLabel("保存格式："))
+        self.save_mode = QComboBox()
+        self.save_mode.addItems(['视频','图片','我都要！'])
+        save_layout.addWidget(self.save_mode)
+        self.save_mode.setEnabled(False)
+        save_layout2 = QHBoxLayout()
+        self.path_input = QLineEdit()
+        self.path_input.setPlaceholderText("请选择或输入文件夹路径")
+        self.browse_btn = QPushButton("浏览...")
+        self.browse_btn.clicked.connect(self.browse_folder)
+        save_layout2.addWidget(self.path_input,stretch=1)
+        save_layout2.addWidget(self.browse_btn)
+        self.path_input.setEnabled(False)
+        self.browse_btn.setEnabled(False)
+        layout.addLayout(save_layout)
+        layout.addLayout(save_layout2)
 
         button_layout = QHBoxLayout()
         button_layout.addStretch()
@@ -2080,6 +2182,55 @@ class HeartBeatFrameSelectDialog(QDialog):
         if motion_frames:
             if not self.parent.avi_thread.isRunning():
                 self.parent.avi_thread.start()
-            self.parent.heartbeat_signal.emit(self.data, self.step_input.value(), self.base_frame_input.value(), motion_frames)
+            self.parent.heartbeat_signal.emit(self.data, self.step_input.value(),
+                                              self.base_frame_input.value(),
+                                              motion_frames, self.get_path(),
+                                              self.mode_map[self.save_mode.currentIndex()])
             logging.info("完成帧数选择，开始心肌细胞运动分析")
             self.accept()
+
+    def save_changed(self):
+        """选择保存"""
+        if self.save_check.isChecked():
+            self.path_input.setEnabled(True)
+            self.browse_btn.setEnabled(True)
+            self.save_mode.setEnabled(True)
+        else:
+            self.path_input.setEnabled(False)
+            self.browse_btn.setEnabled(False)
+            self.save_mode.setEnabled(False)
+
+    def mode_changed(self):
+        """模式改变"""
+        if self.mode_combo.currentIndex() == 0:
+            self.base_frame_input.setEnabled(True)
+            self.base_label.setText("请输入基准帧:")
+            self.compare_label = QLabel("请输入所有后续需要比较的帧")
+            self.base_frame_input.setValue(0)
+        elif self.mode_combo.currentIndex() == 1:
+            self.base_frame_input.setEnabled(False)
+            self.base_label.setText("无需输入基准帧:")
+            self.compare_label = QLabel("请输入所有参与处理的帧数")
+            self.base_frame_input.setValue(-1)
+
+    def browse_folder(self):
+        """打开文件夹选择对话框"""
+        folder = QFileDialog.getExistingDirectory(
+            self,  # 父窗口
+            "选择文件夹",  # 对话框标题
+            "",  # 默认路径（空表示当前目录）
+            QFileDialog.ShowDirsOnly  # 只显示文件夹
+        )
+
+        if folder:  # 如果用户选择了文件夹
+            self.path_input.setText(folder)
+
+    def get_path(self):
+        """获取当前选择的路径"""
+        if self.save_check.isChecked():
+            if not self.path_input.text():
+                QMessageBox.warning(self,"保存错误","请输入或选择要保存的文件夹")
+                raise ValueError
+            return self.path_input.text()
+        else:
+            return ""

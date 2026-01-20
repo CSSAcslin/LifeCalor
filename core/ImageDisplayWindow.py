@@ -294,6 +294,9 @@ class ImageDisplayWindow(QMainWindow):
         new_canvas = SubImageDisplayWidget(name=f'{canvas_id}-{data.source_name}',canvas_id=canvas_id,data=data,args_dict=self.tool_parameters,parent=self)
         self.display_canvas.append(new_canvas)
         self.add_dock(self.display_canvas[-1])
+        if self.tool_parameters['use_colormap']:
+            self.image_style_change_signal.emit(self.display_canvas[-1].data, self.tool_parameters)
+            # self.display_canvas[-1].set_toolset(self.tool_parameters)
         # self.addDockWidget(Qt.LeftDockWidgetArea, self.display_canvas[-1])
 
     def _remove_single_canvas(self, canvas_id):
@@ -1480,8 +1483,11 @@ class SubImageDisplayWidget(QDockWidget):
         if self.colorbar_item:
             self.scene.removeItem(self.colorbar_item)
             self.colorbar_item = None
-            self.scene.removeItem(self.min_label)
-            self.scene.removeItem(self.max_label)
+            try:
+                self.scene.removeItem(self.min_label)
+                self.scene.removeItem(self.max_label)
+            finally:
+                pass
 
         if not self.use_colormap:
             return

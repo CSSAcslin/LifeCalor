@@ -15,6 +15,8 @@ from multiprocessing import shared_memory, Manager, Pool
 import math
 import traceback
 
+from ResultDisplayWidget import HeartbeatDraw
+
 
 # --- 全局 Worker 函数 ---
 def _stft_worker_process(
@@ -1096,8 +1098,8 @@ class MassDataProcessor(QObject):
             self.processed_result.emit({'type': "2D_Fourier_transform", 'error': str(e)})
             return False
 
-    @pyqtSlot(object, int, int ,list)
-    def heartbeat_movement(self, data, step, base_num, after_series):
+    @pyqtSlot(object, int, int ,list, str, str)
+    def heartbeat_movement(self, data, step, base_num, after_series, save_path = "", export_mode = 'video'):
         """心肌细胞运动分析，使用
         稠密光流 (Farneback算法)"""
         # try:
@@ -1110,56 +1112,132 @@ class MassDataProcessor(QObject):
             aim_data = data.data_origin
             out_processed = data.parameters
 
-        num = len(after_series)
-        time_point = np.array(after_series)-base_num
-        logging.info(f"要比较的帧位（相对于基准帧）:{time_point}")
-        self.processing_progress_signal.emit(1, num + 2)
-        base_data = self.clahe_and_blur(aim_data[base_num])
+        if base_num != -1:
+            # 固定基准帧模式
+            num = len(after_series)
+            pairs = [(base_num, current) for current in after_series]
+            # 时间点：相对于基准帧的时间
+            time_point = np.array(after_series) - base_num
+            logging.info(f"模式：固定基准帧 {base_num}, 比较 {num} 帧")
+            process_name = "比较模式"
+        else:
+            # 相邻连续帧模式
+            num = len(after_series) - 1
+            pairs = list(zip(after_series[:-1], after_series[1:]))
+            # 时间点：相对于序列第一帧的时间
+            time_point = np.array(after_series[1:]) - after_series[0]
+            logging.info(f"模式：相邻连续帧, 比较 {num} 组")
+            process_name = "连续分析"
+        self.processing_progress_signal.emit(0, num + 2)
+        h, w = aim_data[0].shape
+        # 建议直接初始化由 numpy 堆叠的大数组，比 list 推导式稍微快一点点且内存连续
+        flow_stack = np.zeros((num, h, w, 2), dtype=np.float32)
+        magnitude_stack = np.zeros((num, h, w), dtype=np.float32)
+        angle_stack = np.zeros((num, h, w), dtype=np.float32)
         max_speed = np.zeros(num)
         mean_speed = np.zeros(num)
-        h, w = base_data.shape
-        flow_list = [np.zeros((h, w, 2), dtype=np.float32) for _ in range(num)]
-        magnitude_list = [np.zeros((h, w), dtype=np.float32) for _ in range(num)]
-        angle_list = [np.zeros((h, w), dtype=np.float32) for _ in range(num)]
 
-        self.processing_progress_signal.emit(2,num+2)
+        self.processing_progress_signal.emit(1,num+2)
 
-        for i, next_num in enumerate(after_series):
-            next_data = self.clahe_and_blur(aim_data[next_num])
-            # flow 是一个 (h, w, 2) 的数组，flow[...,0]是水平位移，flow[...,1]是垂直位移
-            flow = cv2.calcOpticalFlowFarneback(base_data, next_data, None,
-                                                pyr_scale=0.5, levels=3, winsize=15,
-                                                iterations=3, poly_n=5, poly_sigma=1.2,
-                                                flags=0) # 目前参数都定死了
-            # 4. 转换数据 (笛卡尔坐标 -> 极坐标: 速度大小和角度)
-            # magnitude: 速度大小, angle: 运动方向
-            magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-            # 计算真实的速度
-            magnitude_real = (magnitude * out_processed['space_step'] *
-                              out_processed['fps'] / (next_num - base_num))
+        # 辅助函数：获取预处理后的图像 (带简单缓存),避免重复预处理
+        img_cache = {}
+
+        def get_processed_img(idx):
+            if idx not in img_cache:
+                # 这里的 clahe_and_blur 应该包含你之前的灰度拉伸+CLAHE+高斯模糊
+                img_cache[idx] = self.clahe_and_blur(aim_data[idx])
+            return img_cache[idx]
+
+        # 如果是固定基准帧，先缓存基准帧，避免循环里反复查
+        if base_num != -1:
+            base_img_fixed = get_processed_img(base_num)
+            base_num_series = base_num
+        else:
+            base_img_list = np.zeros((num, h, w), dtype=np.float32)
+            base_num_series = np.zeros(num, dtype=int)
+
+        for i, (idx_prev, idx_curr) in enumerate(pairs):
+            # 获取图像
+            if base_num != -1:
+                prev_gray = base_img_fixed
+            else:
+                prev_gray = get_processed_img(idx_prev)
+                base_img_list[i] = aim_data[idx_prev]
+                base_num_series[i] = idx_prev
+
+            next_gray = get_processed_img(idx_curr)
+
+            # 光流计算
+            flow = cv2.calcOpticalFlowFarneback(
+                prev_gray, next_gray, None,
+                pyr_scale=0.5, levels=3, winsize=15,
+                iterations=3, poly_n=5, poly_sigma=1.2,
+                flags=0)  # 目前参数都定死了
+
+            # 坐标转换与速度计算
+            mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+
+            # 真实物理速度计算
+            # 注意：这里的时间间隔是 (idx_curr - idx_prev)，在相邻模式下通常是1，但在固定模式下会变大
+            delta_frame = idx_curr - idx_prev
+            if delta_frame == 0: delta_frame = 1  # 防止除以0，虽然逻辑上不应该出现
+
+            factor = out_processed['space_step'] * out_processed['fps'] / delta_frame
+            magnitude_real = mag * factor
+
+            # 存入结果
+            flow_stack[i] = flow
+            magnitude_stack[i] = magnitude_real
+            angle_stack[i] = ang
             max_speed[i] = np.max(magnitude_real)
             mean_speed[i] = np.mean(magnitude_real)
-            flow_list[i] = flow
-            magnitude_list[i] = magnitude_real
-            angle_list[i] = angle
 
-            self.processing_progress_signal.emit(i+3,num+2)
+            # 内存管理：如果是相邻帧模式，prev_gray (idx_prev) 在下一轮就不会再用了，可以从缓存删除以省内存
+            if base_num == -1 and idx_prev in img_cache:
+                del img_cache[idx_prev]
 
+            # 发送进度
+            self.processing_progress_signal.emit(i + 2, num + 2)
+
+        # 5. 打包结果
+        # 注意：base_data 在相邻模式下没有单一值，现在存了数组，主要是后续绘图用
+        result_base_data = aim_data[base_num] if base_num != -1 else base_img_list
 
         result = ProcessedData(data.timestamp,
                                            f'{data.name}@heartbeat',
                                            "Heartbeat",
                                            time_point = time_point,
-                                           data_processed=np.stack(flow_list, axis=0),
-                                           out_processed={'step':step,
-                                                          "base_num": base_num,
-                                                          'base_data': base_data,
+                                           data_processed=flow_stack,
+                                           out_processed={'process_name':process_name,
+                                                          'sampling_step':step,
+                                                          "base_num": base_num_series,
+                                                          'base_data': result_base_data,
                                                           'after_series': after_series,
-                                                          'magnitude_list': np.stack(magnitude_list, axis=0),
-                                                          'angle_list': np.stack(angle_list, axis=0),
+                                                          'magnitude_list': magnitude_stack,
+                                                          'angle_list': angle_stack,
                                                           'max_speed': max_speed ,
-                                                          'mean_speed': mean_speed,**out_processed})
+                                                          'mean_speed': mean_speed,
+                                                          **out_processed})
 
+        # 内部保存
+        if save_path and isinstance(save_path, str) and len(save_path) > 0:
+            logging.info("计算完成，开始后台生成视频...")
+            # 发送一个信号告诉UI正在保存（可选，让进度条显示"Saving..."）
+            self.processing_progress_signal.emit(num + 1, num + 2)
+
+            # try:
+                # 直接调用独立的保存函数
+                # 因为在 Agg 后端下运行，且数据是独立的，不会冲突
+            video_file = HeartbeatDraw.save_video_task(result, save_path, step, export_mode = export_mode)
+            logging.info(f"视频已保存至: {video_file}")
+
+            # 你可以将视频路径放入 out_processed 以便 UI 知道
+            result.out_processed['saved_video_path'] = video_file
+
+            # except Exception as e:
+            #     logging.error(f"保存视频失败: {e}")
+
+        self.processing_progress_signal.emit(num + 2, num + 2)
         self.processed_result.emit(result)
         return True
 

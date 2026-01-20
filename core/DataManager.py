@@ -497,18 +497,18 @@ class DataManager(QObject):
 @dataclass
 class Data:
     """
-    数据导入类型\n
-    data_origin 原始导入数据（经过初步处理）\n
-    time_point 时间点（已匹配时间尺度）\n
-    format_import 导入格式 \n
-    image_import 原生成像数据\n
-    parameters 其他参数\n
-    name 数据命名\n
-    out_processed 在0.11.9版本加入，解决自由调用时总报错的问题，同时减少代码冗余，于是加入了一个空的占位用\n
-    timestamp 时间戳（用于识别匹配数据流）\n
-    ROI_applied 是否应用ROI蒙版 \n
-    history 历史保存（3组）\n
-    serial_number 序号\n
+    数据导入类型
+    :cvar data_origin 原始导入数据（经过初步处理）
+    :cvar time_point 时间点（已匹配时间尺度）
+    :cvar format_import 导入格式
+    :cvar image_import 原生成像数据
+    :cvar parameters 其他参数
+    :cvar  name 数据命名
+    :cvar  out_processed 在0.11.9版本加入，解决自由调用时总报错的问题，同时减少代码冗余，于是加入了一个空的占位用
+    :cvar  timestamp 时间戳（用于识别匹配数据流）
+    :cvar  ROI_applied 是否应用ROI蒙版
+    :cvar  history 历史保存（3组）
+    :cvar  serial_number 序号
     内含参数还有：self.datashape；
         self.timelength；
         self.framesize；
@@ -771,17 +771,18 @@ class Data:
 @dataclass
 class ProcessedData:
     """
-    经过处理的数据\n
-    timestamp_inherited 处理前数据的时间戳: float\n
-    name 命名（需要更新）: str\n
-    type_processed 处理类型（最后） : str\n
-    time_point 时间点: np.ndarray\n
-    data_processed 处理出来的数据（此处存放尤指具有时空尺度的核心数据）: np.ndarray = None\n
-    out_processed 其他处理出来的数据（比如拟合得到的参数，二维序列等等）: dict = None\n
-    parameters 在0.11.9版本加入，解决自由调用时总报错的问题，同时减少代码冗余，于是加入了一个空的占位用\n
-    timestamp 新数据时间戳\n
-    ROI_applied 是否应用ROI蒙版 \n
-    history 历史，无限保留，考虑和绘图挂钩: ClassVar[Dict[str, 'ProcessedData']] = {}\n
+    经过处理的数据
+    :cvar timestamp_inherited 处理前数据的时间戳: float
+    :cvar name 命名（需要更新）: str
+    :cvar type_processed 处理类型（最后） : str
+    :cvar time_point 时间点: np.ndarray
+    :cvar data_processed 处理出来的数据（此处存放尤指具有时空尺度的核心数据）: np.ndarray = None
+    :cvar out_processed 其他处理出来的数据（比如拟合得到的参数，二维序列等等）: dict = None
+    :cvar parameters 在0.11.9版本加入，解决自由调用时总报错的问题，同时减少代码冗余，于是加入了一个空的占位用
+    :cvar timestamp 新数据时间戳
+    :cvar ROI_applied 是否应用ROI蒙版
+    :cvar history 历史，无限保留，考虑和绘图挂钩: ClassVar[Dict[str, 'ProcessedData']] = {}
+    :return 包含name type datashape datamin-max 这四项信息的str
     """
     timestamp_inherited: float
     name: str
@@ -847,7 +848,10 @@ class ProcessedData:
 
     @classmethod
     def find_history(cls, timestamp: float) -> Optional['ProcessedData']:
-        """根据时间戳查找历史记录中的特定数据"""
+        """
+        根据时间戳查找历史记录中的特定数据
+        :param timestamp: float
+        """
         # 使用生成器表达式高效查找
         try:
             return next(
@@ -917,6 +921,63 @@ class ProcessedData:
 
         logging.info(f"Processed数据已裁剪: 帧数变为 {self.timelength}")
 
+    def upgrade_processed(self, key: str) -> Optional['ProcessedData']:
+        """
+        从 out_processed 字典中提取指定键的数据，创建一个新的 ProcessedData 实例。
+        新实例会自动继承时间戳和时间点，并加入历史记录。
+
+        :param key: out_processed 中的键名
+        :return: 新创建的 ProcessedData 实例，如果 key 不存在或数据无效则返回 None
+        """
+        # 1. 检查 out_processed 是否存在以及键是否存在
+        if self.out_processed is None or key not in self.out_processed:
+            logging.warning(f"提取失败: 键 '{key}' 不在 {self.name} 的输出结果中。")
+            return None
+
+        # 2. 获取目标数据
+        target_data = self.out_processed[key]
+
+        # 3. 数据类型检查与转换
+        if not isinstance(target_data, np.ndarray):
+            # 尝试转换列表为数组，如果是其他类型则报错
+            if isinstance(target_data, list):
+                target_data = np.array(target_data)
+            else:
+                logging.warning(f"提取失败: '{key}' 的数据类型为 {type(target_data)}，需要 np.ndarray。")
+                return None
+
+        # 4. 准备新实例的参数
+        # 命名规则: 原名-键名
+        new_name = f"{self.name}-{key}"
+        # 类型标记
+        new_type = f"extracted_{key}"
+
+        # 继承时间点 (深拷贝防止后续修改影响原数据)
+        if target_data.ndim == 3:
+            new_time_point = self.time_point.copy() if self.time_point is not None else None
+        else:
+            new_time_point = None
+
+        try:
+            # 5. 实例化新对象
+            # 注意：实例化后会自动调用 __post_init__，
+            # 从而自动计算 shape, min, max, framesize 并添加到 history 中
+            new_instance = ProcessedData(
+                timestamp_inherited=self.timestamp_inherited,
+                name=new_name,
+                type_processed=new_type,
+                time_point=new_time_point,
+                data_processed=target_data.copy(),  # 深拷贝数据，保证独立性
+                out_processed={}  # 新实例通常没有附属输出，初始化为空
+            )
+
+            logging.info(f"已从 {self.name} 提取 '{key}' 生成新数据实例: {new_name}")
+            return new_instance
+
+        except Exception as e:
+            logging.error(f"创建衍生数据实例时发生错误: {e}")
+            return None
+
     def __repr__(self):
         return (
             f"ProcessedData<{self.name} | "
@@ -929,10 +990,9 @@ class ProcessedData:
 @dataclass
 class ImagingData:
     """
-    图像显示类型\n
-    timestamp_inherited 原始数据来源\n
-    image_backup 原始数据
-    image_data 转换为图像数据
+    图像显示类型
+    :cvar timestamp_inherited:
+    :cvar image_backup
     """
     timestamp_inherited: float
     image_backup: np.ndarray = None  # 原始数据
