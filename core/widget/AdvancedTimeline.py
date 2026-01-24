@@ -18,12 +18,13 @@ class AdvancedTimeline(QWidget):
     MODE_PAN = 4  # 平移视图
     MODE_MOVE_SELECTION = 5 # 移动选区
 
-    def __init__(self, total_frames=1000, fps=0, parent=None):
+    def __init__(self, total_frames=1000, fps=0, parent=None, time_point = None):
         super().__init__(parent)
 
         # --- 数据模型 ---
         self.total_frames = total_frames - 1
         self.fps = fps
+        self.time_point = time_point
         self.current_frame = 0
         self.selection_start = 0
         self.selection_end = total_frames
@@ -225,6 +226,9 @@ class AdvancedTimeline(QWidget):
                 remaining_seconds = int(seconds % 60)
                 frames = int((seconds - int(seconds)) * self.fps)
                 time_str = f"{minutes:02d}:{remaining_seconds:02d}:{frames:0{len(str(self.fps))}d}"
+            elif self.time_point is not None:
+                val = self.time_point[f]
+                time_str = str(val)
             else:
                 time_str = str(f)
             painter.drawText(QPointF(x + 4, ruler_h - 4), time_str)
@@ -306,7 +310,9 @@ class AdvancedTimeline(QWidget):
         if event.button() == Qt.RightButton:
             if y > ruler_h and start_x + self.handle_width < x < end_x - self.handle_width:
                 in_selection = 'handle'
-                self.rightClicked.emit(int(frame), in_selection, event.globalPos()) # 右键截取数据
+            else:
+                in_selection = 'other'
+            self.rightClicked.emit(int(frame), in_selection, event.globalPos()) # 右键截取数据
 
     def mouseMoveEvent(self, event):
         x = event.x()
@@ -438,6 +444,21 @@ class AdvancedTimeline(QWidget):
         self.selection_start = start
         self.selection_end = end
         self.update()
+
+    def set_fps(self, fps):
+        """
+        更新 FPS 并重绘标尺
+        """
+        self.fps = max(0, fps)  # 保证不为负数即可
+        self.update()
+
+    def set_time_point(self, time_point):
+        """
+        设置时间点数组。
+        :param time_point: numpy 数组或列表，长度应对应 total_frames
+        """
+        self.time_point = time_point
+        self.update() # 触发重绘
 
     def update_data_range(self, new_total_frames):
         """当外部数据发生变化时调用"""

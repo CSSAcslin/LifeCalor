@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGroupBox,
 from PyQt5.QtCore import Qt, QEvent, QTimer, QModelIndex, pyqtSignal, QSize
 from fontTools.merge import layoutPreMerge
 
-from DataManager import Data,ProcessedData
+from DataManager import Data,ProcessedData,ImagingData
 import re
 
 class ToolBucket:
@@ -893,7 +893,7 @@ class DataExportDialog(QDialog):
         self.setMinimumHeight(450)
         # self.datatypes = datatypes if datatypes else []
         self.is_temporal = is_temporal
-        self.datatypes = ['tif','avi','gif','png','plt']
+        self.datatypes = ['tif','avi','gif','png','plt'] if datatypes is None else datatypes
         self.canvas_info = canvas_info
         self.export_type = export_type
         self.current_type = 'tif'
@@ -1389,10 +1389,11 @@ class CustomHelpDialog(QDialog):
 # 画布及roi查看和选择
 class ROIInfoDialog(QDialog):
 
-    def __init__(self, parent=None):
+    def __init__(self,info:list ,parent=None):
         super().__init__(parent)
         self.canvas_id = None
         self.roi_type = None
+        self.canvas_info = info
         self.setWindowTitle("图像与ROI信息（双击选择）")
         self.setMinimumSize(600, 400)
 
@@ -1424,7 +1425,6 @@ class ROIInfoDialog(QDialog):
 
     def load_data(self):
         """加载所有画布的信息到表格"""
-        self.canvas_info = self.parent_window.get_all_canvas_info()
         self.table.setRowCount(0)
 
         for info in self.canvas_info:
@@ -1461,7 +1461,11 @@ class ROIInfoDialog(QDialog):
                     details = f"起点: ({x1}, {y1}), 终点: ({x2}, {y2}), 宽度: {roi['width']}"
                 elif roi['type'] == 'anchor':
                     x, y = roi['position']
-                    details = f"位置: ({x}, {y})"
+                    mask = roi.get("anchor_mask", None)
+                    if mask is not None:
+                        details = f"位置: ({x}, {y})，存在mask，尺寸:{mask}"
+                    else:
+                        details = f"位置: ({x}, {y})"
                 elif roi['type'] == 'pixel_roi':
                     n = roi['counts']
                     details = f"选中{n}个像素"
@@ -1594,7 +1598,6 @@ class ROIProcessedDialog(QDialog):
         layout.addWidget(button_box)
         self.update_list()
         self.setLayout(layout)
-
 
     def update_list(self):
         fast_text = ''
@@ -2234,3 +2237,155 @@ class HeartBeatFrameSelectDialog(QDialog):
             return self.path_input.text()
         else:
             return ""
+
+# 参数设置对话框
+class ParamsResetDialog(QDialog):
+    """
+    :param data
+    """
+    updata_param_signal = pyqtSignal(str, str, object)
+    def __init__(self,data,image_data=None, parent=None,):
+        super().__init__()
+        self.setWindowTitle("数据参数设置对话框")
+        self.data = data
+        self.image_data = image_data
+        self.init_ui()
+
+    def init_ui(self):
+        if isinstance(self.data, Data):
+            self.params_dict = self.data.parameters
+        elif isinstance(self.data, ProcessedData):
+            self.params_dict = self.data.out_processed
+        elif isinstance(self.data, ImagingData):
+            self.params_dict = {'fps': self.data.fps}
+        else:
+            return
+        layout = QVBoxLayout(self)
+        fps = self.params_dict.get('fps', None)
+        time_step = self.params_dict.get('time_step', None)
+        time_unit = self.params_dict.get('time_unit', None)
+        space_step = self.params_dict.get('space_step', None)
+        space_unit = self.params_dict.get('space_unit', None)
+
+        if fps is not None:
+            fps_layout = QHBoxLayout()
+            self.fps_input = QSpinBox()
+            self.fps_input.setPrefix(f"{fps} -> ")
+            self.fps_input.setSuffix(" Hz")
+            self.fps_input.setRange(1, 100000)
+            self.fps_input.setValue(fps)
+            fps_layout.addWidget(QLabel("视频帧率:"))
+            fps_layout.addWidget(self.fps_input)
+            layout.addLayout(fps_layout)
+            self.fps_input.valueChanged.connect(lambda: self.updata_param_signal.emit('EM', 'EM_fps', self.fps_input.value()))
+
+        if time_step is not None:
+            time_step_layout = QHBoxLayout()
+            time_step_layout.addWidget(QLabel("时间单位:"))
+            self.time_step_input = QDoubleSpinBox()
+            self.time_step_input.setMinimum(0.001)
+            self.time_step_input.setMaximum(10000)
+            self.time_step_input.setValue(time_step)
+            self.time_step_input.setDecimals(3)
+            self.time_step_input.setPrefix(f"{time_step} -> ")
+            self.time_step_input.valueChanged.connect(
+                lambda: self.updata_param_signal.emit('basic', 'time_step', self.time_step_input.value()))
+            time_step_layout.addWidget(self.time_step_input)
+            layout.addLayout(time_step_layout)
+
+        if time_unit is not None:
+            time_unit_layout = QHBoxLayout()
+            self.time_unit_combo = QComboBox()
+            self.time_unit_combo.addItems(["ms", "μs", "ns", "ps", "fs"])
+            self.time_unit_combo.setCurrentText(time_unit)
+            self.time_unit_combo.currentTextChanged.connect(
+                lambda: self.updata_param_signal.emit('basic', 'time_unit', self.time_unit_combo.currentText()))
+            time_unit_layout.addStretch()
+            time_unit_layout.addWidget(self.time_unit_combo)
+            time_unit_layout.addWidget(QLabel("/帧"))
+            layout.addLayout(time_unit_layout)
+
+        if space_step is not None:
+            space_step_layout = QHBoxLayout()
+            space_step_layout.addWidget(QLabel("空间单位:"))
+            self.space_step_input = QDoubleSpinBox()
+            self.space_step_input.setMinimum(0.001)
+            self.space_step_input.setDecimals(3)
+            self.space_step_input.setValue(space_step)
+            self.space_step_input.setPrefix(f"{space_step:.3f} -> ")
+            self.space_step_input.valueChanged.connect(
+                lambda: self.updata_param_signal.emit('basic', 'space_step', self.space_step_input.value()))
+            space_step_layout.addWidget(self.space_step_input)
+            layout.addLayout(space_step_layout)
+
+        if space_unit is not None:
+            space_unit_layout = QHBoxLayout()
+            self.space_unit_combo = QComboBox()
+            self.space_unit_combo.addItems(["mm", "μm", "nm"])
+            self.space_unit_combo.setCurrentText(space_unit)
+            self.space_unit_combo.currentTextChanged.connect(
+                lambda: self.updata_param_signal.emit('basic', 'space_unit', self.space_unit_combo.currentText()))
+            space_unit_layout.addStretch()
+            space_unit_layout.addWidget(self.space_unit_combo)
+            space_unit_layout.addWidget(QLabel("/像素"))
+            layout.addLayout(space_unit_layout)
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        self.apply_btn = QPushButton("确认修改")
+        self.apply_btn.clicked.connect(self.reset_param)
+        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(self.apply_btn)
+        button_layout.addWidget(self.cancel_btn)
+
+        layout.addLayout(button_layout)
+
+    def reset_param(self):
+        # 1. 收集 UI 控件中的新值
+        new_params = {}
+
+        # 使用 hasattr 检查控件是否存在，并获取当前值
+        if hasattr(self, 'fps_input'):
+            new_params['fps'] = self.fps_input.value()
+
+        if hasattr(self, 'time_step_input'):
+            new_params['time_step'] = self.time_step_input.value()
+
+        if hasattr(self, 'time_unit_combo'):
+            new_params['time_unit'] = self.time_unit_combo.currentText()
+
+        if hasattr(self, 'space_step_input'):
+            new_params['space_step'] = self.space_step_input.value()
+
+        if hasattr(self, 'space_unit_combo'):
+            new_params['space_unit'] = self.space_unit_combo.currentText()
+
+        # 2. 更新 self.data (Data 或 ProcessedData)
+        # update_params 会处理逻辑运算、历史记录更新，并返回实际修改了的键列表
+        changed_keys = self.data.update_params(**new_params)
+
+        # 3. 如果存在关联的 ImagingData，进行同步
+        if self.image_data is not None:
+            # 准备同步给 ImagingData 的参数
+            img_params = {}
+            if 'fps' in new_params:
+                img_params['fps'] = new_params['fps']
+
+            # 关键：将 Data 计算后的新 time_point 同步给 Image
+            if self.data.time_point is not None:
+                img_params['time_point'] = self.data.time_point
+
+            self.image_data.update_params(**img_params)
+
+        # 4. 日志记录
+        if changed_keys:
+            logging.info(f"已修改参数：{', '.join(changed_keys)}") # 学一学 链接字符串的方法
+        else:
+            logging.warning("无参数被修改或值未发生变化")
+
+        # 5. 关闭对话框
+        self.accept()
+
+
+

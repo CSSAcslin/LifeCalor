@@ -285,6 +285,7 @@ class ImportManager(QObject):
         frames = []
         loading_bar_value = 0  # 进度条
         total_l = frame_count+1
+        self.processing_progress_signal.emit(loading_bar_value, total_l)
         while not self.abortion:
             ret, frame = cap.read()
             if not ret:

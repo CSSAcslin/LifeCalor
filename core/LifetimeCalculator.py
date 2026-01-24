@@ -721,17 +721,21 @@ class CalculationThread(QObject):
             self.cal_running_status.emit(False)
             self.stop_thread_signal.emit()
 
-    @pyqtSlot(object,str)
-    def easy_process(self,data,ptype):
+    @pyqtSlot(object,str, object)
+    def easy_process(self,data,ptype, mask = None):
         if isinstance(data, ProcessedData):
             origin_data = data.data_processed
         else:
             origin_data = data.data_origin
         time_point = data.time_point
-        if ptype == 'avg':
+        name = f'{data.name}@avg'
+        if mask is not None: # 内置mask是仅仅用于快速计算的
+            origin_data = np.where(mask[np.newaxis,:,:],origin_data,0)
+            name = f'{data.name}@ROI_avg'
+        if ptype in ['avg', 'mean']:
             data_processed = np.mean(origin_data, axis=(1, 2))
             new_data = ProcessedData(data.timestamp,
-                                     f'{data.name}@avg',
+                                     name,
                                      'signal_average',
                                      time_point=time_point,
                                      data_processed=np.column_stack((time_point, data_processed)),)

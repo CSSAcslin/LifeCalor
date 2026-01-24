@@ -17,7 +17,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QRectF, QSize, QTimer, QDateTime, QLine
 
 
 from DataManager import ImagingData, ColorMapManager, PublicEasyMethod
-from ExtraDialog import ROIInfoDialog, ColorMapDialog, DataExportDialog
+from ExtraDialog import ROIInfoDialog, ColorMapDialog, DataExportDialog, ParamsResetDialog
 from widget.AdvancedTimeline import AdvancedTimeline
 
 import matplotlib.cm as cm
@@ -414,9 +414,11 @@ class ImageDisplayWindow(QMainWindow):
         for action in self.actions_all.values():
             action.setChecked(False)
 
-    def get_draw_roi(self,canvas_id):
+    def get_draw_roi(self,canvas_id = None):
         """获取绘制的roi"""
-        draw_layer = self.display_canvas[self.cursor_id].draw_roi
+        if canvas_id is None:
+            canvas_id = self.cursor_id
+        draw_layer = self.display_canvas[canvas_id].draw_roi
         bool_mask = draw_layer >0
 
         return draw_layer.copy(), bool_mask
@@ -457,10 +459,13 @@ class ImageDisplayWindow(QMainWindow):
             # 收集锚点ROI
             if hasattr(canvas, 'anchor_pos') and canvas.anchor_pos:
                 x, y = canvas.anchor_pos
-                info['ROIs'].append({
+                anchor_dict = {
                     'type': 'anchor',
                     'position': (x, y)
-                })
+                }
+                if canvas.anchor_mask is not None:
+                    anchor_dict['anchor_mask'] = np.count_nonzero(canvas.anchor_mask)
+                info['ROIs'].append(anchor_dict)
 
             # 收集像素ROI
             if hasattr(canvas, 'draw_roi') and np.any(canvas.draw_roi):
@@ -482,7 +487,7 @@ class ImageDisplayWindow(QMainWindow):
             QMessageBox.warning(self, "图像错误", "当前没有显示任何图像画布")
             return
 
-        dialog = ROIInfoDialog(self)
+        dialog = ROIInfoDialog(self.get_all_canvas_info(), parent=self)
         if dialog.exec_():
             aim_id = dialog.canvas_id
             if dialog.roi_type == 'pixel_roi':
@@ -563,7 +568,7 @@ class SubImageDisplayWidget(QDockWidget):
     mouse_clicked_signal = pyqtSignal(int, int, int)
     current_canvas_signal = pyqtSignal(int)
     draw_result_signal = pyqtSignal(str,int,object,dict)
-    plot_series_signal = pyqtSignal(int, int, int, np.ndarray, str)
+    get_fast_selection = pyqtSignal(object, np.ndarray, str, str)
     def __init__(self, parent=None,canvas_id = None,name = None, data :ImagingData = None, args_dict :dict = None):
         super().__init__(name, parent)
         self.parent_window = parent
@@ -605,6 +610,7 @@ class SubImageDisplayWidget(QDockWidget):
         self.anchor_active = False
         self.anchor_item = None  # 存储十字标图形项
         self.anchor_pos = None  # 存储十字标位置
+        self.anchor_mask = None # 存储光标蒙版
         self.line_item = None  # 向量线模版
         self.vector_line = None # 向量线item
 
@@ -677,7 +683,7 @@ class SubImageDisplayWidget(QDockWidget):
         # self.time_slider = QSlider(Qt.Horizontal)
         # self.time_slider.setMinimum(0)
         # self.time_slider.setMaximum(self.max_time_idx-1)
-        self.time_slider = AdvancedTimeline(total_frames=self.max_time_idx,fps=self.data.fps)
+        self.time_slider = AdvancedTimeline(total_frames=self.max_time_idx,fps=self.data.fps,time_point=self.data.time_point)
         self.time_slider.rightClicked.connect(self.on_timeline_right_click)
         self.time_label = QLabel(f"{self.current_time_idx}/{self.max_time_idx-1}")
         slider_layout.addWidget(self.start_button)
@@ -795,6 +801,8 @@ class SubImageDisplayWidget(QDockWidget):
                 self.scene.removeItem(item)
             self.anchor_item = None
             self.anchor_pos = None
+        if self.anchor_mask is not None:
+            self.anchor_mask = None
 
     def clear_vector_line(self):
         """清除当前矢量直线"""
@@ -906,6 +914,7 @@ class SubImageDisplayWidget(QDockWidget):
                 h, w = self.current_image.shape[0],self.current_image.shape[1]
 
                 if 0 <= x < w and 0 <= y < h:
+                    self.current_canvas_signal.emit(self.id)  # 改为只有当绘图操作时才更新cursor
                     # 清除现有十字标
                     self.clear_anchor()
                     if self.args_dict['anchor_select']:
@@ -941,13 +950,14 @@ class SubImageDisplayWidget(QDockWidget):
 
                     if self.anchor_active and self.data.is_temporary and self.args_dict['anchor_select']:
                         # anchor模式下取值快速绘图
-                        mask = PublicEasyMethod.quick_mask(self.data.framesize,
+                        self.anchor_mask = PublicEasyMethod.quick_mask(self.data.framesize,
                                                                                 shape= self.args_dict['anchor_shape'],
                                                                                 size=self.args_dict['anchor_size'],
                                                                                 center = (y_int,x_int))
-                        self.add_fast_selection(x_int,y_int,mask)
-                        self.get_fast_selection(mask)
-                        logging.info(f'取{x, y}的{self.args_dict['anchor_method']}绘图完成')
+                        self.add_fast_selection(x_int,y_int,self.anchor_mask)
+                        method = self.args_dict['anchor_method']
+                        self.get_fast_selection.emit(self.data,self.anchor_mask, method , f'canvas{self.id}-({x_int},{y_int}){method}')
+                        logging.info(f'取{x, y}的{self.args_dict['anchor_method']}绘图')
                     return
 
             else: # 无工具选中的纯单机模式
@@ -956,6 +966,7 @@ class SubImageDisplayWidget(QDockWidget):
                 h, w = self.current_image.shape[0],self.current_image.shape[1]
                 if 0 <= x < w and 0 <= y < h:
                     self.mouse_clicked_signal.emit(x, y,self.id)
+                    self.current_canvas_signal.emit(self.id)  # 改为只有当绘图操作时才更新cursor
 
         super(QGraphicsView, self.graphics_view).mousePressEvent(event)
 
@@ -987,7 +998,6 @@ class SubImageDisplayWidget(QDockWidget):
             self.mouse_pos = (self.x_img, self.y_img)
             if not self.anchor_active:
                 self.get_value(self.y_img, self.x_img)
-                self.current_canvas_signal.emit(self.id)
 
         # 绘图模式
         if self.drawing and self.drawing_tool != 'Anchor':
@@ -1073,6 +1083,7 @@ class SubImageDisplayWidget(QDockWidget):
                 self.top_pixmap = self.temp_pixmap
                 self.draw_layer.setPixmap(self.top_pixmap)
                 self.update_draw_layer_array() # 仅在绘制像素时储存
+            self.current_canvas_signal.emit(self.id) # 改为只有当绘图操作时才更新cursor
 
         super(QGraphicsView, self.graphics_view).mouseReleaseEvent(event)
 
@@ -1280,11 +1291,10 @@ class SubImageDisplayWidget(QDockWidget):
             strong_crop_action.triggered.connect(self.crop_data)
             menu.addAction(strong_crop_action)
         else:
-            # 如果没点在选区里，可以显示一些通用功能
-            return
-            reset_zoom_action = QAction("重置视图", self)
-            reset_zoom_action.triggered.connect(lambda: self.time_slider.reset_view())  # 假设你在Timeline里写了这个方法
-            menu.addAction(reset_zoom_action)
+            # 视频数据参数编辑
+            reset_params = QAction("重设参数", self)
+            reset_params.triggered.connect(self.reset_params)
+            menu.addAction(reset_params)
 
         # 2. 弹出菜单
         menu.exec_(global_pos)
@@ -1373,6 +1383,15 @@ class SubImageDisplayWidget(QDockWidget):
                 except Exception as e:
                     QMessageBox.critical(self, "错误", f"裁剪失败: {str(e)}")
 
+    def reset_params(self):
+        """重置核心参数"""
+        data = self.data.parent_data()
+        self.dialog = ParamsResetDialog(data, image_data=self.data)
+        self.dialog.updata_param_signal.connect(self.parent_window.parent.update_param) # 这个适合父类调用吧
+        self.dialog.show()
+        self.dialog.raise_()
+        self.dialog.accepted.connect(self.reset_from_params)
+
     def refresh_trimmed_image(self):
         """数据改变后刷新整个界面"""
         # 1. 更新最大帧数记录
@@ -1386,6 +1405,12 @@ class SubImageDisplayWidget(QDockWidget):
         self.time_label.setText(f"0/{self.max_time_idx - 1}")
 
         # 4. 刷新图像显示
+        self.update_time_slice(0)
+
+    def reset_from_params(self):
+        """参数更新后对全局的修改"""
+        self.current_time_idx = 0
+        self.time_slider.set_fps(self.data.fps)
         self.update_time_slice(0)
 
     def display_image(self):
@@ -1536,55 +1561,6 @@ class SubImageDisplayWidget(QDockWidget):
             self.max_label = self.scene.addText(f"max={self.max_value:.1f}",font=font)
             self.max_label.setPos(w_point + width-8, h_point -5-size)
             self.max_label.setDefaultTextColor(Qt.black)
-
-    def get_fast_selection(self,mask):
-        """本函数是获取快速选取数据并发射的函数"""
-        aim_data = self.data.image_backup.copy()
-        T, H, W = aim_data.shape
-        mask_flat = mask.reshape(-1)
-        method = self.args_dict['anchor_method']
-
-        # 获取蒙版内的索引
-        mask_indices = np.where(mask_flat)[0]
-
-        # 重塑数据以便于提取蒙版区域
-        data_reshaped = aim_data.reshape(T, -1)
-
-        # 提取蒙版内的数据
-        masked_data = data_reshaped[:, mask_indices]
-
-        # 根据不同的统计方法计算结果
-        result = np.zeros(T, dtype=aim_data.dtype)
-
-        for t in range(T):
-            frame_data = masked_data[t, :]
-
-            if len(frame_data) == 0:
-                result[t] = np.nan
-                continue
-
-            if method == 'mean':
-                result[t] = np.mean(frame_data)
-            elif method == 'max':
-                result[t] = np.max(frame_data)
-            elif method == 'min':
-                result[t] = np.min(frame_data)
-            elif method == 'median':
-                result[t] = np.median(frame_data)
-            elif method == 'quantile_075':
-                result[t] = np.quantile(frame_data, 0.75)
-            elif method == 'std':
-                result[t] = np.std(frame_data)
-            elif method == 'sum':
-                result[t] = np.sum(frame_data)
-            elif method == 'var':
-                result[t] = np.var(frame_data)
-            else:
-                raise ValueError(f"不支持的统计方法: {method}。"
-                                 f"支持的方法: mean, max, min, median, quantile_075, std, sum, var")
-
-        plot_data = np.column_stack((self.data.time_point, result))
-        self.plot_series_signal.emit(self.id, self.x_img, self.y_img, plot_data, method)
 
     def add_fast_selection(self, y: int, x: int, mask: np.ndarray, color=None, auto_clear=True):
         """
@@ -1881,7 +1857,7 @@ class AnchorSelectDialog(QDialog):
         self.region_shape_combo.setCurrentIndex(self.shape_items.index(self.param["anchor_shape"]))
         self.region_size_input = QSpinBox()
         self.region_size_input.setMinimum(1)
-        self.region_size_input.setMaximum(50)
+        self.region_size_input.setMaximum(1000)
         self.region_size_input.setValue(self.param['anchor_size'])
 
         shape_layout = QHBoxLayout()

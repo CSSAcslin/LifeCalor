@@ -77,9 +77,8 @@ class PlotGraphWidget(QWidget):
         """很简单的一个解包函数"""
         self.plot_data(data,**dict)
 
-    def handle_from_image(self,id,x,y,data,method):
+    def handle_from_image(self,data, name):
         """从图像直接获取的数据"""
-        name = f'canvas{id}-({x},{y}){method}'
         self.plot_data(data, name = name)
 
     def plot_data(self, array:np.ndarray, **kwargs):

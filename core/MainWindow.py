@@ -54,13 +54,13 @@ class MainWindow(QMainWindow):
     sscs_signal = pyqtSignal(object, int, float, bool)
     tDFT_signal = pyqtSignal(object)
     heartbeat_signal = pyqtSignal(object, int, int ,list, str, str)
-    easy_process = pyqtSignal(object, str)
+    easy_process = pyqtSignal(object, str, object)
     roi_processed_signal = pyqtSignal(object,np.ndarray,float,bool,bool,float)
 
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "0.12.2"  # 当前程序版本
+        self.current_version = "0.12.3"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = "Bearer <your PAT>"
@@ -73,7 +73,6 @@ class MainWindow(QMainWindow):
         self.time_points = None
         self.time_step = 1.0
         self.space_step = 1.0
-        self.bool_mask = None
         self.idx = None
         self.vector_array = None
         self.focus_canvas = None
@@ -105,6 +104,8 @@ class MainWindow(QMainWindow):
         self.data_thread_open()
         self.data_thread.start()
         self.process_thread.start()
+        self.cal_thread_open()
+        self.EM_thread_open()
         self.log_startup_message()
 
     """参数配置相关功能"""
@@ -461,8 +462,8 @@ class MainWindow(QMainWindow):
         space_step_layout.addWidget(QLabel("空间单位:"))
         self.space_step_input = QDoubleSpinBox()
         self.space_step_input.setMinimum(0.001)
-        self.space_step_input.setValue(self.basic_params['space_step'])
         self.space_step_input.setDecimals(3)
+        self.space_step_input.setValue(self.basic_params['space_step'])
         self.space_step_input.valueChanged.connect(
             lambda: self.update_param('basic', 'space_step', self.space_step_input.value()))
         space_step_layout.addWidget(self.space_step_input)
@@ -838,7 +839,7 @@ class MainWindow(QMainWindow):
         # self.retransform_input.setPlaceholderText("频率范围设定")
         # self.retransform_input.setFixedHeight(30)
         # self.retransform_btn = QPushButton("重设频率范围的变换")
-        self.roi_signal_btn = QPushButton("选区信号均值变化")
+        self.roi_signal_btn = QPushButton("选区信号均值变化(快速选择ROI)")
         # whole_cell_layout.addWidget(self.retransform_input)
         # whole_cell_layout.addWidget(self.retransform_btn)
         whole_cell_layout.addWidget(self.roi_signal_btn)
@@ -901,24 +902,18 @@ class MainWindow(QMainWindow):
         if self.fuction_select.currentIndex() == 1:  # FS-iSCAT & PA
             self.between_stack.setCurrentIndex(1)
             self.FS_mode_combo.setCurrentIndex(1)
-            self.cal_thread_open()
-            self.stop_thread(type=1)
             self.update_status('准备就绪')
             self.fps_input.setEnabled(False)
             self.time_step_input.setEnabled(True)
             self.time_unit_combo.setEnabled(True)
         if self.fuction_select.currentIndex() == 2:  # ES-iSCAT
             self.between_stack.setCurrentIndex(2)
-            self.EM_thread_open()
-            self.stop_thread(type=0)
             self.update_status('准备就绪')
             self.fps_input.setEnabled(True)
             self.time_step_input.setEnabled(False)
             self.time_unit_combo.setEnabled(False)
         if self.fuction_select.currentIndex() == 3:
             self.between_stack.setCurrentIndex(3)
-            self.cal_thread_open()
-            self.EM_thread_open()
             self.update_status('准备就绪')
 
     def mode_switch_change(self, mode:int):
@@ -1269,6 +1264,7 @@ class MainWindow(QMainWindow):
         self.detect_bad_frames_auto_signal.connect(self.proc_thread.detect_bad_frames_auto)
         self.fix_bad_frames_signal.connect(self.proc_thread.fix_bad_frames)
         self.proc_thread.plot_singal.connect(self.graph_plot.handle_plot_signal)
+        self.proc_thread.plot_series_signal.connect(self.graph_plot.handle_from_image)
 
     def cal_thread_open(self):
         """计算线程相关 以及信号槽连接都放在这里了"""
@@ -1282,7 +1278,7 @@ class MainWindow(QMainWindow):
         self.start_dif_cal_signal.connect(self.cal_thread.diffusion_calculation)
         self.cal_thread.calculating_progress_signal.connect(self.update_progress)
         self.cal_thread.processed_result.connect(self.processed_result)
-        self.cal_thread.stop_thread_signal.connect(self.stop_thread)
+        # self.cal_thread.stop_thread_signal.connect(self.stop_thread)
         self.cal_thread.cal_running_status.connect(self.btn_safety)
         self.cal_thread.update_status.connect(self.update_status)
         self.easy_process.connect(self.cal_thread.easy_process)
@@ -1371,7 +1367,7 @@ class MainWindow(QMainWindow):
             canvas.mouse_clicked_signal.connect(self._handle_click)
             canvas.current_canvas_signal.connect(self.image_display.set_cursor_id)
             canvas.draw_result_signal.connect(self.draw_result)
-            canvas.plot_series_signal.connect(self.graph_plot.handle_from_image)
+            canvas.get_fast_selection.connect(self.proc_thread.get_fast_selection)
             self.roi_pick.addItem(canvas.windowTitle())
 
     '''上面是初始化预设，下面是功能响应'''
@@ -1671,7 +1667,7 @@ class MainWindow(QMainWindow):
             logging.warning("无数据，请先加载数据文件")
             return
         self.update_status("计算设置ing", 'working')
-        dialog = CalculationSetDialog(self.cal_set_params)
+        dialog = CalculationSetDialog(self.cal_set_params, parent=self)
         if dialog.exec_():
             # self.time_label.setText(self.image_display.update_time_slice(0))
             # self.time_slider.setValue(0)
@@ -1685,7 +1681,7 @@ class MainWindow(QMainWindow):
 
     def plt_settings_edit_dialog(self):
         """绘图设置"""
-        dialog = PltSettingsDialog(params=self.plot_params)
+        dialog = PltSettingsDialog(params=self.plot_params, parent=self)
         self.update_status("绘图设置ing", 'working')
         if dialog.exec_():
             # 将参数传递给ResultDisplayWidget
@@ -1748,7 +1744,7 @@ class MainWindow(QMainWindow):
 
         # self.console_widget.update_progress(current, total)
 
-        if current == 1:
+        if current == 0: # 我老是忘记到底是1启动还是0启动，干脆兼容吧， 还得是0
             self.start_calculation() # 启动计时器
         elif current >= self.progress_bar.maximum():
             logging.info(f"计算完成，总耗时{elapsed_str}")
@@ -2095,8 +2091,8 @@ class MainWindow(QMainWindow):
 
     def roi_signal_avg(self):
         """计算选区信号平均值并显示"""
-        if not hasattr(self,"bool_mask") or self.bool_mask is None:
-            QMessageBox.warning(self,"警告","请先绘制ROI")
+        mask = self.roi_selection()
+        if mask is None:
             return
         data = self.data_selection(['ROI_stft', 'ROI_cwt'])
         if data is not None:
@@ -2105,21 +2101,16 @@ class MainWindow(QMainWindow):
             logging.warning("无变换后数据，请先处理数据")
             return
 
-        mask = self.bool_mask
         if mask.dtype == bool:
-            EM_masked = np.where(mask[np.newaxis,:,:],data.data_processed,0)
-
-            total_valid_pixels = np.sum(mask)
-            if total_valid_pixels == 0:
-                QMessageBox.warning(self, "蒙版错误", "布尔蒙版中没有True像素")
+            if mask.shape != data.framesize:
+                QMessageBox.warning(self, "蒙版错误", "蒙版尺寸与数据不匹配")
                 return
-            # 计算每个时间点上的平均值
-            average_series = np.sum(EM_masked, axis=(1, 2)) / total_valid_pixels
+            if not self.calc_thread.isRunning():
+                self.calc_thread.start()
+            self.update_status('计算进行中...', 'working')
+            self.easy_process.emit(data,'avg',mask)
         else:
             raise TypeError(f"不支持的蒙版类型: {mask.dtype}")
-
-        # self.data['EM_masked'] = EM_masked
-        self.result_display.plot_time_series(data.time_point , average_series)
 
     def process_signal_avg(self):
         """广义信号平均"""
@@ -2131,7 +2122,7 @@ class MainWindow(QMainWindow):
         if not self.calc_thread.isRunning():
             self.calc_thread.start()
         self.update_status('计算进行中...', 'working')
-        self.easy_process.emit(aim_data,'avg')
+        self.easy_process.emit(aim_data,'avg',None)
         return None
 
     def process_atam(self):
@@ -2244,7 +2235,7 @@ class MainWindow(QMainWindow):
         return True
 
     def data_selection(self, aim_type:str | list = 'all'):
-        """数据选择代码"""
+        """数据选择代码（模式流程）"""
         aim_data = None
         if self.data is None and self.processed_data is None:
             logging.warning("无数据可处理，请先加载数据")
@@ -2253,10 +2244,12 @@ class MainWindow(QMainWindow):
             case 0:
                 if aim_type == 'data':
                     aim_data = self.data
-                elif aim_type == 'processed':
-                    aim_data = self.processed_data
                 elif aim_type == 'all':
                     aim_data = self.data_pick()
+                elif self.processed_data is None:
+                    return None
+                elif aim_type == 'processed':
+                    aim_data = self.processed_data
                 elif self.processed_data.type_processed in aim_type:
                     aim_data = self.processed_data
                 else:
@@ -2275,11 +2268,36 @@ class MainWindow(QMainWindow):
                 aim_data = self.data_pick()
         return aim_data
 
+    def roi_selection(self):
+        """ROI选择"""
+        mask = None
+        match self.mode:
+            case 0 | 1:
+                mask = self.image_display.get_draw_roi()[1]
+                if mask is None:
+                    logging.warning("选中画布没有绘制有效的ROI")
+                    return None
+            case 2:
+                dialog = ROIInfoDialog(self.image_display.get_all_canvas_info(), self)
+                if dialog.exec_():
+                    aim_id = dialog.canvas_id
+                    if dialog.roi_type == 'pixel_roi':
+                        mask = self.draw_result('pixel_roi', aim_id, self.image_display.get_draw_roi(aim_id), dialog.selected_roi_info)
+                    elif dialog.roi_type == 'v_line':
+                        QMessageBox.warning(self,"警告","不支持该类型")
+                        return None
+                    elif dialog.roi_type == 'v_rect':
+                        mask = self.draw_result('v_rect', aim_id, self.image_display.display_canvas[aim_id].v_rect_roi,
+                                                     dialog.selected_roi_info)
+                    else:
+                        return None
+        return mask
+
     def data_pick(self, need_all=True):
-        """数据选择代码"""
+        """数据选择"""
         dialog = DataViewAndSelectPop(datadict=self.get_data_all(),
                                       processed_datadict=self.get_processed_data_all(),
-                                      add_canvas=False)
+                                      add_canvas=False, parent=self)
         aim_data = None
         if dialog.exec_():
             selected_timestamp, selected_table = dialog.get_selected_timestamp()
@@ -2372,7 +2390,8 @@ class MainWindow(QMainWindow):
             case '2D_Fourier_transform':
                 pass
             case 'signal_average':
-                # self.result_display.display_lifetime_curve(self.processed_data, self.time_unit_combo.currentText())
+                self.result_display.plot_time_series(data.time_point, data.data_processed[:,1])
+                self.graph_plot.plot_data(data.data_processed, name = data.name)
                 pass
             case 'Roi_applied':
                 logging.info("ROI应用完成")
@@ -2386,6 +2405,7 @@ class MainWindow(QMainWindow):
         timestamp = self.image_display.display_canvas[canvas_id].data.timestamp_inherited
         draw_data = None
         data_type = None
+        bool_mask = None
         if self.data is not None:
             for data in self.data.history:
                 if data.timestamp == timestamp:
@@ -2402,11 +2422,12 @@ class MainWindow(QMainWindow):
             if draw_type == "v_rect":
                 x,y,w,h = result[0][0],result[0][1],result[1],result[2]
                 if w == 0 or h == 0:
-                    return
+                    return None
+                else:
+                    bool_mask = np.zeros(draw_data.framesize, dtype=bool)
+                    bool_mask[y:y + h, x:x + w] = True
                 if crop_roi:
-                    self.bool_mask = np.zeros(draw_data.framesize, dtype=bool)
-                    self.bool_mask[y:y+h, x:x+w] = True
-                    self.roi_processed_signal.emit(draw_data, self.bool_mask, dialog.reset_value.value(), crop_roi, dialog.zoom_check.isChecked(), dialog.zoom_factor.value())
+                    self.roi_processed_signal.emit(draw_data, bool_mask, dialog.reset_value.value(), crop_roi, dialog.zoom_check.isChecked(), dialog.zoom_factor.value())
                 if dialog.fast_check.isChecked():
                     if hasattr(draw_data,'type_processed') and draw_data.type_processed == 'Accumulated_time_amplitude_map':
                         try:
@@ -2420,7 +2441,6 @@ class MainWindow(QMainWindow):
                         else:
                             logging.error("roi应用错误（不可能错误）")
                             roi_data = None
-
                         self.processed_data = ProcessedData(draw_data.timestamp,
                                                         f"{draw_data.name}@ROIed",
                                                         "Roi_applied",
@@ -2428,13 +2448,15 @@ class MainWindow(QMainWindow):
                                                         data_processed=roi_data,
                                                         out_processed=draw_data.out_processed,
                                                         ROI_applied=True)
+                return bool_mask
             elif draw_type == "v_line":
                 self.vector_array = result.getPixelValues(draw_data, self.space_step, self.time_step)
             elif draw_type == "pixel_roi":
-                self.bool_mask = result[1]
+                bool_mask = result[1]
                 if dialog.inverse_check.isChecked():
-                    self.bool_mask = ~self.bool_mask
-                self.roi_processed_signal.emit(draw_data, self.bool_mask, dialog.reset_value.value(),crop_roi, dialog.zoom_check.isChecked(), dialog.zoom_factor.value())
+                    bool_mask = ~bool_mask
+                self.roi_processed_signal.emit(draw_data, bool_mask, dialog.reset_value.value(),crop_roi, dialog.zoom_check.isChecked(), dialog.zoom_factor.value())
+                return bool_mask
             logging.info("ROI已确认选取")
 
     def fast_roi_result(self):
@@ -2613,13 +2635,13 @@ class MainWindow(QMainWindow):
         """时频变换后目标频率下的结果导出"""
         if self.processed_data is not None:
             if self.processed_data.type_processed == 'ROI_stft' or 'ROI_cwt':
-                dialog = DataExportDialog()
+                dialog = DataExportDialog(datatypes=['tif','avi','gif','png'])
                 if dialog.exec_():
                     directory = dialog.directory
                     prefix = dialog.text_edit.text().strip()
                     filetype = dialog.type_combo.currentText()
                     duration = dialog.duration_input.value()
-                    self.mass_export_signal.emit(self.processed_data.data_processed,directory,prefix,filetype,False,
+                    self.mass_export_signal.emit(self.processed_data.data_processed,directory,prefix,filetype,True,
                                                  {'duration':duration})
                 return
             else:

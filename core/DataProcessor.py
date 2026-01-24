@@ -95,6 +95,7 @@ def _stft_worker_process(
 class DataProcessor(QObject):
     """本类包含所有非计算流程的操作（常开线程）"""
     plot_singal = pyqtSignal(np.ndarray,dict)
+    plot_series_signal = pyqtSignal(np.ndarray, str)
     def __init__(self):
         super().__init__()
         logging.info("例外数据处理线程已启动")
@@ -251,6 +252,55 @@ class DataProcessor(QObject):
         result = np.column_stack((serial_numbers, data))
 
         return result
+
+    @pyqtSlot(object, np.ndarray, str, str)
+    def get_fast_selection(self,data, mask, method:str, name:str):
+        """本函数是获取快速选取数据并发射的函数"""
+        aim_data = data.image_backup.copy()
+        T, H, W = aim_data.shape
+        mask_flat = mask.reshape(-1)
+
+        # 获取蒙版内的索引
+        mask_indices = np.where(mask_flat)[0]
+
+        # 重塑数据以便于提取蒙版区域
+        data_reshaped = aim_data.reshape(T, -1)
+
+        # 提取蒙版内的数据
+        masked_data = data_reshaped[:, mask_indices]
+
+        # 根据不同的统计方法计算结果
+        result = np.zeros(T, dtype=aim_data.dtype)
+
+        for t in range(T):
+            frame_data = masked_data[t, :]
+
+            if len(frame_data) == 0:
+                result[t] = np.nan
+                continue
+
+            if method == 'mean':
+                result[t] = np.mean(frame_data)
+            elif method == 'max':
+                result[t] = np.max(frame_data)
+            elif method == 'min':
+                result[t] = np.min(frame_data)
+            elif method == 'median':
+                result[t] = np.median(frame_data)
+            elif method == 'quantile_075':
+                result[t] = np.quantile(frame_data, 0.75)
+            elif method == 'std':
+                result[t] = np.std(frame_data)
+            elif method == 'sum':
+                result[t] = np.sum(frame_data)
+            elif method == 'var':
+                result[t] = np.var(frame_data)
+            else:
+                raise ValueError(f"不支持的统计方法: {method}。"
+                                 f"支持的方法: mean, max, min, median, quantile_075, std, sum, var")
+
+        plot_data = np.column_stack((data.time_point, result))
+        self.plot_series_signal.emit(plot_data, name)
 
 
 class MassDataProcessor(QObject):
@@ -629,7 +679,7 @@ class MassDataProcessor(QObject):
 
                 total_pixels = unfolded_data.shape[0]
                 nfft = max(custom_nfft, window_size)
-                self.processing_progress_signal.emit(1, total_pixels)
+                self.processing_progress_signal.emit(0, total_pixels)
 
                 # 4. 初始化结果数组
                 height, width = frame_size
@@ -689,6 +739,7 @@ class MassDataProcessor(QObject):
                                                                                   **{k:data.out_processed.get(k)
                                                                                      for k in data.out_processed if k not in {"unfolded_data"}},
                                                                                   **data.parameters}))
+                self.processing_progress_signal.emit(total_pixels, total_pixels)
                 return True
             except Exception as e:
                 self.processed_result.emit({'type': "ROI_stft", 'error': str(e)})
@@ -788,13 +839,13 @@ class MassDataProcessor(QObject):
             scales = pywt.frequency2scale(wavelet, target_freqs * 1.0 / fps)
             total_frames = unfolded_data.shape[1]
             total_pixels = unfolded_data.shape[0]
-            self.processing_progress_signal.emit(1, total_pixels)
+            self.processing_progress_signal.emit(0, total_pixels)
             # 初始化结果数组
             height, width = frame_size
             cwt_py_out = np.zeros((data.timelength, height, width), dtype=np.float32)
 
             # 5. 逐像素STFT处理
-            self.processing_progress_signal.emit(2, total_pixels)
+            self.processing_progress_signal.emit(1, total_pixels)
 
             mid_idx = totalscales // 8
 
@@ -848,7 +899,7 @@ class MassDataProcessor(QObject):
         self.processed_result.emit(ProcessedData(data.timestamp,
                                          f'{data.name}@atam',
                                          "Accumulated_time_amplitude_map",
-                                         time_point=np.array([0]),
+                                         time_point=data.time_point, # 忘记为什么0.12.1要改这个了，改这个就没法处理单通道了
                                          data_processed=np.mean(data.data_processed if isinstance(data,ProcessedData) else data.data_origin, axis=0),
                                          out_processed={**data.out_processed}
                                                              ))
@@ -1056,9 +1107,9 @@ class MassDataProcessor(QObject):
             phase_spectra: 傅里叶相位谱数组
             """
         if isinstance(data, ProcessedData):
-            data = data.data_processed
+            pure_data = data.data_processed
         else:
-            data = data.data_origin
+            pure_data = data.data_origin
             pass
         try:
             if data.timelength == 1:
@@ -1069,10 +1120,10 @@ class MassDataProcessor(QObject):
             magnitude_spectra = np.zeros((frames, height, width))
             magnitude_log = np.zeros((frames, height, width))
             phase_spectra = np.zeros((frames, height, width))
-            self.processing_progress_signal.emit(1,frames)
+            self.processing_progress_signal.emit(0,frames)
             for i in range(frames):
                 # 2D傅里叶变换
-                f = np.fft.fft2(data[i])
+                f = np.fft.fft2(pure_data[i])
                 fshift = np.fft.fftshift(f)  # 将低频移到中心
 
                 # 幅度谱
@@ -1092,7 +1143,7 @@ class MassDataProcessor(QObject):
                                        out_processed={'twoD_FFT':np.squeeze(fshift),
                                                       'magnitude_spectra': np.squeeze(magnitude_spectra),
                                                       'phase_spectra': np.squeeze(phase_spectra),**data.out_processed}))
-            self.processing_progress_signal.emit(frames +1, frames)
+            self.processing_progress_signal.emit(frames, frames)
             return True
         except Exception as e:
             self.processed_result.emit({'type': "2D_Fourier_transform", 'error': str(e)})

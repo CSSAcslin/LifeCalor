@@ -104,29 +104,29 @@ class DataManager(QObject):
             format_type: 导出格式 ('tif', 'avi', 'png', 'gif')
         """
         format_type = format_type.lower()
-        arg_dict = arg_dict or {}  # 如果arg_dict为None，设为空字典 ，学学，这get多优雅
+        arg_dict = arg_dict or {}  # 如果arg_dict为None，设为空字典 ，学学，这get多优雅. 其实直接可以初始化为{} 留着做教训吧
         duration = arg_dict.get('duration', 60)
         cmap = arg_dict.get('cmap', 'jet')
         max_bound = arg_dict.get('max_bound', 255)
         min_bound = arg_dict.get('min_bound', 0)
         title = arg_dict.get('title', '')
         colorbar_label = arg_dict.get('colorbar_label', '')
+        if isinstance(data, np.ndarray):
+            result = data.copy()
+        else:
+            result = data.image_data
 
         # 根据格式类型调用不同的导出函数
         if format_type == 'tif':
-            result = data.image_data
             return self.export_as_tif(result, output_dir, prefix, is_temporal)
         elif format_type == 'avi':
-            result = data.image_data
             return self.export_as_avi(result, output_dir, prefix, duration)
         elif format_type == 'png':
-            result = data.image_data
             return self.export_as_png(result, output_dir, prefix, is_temporal)
         elif format_type == 'gif':
-            result = data.image_data
             return self.export_as_gif(result, output_dir, prefix, duration)
         elif format_type == 'plt':
-            result = data.image_backup
+            result = data.image_backup # 只有成像数据会走到这一步
             return self.export_as_plt(result, output_dir, prefix, is_temporal, cmap, max_bound, min_bound, title,
                                       colorbar_label)
         else:
@@ -520,7 +520,7 @@ class Data:
     time_point: np.ndarray
     format_import: str
     image_import: np.ndarray
-    parameters: dict = None
+    parameters: dict = field(default_factory=dict)
     name: str = None
     out_processed : dict = field(init=False,default_factory=dict)
     timestamp: float = field(init=False, default_factory=time.time)
@@ -559,6 +559,51 @@ class Data:
 
     def get_data_median(self):
         return np.median(self.data_origin)
+
+    def update_params(self, **kwargs):
+        """
+        更新参数并根据物理量变化自动调整相关数据（如时间轴）
+        :param kwargs:包含 fps, time_step, time_unit, space_step, space_unit 等
+        :return: 实际发生变更的参数键列表
+        """
+        updated_keys = []
+
+        # 1. 处理 FPS 变更导致的时间轴缩放
+        if 'fps' in kwargs:
+            new_fps = kwargs['fps']
+            old_fps = self.parameters.get('fps')
+            # 只有当新旧FPS都有效且不相等时才计算
+            if new_fps is not None and old_fps is not None and old_fps != 0 and new_fps != old_fps:
+                if self.time_point is not None:
+                    # 公式：新时间 = 旧时间 * (旧FPS / 新FPS)
+                    self.time_point = self.time_point * (old_fps / new_fps)
+            self.parameters['fps'] = new_fps
+            updated_keys.append('fps')
+
+        # 2. 处理 Time Step 变更导致的时间轴缩放
+        if 'time_step' in kwargs:
+            new_step = kwargs['time_step']
+            old_step = self.parameters.get('time_step')
+            if new_step is not None and old_step is not None and old_step != 0 and new_step != old_step:
+                if self.time_point is not None:
+                    # 公式：新时间 = 旧时间 * (新步长 / 旧步长)
+                    # 注意：原代码逻辑为 self.data.time_point / old * new
+                    self.time_point = self.time_point * (new_step / old_step)
+            self.parameters['time_step'] = new_step
+            updated_keys.append('time_step')
+
+        # 3. 处理其他通用参数 (time_unit, space_step, space_unit 等)
+        for key, value in kwargs.items():
+            if key not in ['fps', 'time_step']:  # 已经处理过的跳过
+                if self.parameters.get(key) != value:
+                    self.parameters[key] = value
+                    updated_keys.append(key)
+
+        # 更新历史记录
+        if updated_keys:
+            self._update_history()
+
+        return updated_keys
 
     def update_data(self, **kwargs):
         """数据更新（目前仅仅坏点修复需要）"""
@@ -789,14 +834,19 @@ class ProcessedData:
     type_processed: str
     time_point: np.ndarray = None
     data_processed: np.ndarray = None
-    out_processed: dict = None
+    out_processed: dict = field(default_factory=dict)
     parameters: dict = field(init=False, default_factory=dict)
     timestamp: float = field(init=False, default_factory=time.time)
     ROI_applied: bool = False
     ROI_mask: np.ndarray = None
+    serial_number: int = field(init=False)
+    _counter: int = field(init=False, repr=False, default=0)
     history: ClassVar[deque] = deque(maxlen=30)
 
     def __post_init__(self):
+        Data._counter += 1
+        self.serial_number = Data._counter  # 生成序号
+
         if self.data_processed is not None:
             self.datashape = self.data_processed.shape if self.data_processed is not None else None
             self.timelength = self.datashape[0] if self.data_processed.ndim == 3 else 1  # 默认不存在单像素点数据
@@ -812,8 +862,49 @@ class ProcessedData:
             self.datamean = self.data_processed.mean()
             self.ndim = self.data_processed.ndim
 
+        # 加序列号
+        self.name = f"{self.name}-{self.serial_number}"
         # 添加到历史记录
         ProcessedData.history.append(copy.deepcopy(self))
+
+    def update_params(self, **kwargs):
+        """
+        更新 out_processed 中的参数
+        """
+        updated_keys = []
+
+        # 1. 处理 FPS
+        if 'fps' in kwargs:
+            new_fps = kwargs['fps']
+            old_fps = self.out_processed.get('fps')
+            if new_fps is not None and old_fps is not None and old_fps != 0 and new_fps != old_fps:
+                if self.time_point is not None:
+                    self.time_point = self.time_point * (old_fps / new_fps)
+            self.out_processed['fps'] = new_fps
+            updated_keys.append('fps')
+
+        # 2. 处理 Time Step
+        if 'time_step' in kwargs:
+            new_step = kwargs['time_step']
+            old_step = self.out_processed.get('time_step')
+            if new_step is not None and old_step is not None and old_step != 0 and new_step != old_step:
+                if self.time_point is not None:
+                    self.time_point = self.time_point * (new_step / old_step)
+            self.out_processed['time_step'] = new_step
+            updated_keys.append('time_step')
+
+        # 3. 其他参数
+        for key, value in kwargs.items():
+            if key not in ['fps', 'time_step']:
+                if self.out_processed.get(key) != value:
+                    self.out_processed[key] = value
+                    updated_keys.append(key)
+
+        # 更新历史
+        if updated_keys:
+            self._update_history()
+
+        return updated_keys
 
     def apply_ROI(self, mask: np.ndarray):
         """设置 ROI 蒙版"""
@@ -879,6 +970,16 @@ class ProcessedData:
         history_list = list(cls.history)
         history_list.reverse()
         return history_list
+
+    def _update_history(self):
+        """更新历史记录中的当前实例"""
+        # 查找历史记录中的当前实例
+        for i, record in enumerate(ProcessedData.history):
+            if record.serial_number == self.serial_number:
+                # 更新历史记录中的实例
+                ProcessedData.history[i] = copy.deepcopy(self)
+                break
+        return None
 
     def trim_time(self, start_idx: int, end_idx: int):
         """
@@ -992,7 +1093,8 @@ class ImagingData:
     """
     图像显示类型
     :cvar timestamp_inherited:
-    :cvar image_backup
+    :cvar image_backup:
+    :cvar image
     """
     timestamp_inherited: float
     image_backup: np.ndarray = None  # 原始数据
@@ -1003,6 +1105,7 @@ class ImagingData:
     fps: int = field(default=None)
     is_temporary: bool = field(init=False, default=False)
     time_point: np.ndarray = None
+    parent_data = None # 弱引用实现的直接父类调用0.12加入
     timestamp: float = field(init=False, default_factory=time.time)
 
     def __post_init__(self):
@@ -1036,7 +1139,7 @@ class ImagingData:
             instance.source_name = data_obj.name
             instance.source_format = data_obj.format_import
             # instance.fps = getattr(data_obj, 'parameters', {}).get('fps', 10) # 优雅
-            instance.fps = (getattr(data_obj, 'parameters') or {}).get('fps', 10) # 改进版
+            instance.fps = (getattr(data_obj, 'parameters') or {}).get('fps', 0) # 改进版
             instance.image_type = 'from_data'
         elif isinstance(data_obj, ProcessedData):
             if arg:
@@ -1049,7 +1152,7 @@ class ImagingData:
             instance.source_type = "ProcessedData"
             instance.source_name = data_obj.name
             instance.source_format = data_obj.type_processed
-            instance.fps = (getattr(data_obj, 'out_processed') or {}).get('fps', 10)
+            instance.fps = (getattr(data_obj, 'out_processed') or {}).get('fps', 0)
             if data_obj.ROI_applied:
                 instance.image_type = 'from_ROIed'
             else:
@@ -1112,6 +1215,25 @@ class ImagingData:
         # # 四舍五入并确保在[0,255]范围内
         # result = np.clip(np.round(scaled), 0, 255).astype(np.uint8)
         return result
+
+    def update_params(self, **kwargs):
+        """
+        更新显示相关的参数
+        """
+        updated_keys = []
+
+        # 更新 FPS
+        if 'fps' in kwargs and kwargs['fps'] != self.fps:
+            self.fps = kwargs['fps']
+            updated_keys.append('fps')
+
+        # 同步时间点 (通常计算好后传入)
+        if 'time_point' in kwargs:
+            # 直接替换，不进行计算，因为计算应该在源数据层(Data/ProcessedData)完成
+            self.time_point = kwargs['time_point']
+            # time_point 不计入 updated_keys 以避免日志冗余，或者根据需要添加
+
+        return updated_keys
 
     def trim_time(self, start_idx: int, end_idx: int):
         """
