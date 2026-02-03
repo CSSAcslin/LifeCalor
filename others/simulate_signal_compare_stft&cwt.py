@@ -299,7 +299,7 @@ def plot_all_results(base_sig, final_sig, analysis_res, fs, target_freq, wavelet
 if __name__ == "__main__":
     # 参数设定
     FS = 1500
-    DURATION = 5.0  # 为了绘图清晰，这里生成2秒数据，你可以改为5秒
+    DURATION = 2.0  # 为了绘图清晰，这里生成2秒数据，你可以改为5秒
     MOD_FREQ = 150
     DENSITY = 0.5
     WAVELET = 'cmor1.5-1'
@@ -313,7 +313,7 @@ if __name__ == "__main__":
     sine_sig = gen_sine_modulation(FS, DURATION, MOD_FREQ, amp=mod_amp)
     # 3. 噪声
     inner_noise_sig = gen_random_noise(FS, DURATION, amp =2 , level=noise_level)
-    outer_noise_sig = gen_random_noise(FS, DURATION, amp=6, level=1)
+    outer_noise_sig = gen_random_noise(FS, DURATION, amp=15, level=3)
     # 叠加
     full_signal0 = (base_sig + inner_noise_sig) * sine_sig + outer_noise_sig
 
@@ -326,17 +326,20 @@ if __name__ == "__main__":
     plot_all_results(base_sig+2, full_signal0, results, FS, target_freq=MOD_FREQ, wavelet=WAVELET)
 
     # 4. 保存
-    df1 = pd.DataFrame({
-        'time': np.arange(len(full_signal0)) / FS,
-        'channel_simulate':base_sig,
-        'origin_signal': full_signal0,
-        'stft': results['stft'][3][1:],
-        'cwt': results['cwt'][3]
-    })
-
-    # 导出为CSV
-    df1.to_csv('simulate_compare3.csv', index=False)
-
-    df2 = pd.DataFrame({'fft_time':results['fft'][0],
-                        'fft':results['fft'][1],})
-    df2.to_csv('simulate_compare3-fft.csv', index=False)
+    # df1 = pd.DataFrame({
+    #     'time': np.arange(len(full_signal0)) / FS,
+    #     'channel_simulate':base_sig,
+    #     'inner_noise' : inner_noise_sig,
+    #     'sine_signal' : sine_sig,
+    #     'outer_noise' : outer_noise_sig,
+    #     'origin_signal': full_signal0,
+    #     'stft': results['stft'][3][1:],
+    #     'cwt': results['cwt'][3],
+    # })
+    #
+    # # 导出为CSV
+    # df1.to_csv('simulate_compare_all.csv', index=False)
+    #
+    # df2 = pd.DataFrame({'fft_time':results['fft'][0],
+    #                     'fft':results['fft'][1],})
+    # df2.to_csv('simulate_compare_all.csv', index=False)

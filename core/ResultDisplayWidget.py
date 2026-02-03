@@ -656,7 +656,7 @@ class ResultDisplayWidget(QTabWidget):
 class HeartbeatDraw:
 
     @staticmethod
-    def plot_quiver_on_ax(ax, base_img, flow_u, flow_v, speed_map, step, title_info, vmin=None, vmax=None):
+    def plot_quiver_on_ax(ax, base_img, flow_u, flow_v, speed_map, step, title_info, vmin=None, vmax=None, scale = 1):
         """
         纯粹的绘图逻辑，不依赖任何 PyQt 或 UI 组件
         """
@@ -670,7 +670,7 @@ class HeartbeatDraw:
         ax.imshow(base_img, cmap='gray', alpha=0.5)
 
         Q = ax.quiver(x, y, flow_u[y, x], flow_v[y, x], speed_map[y, x],
-                      cmap='jet', angles='xy', scale_units='xy', scale=1,
+                      cmap='jet', angles='xy', scale_units='xy', scale=scale,
                       width=0.003, headwidth=3.5, headlength=4,
                       clim=(vmin, vmax))  # 设定统一的颜色范围
 
@@ -679,9 +679,10 @@ class HeartbeatDraw:
         return Q
 
     @classmethod
-    def save_video_task(cls, data, save_path, step, export_mode='video', compact_layout=True):
+    def save_video_task(cls, data, save_path, step, export_mode='video', compact_layout=True, scale = 1):
         """
         心肌细胞数据便捷导出
+        :param scale: 放大倍数
         :param data: ProcessedData 对象
         :param save_path: 保存根目录
         :param step: 网格步长
@@ -768,7 +769,7 @@ class HeartbeatDraw:
                 data.data_processed[i, ..., 0],
                 data.data_processed[i, ..., 1],
                 data.out_processed['magnitude_list'][i],
-                step, title, vmin=0, vmax=global_vmax
+                step, title, vmin=0, vmax=global_vmax, scale=scale
             )
 
             # 添加 Colorbar

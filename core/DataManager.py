@@ -987,7 +987,7 @@ class ProcessedData:
         :param start_idx: 起始帧索引 (包含)
         :param end_idx: 结束帧索引 (不包含，即 Python 切片逻辑 [start:end])
         """
-        if not self.ndim != 3:
+        if self.ndim != 3:
             raise ValueError("当前数据不支持时间裁剪")
 
         # 1. 边界检查

@@ -1,5 +1,6 @@
 import logging
 import time
+from enum import Enum
 from math import atan2, pi, cos, sin
 
 import numpy as np
@@ -11,7 +12,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QToolBar, QAction, QDockWidget, QStyle,
                              QGraphicsRectItem, QActionGroup, QGraphicsLineItem, QGraphicsEllipseItem, QGraphicsItem,
                              QGraphicsPathItem, QMenu, QInputDialog, QColorDialog, QToolButton, QDialogButtonBox,
-                             QDialog, QMessageBox, QGraphicsTextItem, QSizePolicy, QCheckBox
+                             QDialog, QMessageBox, QGraphicsTextItem, QSizePolicy, QCheckBox, QGraphicsObject
                              )
 from PyQt5.QtCore import Qt, pyqtSignal, QRectF, QSize, QTimer, QDateTime, QLineF, QPointF, QPoint
 
@@ -163,7 +164,7 @@ class ImageDisplayWindow(QMainWindow):
             pen_color_action.triggered.connect(lambda: self.set_pen_color())
 
             fill_action = menu.addAction(
-                f"填充颜色 (当前: {'是' if self.tool_parameters['fill'] else '否'})")
+                f"填充颜色 (当前: {'是' if self.tool_parameters['auto_fill'] else '否'})")
             fill_action.triggered.connect(lambda: self.toggle_fill_shape())
 
             fill_color_action = menu.addAction("设置填充颜色")
@@ -251,7 +252,7 @@ class ImageDisplayWindow(QMainWindow):
 
     def toggle_fill_shape(self):
         """切换形状填充状态(这个就还没实装）"""
-        self.tool_parameters['fill'] = not self.tool_parameters['fill']
+        self.tool_parameters['auto_fill'] = not self.tool_parameters['auto_fill']
         self.params_update_signal.emit(self.tool_parameters)
 
     def set_fill_color(self):
@@ -569,6 +570,7 @@ class SubImageDisplayWidget(QDockWidget):
     current_canvas_signal = pyqtSignal(int)
     draw_result_signal = pyqtSignal(str,int,object,dict)
     get_fast_selection = pyqtSignal(object, np.ndarray, str, str)
+
     def __init__(self, parent=None,canvas_id = None,name = None, data :ImagingData = None, args_dict :dict = None):
         super().__init__(name, parent)
         self.parent_window = parent
@@ -605,6 +607,7 @@ class SubImageDisplayWidget(QDockWidget):
         self.start_pos = None
         self.end_pos = None
         self.rect_item = None # 存储向量矩形
+        self.movable_rect_item = None # 可拖动的向量矩形
         self.temp_pixmap = None # 临时像素画布
         self.v_rect_roi = None # 矢量矩形蒙版结果（左上角坐标（x,y), 宽度, 高度）
         self.anchor_active = False
@@ -750,6 +753,7 @@ class SubImageDisplayWidget(QDockWidget):
         self.pen_size = args_dict["pen_size"]
         self.pen_color = args_dict["pen_color"]
         self.fill_color = args_dict["fill_color"]
+        self.auto_fill = args_dict.get("auto_fill", False)
         self.vector_color = args_dict["vector_color"]
         self.angle_step = args_dict["angle_step"]
         self.vector_width = args_dict["vector_width"]
@@ -816,7 +820,10 @@ class SubImageDisplayWidget(QDockWidget):
         if self.v_rect_roi:
             self.scene.removeItem(self.rect_item)
             self.rect_item = None
-            self.v_rect_roi = None
+        if self.movable_rect_item:
+            self.scene.removeItem(self.movable_rect_item)
+            self.movable_rect_item = None
+        self.v_rect_roi = None
 
     def clear_draw_layer(self):
         """清除绘制层"""
@@ -868,6 +875,13 @@ class SubImageDisplayWidget(QDockWidget):
         """鼠标点击事件处理"""
         if not hasattr(self, 'current_image'):
             return
+        if self.drawing_tool == 'V-rect' and event.button() == Qt.LeftButton:
+            item = self.graphics_view.itemAt(event.pos())
+            # 如果点击的是我们的自定义ROI对象，则交由对象自己处理（拖动），不开启新绘图
+            if isinstance(item, ResizableRectROI):
+                QGraphicsView.mousePressEvent(self.graphics_view, event)
+                return
+
         if event.button() == Qt.MidButton :
             # 中键按下：准备拖动
             self.drag_start_pos = event.pos()
@@ -968,7 +982,7 @@ class SubImageDisplayWidget(QDockWidget):
                     self.mouse_clicked_signal.emit(x, y,self.id)
                     self.current_canvas_signal.emit(self.id)  # 改为只有当绘图操作时才更新cursor
 
-        super(QGraphicsView, self.graphics_view).mousePressEvent(event)
+        QGraphicsView.mousePressEvent(self.graphics_view, event)
 
     def mouse_move_event(self, event):
         """鼠标移动事件处理"""
@@ -988,29 +1002,53 @@ class SubImageDisplayWidget(QDockWidget):
 
         # 当 anchor 激活时，禁用动态获取鼠标位置功能
 
-        # 获取鼠标在图像上的坐标
+        # 坐标获取
         move_pos = self.graphics_view.mapToScene(event.pos())
         self.x_img, self.y_img = int(move_pos.x()), int(move_pos.y())
+        h_img, w_img = self.current_image.shape[0], self.current_image.shape[1]
 
-        # 检查坐标是否在图像范围内
-        h, w = self.current_image.shape[0],self.current_image.shape[1]
-        if 0 <= self.x_img < w and 0 <= self.y_img < h:
+        # 鼠标值显示逻辑
+        if 0 <= self.x_img < w_img and 0 <= self.y_img < h_img:
             self.mouse_pos = (self.x_img, self.y_img)
             if not self.anchor_active:
                 self.get_value(self.y_img, self.x_img)
 
         # 绘图模式
         if self.drawing and self.drawing_tool != 'Anchor':
-            self.end_pos = self.graphics_view.mapToScene(event.pos())
+            # 1. 获取原始坐标
+            raw_end_pos = self.graphics_view.mapToScene(event.pos())
+
+            # 2. 获取图像边界
+            h_img, w_img = self.current_image.shape[:2]
+
+            # 3. 无论是否按 Shift，都先将坐标限制在 [0, w] 和 [0, h] 之间
+            clamped_x = max(0, min(raw_end_pos.x(), w_img))
+            clamped_y = max(0, min(raw_end_pos.y(), h_img))
+            self.end_pos = QPointF(clamped_x, clamped_y)
+
             shift_pressed = QApplication.keyboardModifiers() == Qt.ShiftModifier
             if self.drawing_tool == 'V-rect':
                 rect = QRectF(self.start_pos, self.end_pos).normalized()
-                if shift_pressed:  # 强制正方形
-                    size = min(rect.width(), rect.height())
-                    if self.end_pos.x() >= self.start_pos.x() and self.end_pos.y() >= self.start_pos.y():
-                        rect = QRectF(self.start_pos, self.start_pos + QPointF(size, size))
-                    else:
-                        rect = QRectF(self.start_pos, self.start_pos - QPointF(size, size))
+                if shift_pressed: # 限制正方形
+                    # 计算当前宽高
+                    w = abs(self.end_pos.x() - self.start_pos.x())
+                    h = abs(self.end_pos.y() - self.start_pos.y())
+                    size = min(w, h)
+
+                    # 判断象限方向
+                    dx = 1 if self.end_pos.x() >= self.start_pos.x() else -1
+                    dy = 1 if self.end_pos.y() >= self.start_pos.y() else -1
+
+                    # 重新生成正方形 End Point (保持起点不变)
+                    new_end_x = self.start_pos.x() + size * dx
+                    new_end_y = self.start_pos.y() + size * dy
+
+                    # 再次限制边界（防止 Shift 扩展出边界）
+                    new_end_x = max(0, min(new_end_x, w_img))
+                    new_end_y = max(0, min(new_end_y, h_img))
+
+                    rect = QRectF(self.start_pos, QPointF(new_end_x, new_end_y)).normalized()
+
                 self.rect_item.setRect(rect)
 
             elif self.drawing_tool == 'V-line':
@@ -1030,7 +1068,7 @@ class SubImageDisplayWidget(QDockWidget):
                     self.top_pixmap = temp_pixmap
                     self.start_pos = move_pos
 
-        super().mouseMoveEvent(event)
+        QGraphicsView.mouseMoveEvent(self.graphics_view, event)
 
     def mouse_release_event(self, event):
         """鼠标释放事件（结束拖动）"""
@@ -1041,51 +1079,48 @@ class SubImageDisplayWidget(QDockWidget):
         elif event.button() == Qt.LeftButton and self.drawing:
             # 完成绘图
             self.drawing = False
-            if self.drawing_tool in ['V-rect', 'V-line','Anchor']:
-                # 获取最终位置
-                end_pos = self.graphics_view.mapToScene(event.pos())
-                x2, y2 = int(end_pos.x()), int(end_pos.y())
+            if self.drawing_tool == 'V-rect':
+                # 使用之前的 clamp 逻辑获取最终坐标
+                raw_end_pos = self.graphics_view.mapToScene(event.pos())
+                img_h, img_w = self.current_image.shape[:2]
 
-                if self.drawing_tool in ['V-rect']  and self.rect_item:
-                    # 获取矩形坐标
-                    x1 = int(self.start_pos.x())
-                    y1 = int(self.start_pos.y())
-                    width = abs(x2-x1)
-                    height = abs(y2-y1)
+                x2 = max(0, min(int(raw_end_pos.x()), img_w))
+                y2 = max(0, min(int(raw_end_pos.y()), img_h))
 
-                    x = x1 if x1 <= x2 else x2
-                    y = y1 if y1 <= y2 else y2
-
-                    # 确保坐标在图像范围内
-                    h, w = self.current_image.shape[0],self.current_image.shape[1]
-                    x = max(0, min(x, w - 1))
-                    y = max(0, min(y, h - 1))
-                    width = min(width, w - x-1)
-                    height = min(height, h - y-1)
-
-                    # 创建ROI信息
-                    self.v_rect_roi = ((x, y), width+1, height+1)
-                    # self.draw_result_signal.emit('v_rect',self.id,self.v_rect_roi, {})
-                    # 移除临时绘图项
+                if self.rect_item:
+                    # 获取标准化后的矩形 (已经包含了 Shift 逻辑的结果)
+                    final_rect = self.rect_item.rect()
                     self.scene.removeItem(self.rect_item)
                     self.rect_item = None
 
-                    painter = QPainter(self.top_pixmap)
-                    painter.setPen(QPen(Qt.yellow, 1,Qt.SolidLine,Qt.SquareCap ,Qt.MiterJoin))
-                    painter.setBrush(QBrush(QColor(255,255, 0, 128)))
-                    painter.drawRect(x, y, width, height)
-                    painter.end()
-                    self.draw_layer.setPixmap(self.top_pixmap)
+                    x, y, w, h = final_rect.x(), final_rect.y(), final_rect.width(), final_rect.height()
 
-                else:
-                    return
+                    # 再次取整确保像素对齐
+                    x, y, w, h = int(round(x)), int(round(y)), int(round(w)), int(round(h))
+
+                    if w > 0 and h > 0:
+                        if self.movable_rect_item:
+                            self.scene.removeItem(self.movable_rect_item)
+
+                        # --- 实例化新的 ResizableRectROI ---
+                        self.movable_rect_item = ResizableRectROI(x, y, w, h, (img_w, img_h), callback=self.on_roi_moved)
+                        self.movable_rect_item.setZValue(100)
+                        self.scene.addItem(self.movable_rect_item)
+                        self.movable_rect_item.setSelected(True)
+
+                        # 发送信号
+                        self.on_roi_moved(((x, y), w, h))
+                return
+
+            if self.drawing_tool in ['V-line', 'Anchor']:
+                pass
             else:
                 self.top_pixmap = self.temp_pixmap
                 self.draw_layer.setPixmap(self.top_pixmap)
                 self.update_draw_layer_array() # 仅在绘制像素时储存
             self.current_canvas_signal.emit(self.id) # 改为只有当绘图操作时才更新cursor
 
-        super(QGraphicsView, self.graphics_view).mouseReleaseEvent(event)
+        QGraphicsView.mouseReleaseEvent(self.graphics_view, event)
 
     def _draw_on_pixmap(self, pixmap, from_point, to_point):
         """在绘图层上绘制（用于Pen和Eraser）"""
@@ -1119,28 +1154,41 @@ class SubImageDisplayWidget(QDockWidget):
                     ).toPoint()
             painter.drawLine(from_point, to_point)
 
-        elif self.drawing_tool == "Rect":
-            rect = QRectF(from_point, to_point).normalized()
-            if shift_pressed:  # 强制正方形
-                size = min(rect.width(), rect.height())
-                if to_point.x() >= from_point.x() and to_point.y() >= from_point.y():
-                    rect = QRectF(from_point, from_point + QPointF(size, size))
-                else:
-                    rect = QRectF(from_point, from_point - QPointF(size, size))
-            painter.drawRect(rect)
+        elif self.drawing_tool in ["Rect", "Ellipse"]:
+            # 设置填充模式
+            if self.auto_fill:
+                painter.setBrush(QBrush(QColor(self.fill_color)))
+            else:
+                painter.setBrush(Qt.NoBrush)
 
-        elif self.drawing_tool == "Ellipse":
             rect = QRectF(from_point, to_point).normalized()
-            if shift_pressed:  # 强制圆形
+
+            # 统一处理 Shift 约束（正方形/正圆）
+            if shift_pressed:
                 size = min(rect.width(), rect.height())
+                # 根据绘制方向调整正方形/圆的位置
                 if to_point.x() >= from_point.x() and to_point.y() >= from_point.y():
                     rect = QRectF(from_point, from_point + QPointF(size, size))
-                else:
+                elif to_point.x() < from_point.x() and to_point.y() < from_point.y():
                     rect = QRectF(from_point, from_point - QPointF(size, size))
-            painter.drawEllipse(rect)
+                elif to_point.x() >= from_point.x() and to_point.y() < from_point.y():
+                    # 右上方向
+                    rect = QRectF(from_point.x(), from_point.y() - size, size, size)
+                else:
+                    # 左下方向
+                    rect = QRectF(from_point.x() - size, from_point.y(), size, size)
+
+            if self.drawing_tool == "Rect":
+                painter.drawRect(rect)
+            else:
+                painter.drawEllipse(rect)
 
         painter.end()
         return pixmap
+
+    def on_roi_moved(self, roi_data):
+        """当拖动矩形结束时调用此函数"""
+        self.v_rect_roi = roi_data
 
     def fill_at_point(self, point):
         """在指定点进行填充"""
@@ -1651,6 +1699,284 @@ class SubImageDisplayWidget(QDockWidget):
         self.graphics_view.resetTransform()
         self.graphics_view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
         self.last_scale = self.graphics_view.transform().m11()
+
+
+class Handle(Enum):
+    NONE = 0
+    TOP_LEFT = 1
+    TOP = 2
+    TOP_RIGHT = 3
+    RIGHT = 4
+    BOTTOM_RIGHT = 5
+    BOTTOM = 6
+    BOTTOM_LEFT = 7
+    LEFT = 8
+    CENTER = 9  # 移动
+
+
+class ResizableRectROI(QGraphicsRectItem):
+    """
+    仿PS风格的可调整矩形ROI
+    - 支持8个方向调整大小
+    - 支持像素级吸附
+    - 限制在图像边界内
+    """
+
+    def __init__(self, x, y, w, h, limit_size, callback=None):
+        # 初始化：始终保持 rect 为 (0, 0, w, h)，通过 setPos 移动
+        super().__init__(0, 0, w, h)
+        self.setPos(x, y)
+        self.limit_w, self.limit_h = limit_size
+        self.callback = callback
+
+        # 标志位
+        self.setFlags(QGraphicsItem.ItemIsSelectable |
+                      QGraphicsItem.ItemSendsGeometryChanges)
+        self.setAcceptHoverEvents(True)
+
+        # 样式参数
+        self.handle_size = 8  # 句柄大小
+        self.handle_space = 0  # 句柄与线的间距
+
+        # 画笔设置 (Cosmetic=True 保证线条宽度不随缩放改变)
+        self.pen_outline = QPen(Qt.white, 1, Qt.DashLine)
+        self.pen_outline.setCosmetic(True)
+        self.pen_shadow = QPen(Qt.black, 1, Qt.SolidLine)  # 黑底白虚线，高对比度
+        self.pen_shadow.setCosmetic(True)
+
+        self.handle_brush = QBrush(Qt.white)
+        self.handle_pen = QPen(Qt.black, 1)
+        self.handle_pen.setCosmetic(True)
+
+        # 交互状态
+        self.current_handle = Handle.NONE
+        self.mouse_press_pos = None
+        self.mouse_press_rect = None
+        self.is_resizing = False
+
+    def paint(self, painter, option, widget=None):
+        rect = self.rect()
+
+        # 1. 绘制高对比度边框 (黑实线垫底，白虚线在通过)
+        fill_color = QColor(255, 255, 0, 50)
+        painter.setBrush(QBrush(fill_color))
+        painter.setPen(self.pen_shadow)
+        painter.drawRect(rect)
+        painter.setPen(self.pen_outline)
+        painter.drawRect(rect)
+
+        # 2. 如果被选中或悬停，绘制8个控制手柄
+        if self.isSelected() or self.isUnderMouse():
+            self._draw_handles(painter, rect)
+
+    def _draw_handles(self, painter, rect):
+        """绘制8个方块句柄"""
+        painter.setPen(self.handle_pen)
+        painter.setBrush(self.handle_brush)
+
+        # 计算关键点坐标
+        l, t, r, b = rect.left(), rect.top(), rect.right(), rect.bottom()
+        cx, cy = rect.center().x(), rect.center().y()
+        hs = self.handle_size / 2  # 半宽，用于居中
+
+        # 定义8个点的位置
+        points = [
+            (l, t), (cx, t), (r, t),  # 上三
+            (r, cy),  # 右
+            (r, b), (cx, b), (l, b),  # 下三
+            (l, cy)  # 左
+        ]
+
+        # 转换回视图坐标系绘制，或者直接画在场景坐标
+        # 这里为了简单，我们利用 Cosmetic 特性，实际上 handle 大小在视图缩放时视觉大小不变会更好
+        # 但 QGraphicsItem paint 是在局部坐标系。为了让句柄看起来大小固定，
+        # 我们通常需要根据 view 的缩放反向计算，或者简单点直接画。
+        # 这里为了保持像素贴合，我们暂且按局部坐标画，可以根据 scale 动态调整大小（高阶做法），
+        # 现阶段先画固定像素大小。
+
+        # 获取当前的缩放比例，保持句柄视觉大小一致
+        scale = 1.0
+        if self.scene() and self.scene().views():
+            scale = self.scene().views()[0].transform().m11()
+
+        offset = (self.handle_size / 2) / scale
+        draw_size = self.handle_size / scale
+
+        for x, y in points:
+            # 以点为中心绘制矩形
+            h_rect = QRectF(x - offset, y - offset, draw_size, draw_size)
+            painter.drawRect(h_rect)
+
+    def hoverMoveEvent(self, event):
+        """悬停时改变鼠标图标"""
+        pos = event.pos()
+        handle = self._get_handle_at(pos)
+        self._set_cursor(handle)
+        super().hoverMoveEvent(event)
+
+    def mousePressEvent(self, event):
+        """记录初始状态"""
+        if event.button() == Qt.LeftButton:
+            self.current_handle = self._get_handle_at(event.pos())
+            self.mouse_press_pos = event.scenePos()  # 记录场景绝对坐标
+            self.mouse_press_rect = self.rect()
+            self.mouse_press_item_pos = self.pos()
+            self.is_resizing = True
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        """处理拖动和缩放"""
+        if not self.is_resizing:
+            return
+
+        cur_pos = event.scenePos()
+
+        # 1. 移动模式 (点击在中心区域)
+        if self.current_handle == Handle.CENTER:
+            delta = cur_pos - self.mouse_press_pos
+            # 像素吸附：对目标位置取整
+            new_x = int(self.mouse_press_item_pos.x() + delta.x())
+            new_y = int(self.mouse_press_item_pos.y() + delta.y())
+
+            # 边界检查
+            w, h = self.rect().width(), self.rect().height()
+            new_x = max(0, min(new_x, self.limit_w - w))
+            new_y = max(0, min(new_y, self.limit_h - h))
+
+            self.setPos(new_x, new_y)
+
+        # 2. 调整大小模式 (点击在句柄)
+        elif self.current_handle != Handle.NONE:
+            self._interactive_resize(cur_pos)
+
+    def mouseReleaseEvent(self, event):
+        self.is_resizing = False
+        self.current_handle = Handle.NONE
+        self.setCursor(Qt.ArrowCursor)
+
+        # 动作结束，发射信号
+        self._notify_change()
+        super().mouseReleaseEvent(event)
+
+    def _get_handle_at(self, pos):
+        """判断鼠标位置对应的句柄"""
+        rect = self.rect()
+        l, t, r, b = rect.left(), rect.top(), rect.right(), rect.bottom()
+        cx, cy = rect.center().x(), rect.center().y()
+
+        # 获取视图缩放比例以计算容差
+        scale = 1.0
+        if self.scene() and self.scene().views():
+            scale = self.scene().views()[0].transform().m11()
+        tol = (self.handle_size / scale)  # 容差范围
+
+        # 检查顺序：先检查角，再检查边，最后中心
+        if self._near(pos.x(), l, tol) and self._near(pos.y(), t, tol): return Handle.TOP_LEFT
+        if self._near(pos.x(), r, tol) and self._near(pos.y(), t, tol): return Handle.TOP_RIGHT
+        if self._near(pos.x(), r, tol) and self._near(pos.y(), b, tol): return Handle.BOTTOM_RIGHT
+        if self._near(pos.x(), l, tol) and self._near(pos.y(), b, tol): return Handle.BOTTOM_LEFT
+
+        if self._near(pos.y(), t, tol) and l < pos.x() < r: return Handle.TOP
+        if self._near(pos.y(), b, tol) and l < pos.x() < r: return Handle.BOTTOM
+        if self._near(pos.x(), l, tol) and t < pos.y() < b: return Handle.LEFT
+        if self._near(pos.x(), r, tol) and t < pos.y() < b: return Handle.RIGHT
+
+        if rect.contains(pos): return Handle.CENTER
+        return Handle.NONE
+
+    def _near(self, v1, v2, tol):
+        return abs(v1 - v2) <= tol
+
+    def _set_cursor(self, handle):
+        """根据句柄设置光标"""
+        cursors = {
+            Handle.NONE: Qt.ArrowCursor,
+            Handle.CENTER: Qt.SizeAllCursor,
+            Handle.TOP_LEFT: Qt.SizeFDiagCursor,
+            Handle.BOTTOM_RIGHT: Qt.SizeFDiagCursor,
+            Handle.TOP_RIGHT: Qt.SizeBDiagCursor,
+            Handle.BOTTOM_LEFT: Qt.SizeBDiagCursor,
+            Handle.TOP: Qt.SizeVerCursor,
+            Handle.BOTTOM: Qt.SizeVerCursor,
+            Handle.LEFT: Qt.SizeHorCursor,
+            Handle.RIGHT: Qt.SizeHorCursor,
+        }
+        self.setCursor(cursors.get(handle, Qt.ArrowCursor))
+
+    def _interactive_resize(self, mouse_pos):
+        """根据句柄逻辑计算新的 rect 和 pos"""
+        # 所有的计算都基于像素吸附 (int)
+
+        # 1. 获取当前 Item 的绝对位置 (item_x, item_y) 和 原始尺寸
+        orig_rect = self.mouse_press_rect
+        orig_pos = self.mouse_press_item_pos
+
+        # 目标边界（场景坐标）
+        target_l = orig_pos.x() + orig_rect.left()
+        target_r = orig_pos.x() + orig_rect.right()
+        target_t = orig_pos.y() + orig_rect.top()
+        target_b = orig_pos.y() + orig_rect.bottom()
+
+        # 鼠标当前场景坐标（吸附）
+        mx, my = int(mouse_pos.x()), int(mouse_pos.y())
+
+        # 2. 根据句柄更新边界
+        h = self.current_handle
+        shift_pressed = QApplication.keyboardModifiers() == Qt.ShiftModifier
+        is_corner = h in [Handle.TOP_LEFT, Handle.TOP_RIGHT, Handle.BOTTOM_LEFT, Handle.BOTTOM_RIGHT]
+
+        if shift_pressed and is_corner:
+            # 1. 确定锚点（Anchor）：即拖动角点的"对角点"，它是固定的
+            pivot_x = target_r if h in [Handle.TOP_LEFT, Handle.BOTTOM_LEFT] else target_l
+            pivot_y = target_b if h in [Handle.TOP_LEFT, Handle.TOP_RIGHT] else target_t
+
+            # 2. 计算鼠标相对于锚点的向量
+            dx = mx - pivot_x
+            dy = my - pivot_y
+
+            # 3. 取长边作为正方形边长
+            max_len = max(abs(dx), abs(dy))
+
+            # 4. 根据鼠标相对于锚点的方向，重新计算修正后的鼠标位置
+            # sign 用来保持拖动翻转时的方向正确性
+            sign_x = 1 if dx >= 0 else -1
+            sign_y = 1 if dy >= 0 else -1
+
+            mx = int(pivot_x + max_len * sign_x)
+            my = int(pivot_y + max_len * sign_y)
+
+        if h in [Handle.LEFT, Handle.TOP_LEFT, Handle.BOTTOM_LEFT]:
+            target_l = min(mx, target_r - 1)  # 保证宽度至少1
+        if h in [Handle.RIGHT, Handle.TOP_RIGHT, Handle.BOTTOM_RIGHT]:
+            target_r = max(mx, target_l + 1)
+        if h in [Handle.TOP, Handle.TOP_LEFT, Handle.TOP_RIGHT]:
+            target_t = min(my, target_b - 1)
+        if h in [Handle.BOTTOM, Handle.BOTTOM_LEFT, Handle.BOTTOM_RIGHT]:
+            target_b = max(my, target_t + 1)
+
+        # 3. 全局边界限制 (0 ~ limit)
+        target_l = max(0, target_l)
+        target_t = max(0, target_t)
+        target_r = min(self.limit_w, target_r)
+        target_b = min(self.limit_h, target_b)
+
+        # 4. 转换回 item 坐标 (setPos + setRect)
+        new_w = target_r - target_l
+        new_h = target_b - target_t
+
+        self.setPos(target_l, target_t)
+        self.setRect(0, 0, new_w, new_h)
+        self.update()  # 强制重绘手柄
+
+    def _notify_change(self):
+        if self.callback:
+            rect = self.rect()
+            roi_data = (
+                (int(self.pos().x()), int(self.pos().y())),
+                int(rect.width()),
+                int(rect.height())
+            )
+            self.callback(roi_data)
 
 
 class VectorLineROI(QGraphicsLineItem):

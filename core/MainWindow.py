@@ -53,7 +53,7 @@ class MainWindow(QMainWindow):
     tDgf_signal = pyqtSignal(object,int,float,bool)
     sscs_signal = pyqtSignal(object, int, float, bool)
     tDFT_signal = pyqtSignal(object)
-    heartbeat_signal = pyqtSignal(object, int, int ,list, str, str)
+    heartbeat_signal = pyqtSignal(object, int, int ,list, str, str, float)
     easy_process = pyqtSignal(object, str, object)
     roi_processed_signal = pyqtSignal(object,np.ndarray,float,bool,bool,float)
 
@@ -67,7 +67,7 @@ class MainWindow(QMainWindow):
 
         # 参数初始化
         self.settings = QSettings()
-        self.mode = 0
+        self.mode = 1
         self.data = None
         self.processed_data = None
         self.time_points = None
@@ -175,7 +175,7 @@ class MainWindow(QMainWindow):
             'anchor_size' : 5,
             'anchor_method': 'mean',
             'angle_step': 0.7853981633974483,  # pi/4
-            'fill': False,
+            'auto_fill': False,
             'vector_width': 2,
             'colormap': 'Jet',
             'use_colormap': False,
@@ -590,12 +590,13 @@ class MainWindow(QMainWindow):
         process_layout = QVBoxLayout()
         switch_layout = QHBoxLayout()
         self.tri_switch = TriStateSwitch.TriStateSwitch()
-        self.mode_label = QLabel("便捷模式")
+        self.tri_switch.setValue(1)
+        self.mode_label = QLabel("默认模式")
         switch_layout.addWidget(QLabel('处理模式：'))
         self.tri_switch.setFixedWidth(100)
         switch_layout.addWidget(self.tri_switch)
         self.tri_switch.valueChanged.connect(self.mode_switch_change)
-        self.mode_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: #34C759")
+        self.mode_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: #999999")
         switch_layout.addWidget(self.mode_label)
         process_layout.addLayout(switch_layout)
         process_layout.addSpacing(5)
@@ -920,17 +921,17 @@ class MainWindow(QMainWindow):
         """模式改变后"""
         self.mode = mode
         if mode == 0:
-            self.mode_label.setText('便捷模式')
-            self.mode_explain.setText("按标准处理流程执行的快速操作，\n数据源会自动选择")
+            self.mode_label.setText('ROI模式')
+            self.mode_explain.setText("每次处理前都需要选择ROI，\n数据也需要选择，ROI需要与数据匹配")
         elif mode == 1:
             self.mode_label.setText('默认模式')
-            self.mode_explain.setText("使用默认数据（最新数据）进行处理，\n换源需要手动设置（历史数据查看）")
+            self.mode_explain.setText("按标准处理流程执行的快速操作，\n数据源会自动选择")
         elif mode == 2:
             self.mode_label.setText('自由模式')
             self.mode_explain.setText("每次处理前都需要选择数据，\n数据自由选择，但可能会报错（无法处理）")
         colors = ["#34C759", "#999999", "#007AFF"]
 
-        self.mode_label.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {colors[mode]}")
+        self.mode_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {colors[mode]}")
 
     def setup_menus(self):
         """加入菜单栏"""
@@ -2091,26 +2092,23 @@ class MainWindow(QMainWindow):
 
     def roi_signal_avg(self):
         """计算选区信号平均值并显示"""
-        mask = self.roi_selection()
-        if mask is None:
-            return
         data = self.data_selection(['ROI_stft', 'ROI_cwt'])
         if data is not None:
             pass
         else:
             logging.warning("无变换后数据，请先处理数据")
             return
+        mask = self.roi_selection(True)
+        if mask is None:
+            return
+        if mask.shape != data.framesize:
+            QMessageBox.warning(self, "蒙版错误", "蒙版尺寸与数据不匹配")
+            return
+        if not self.calc_thread.isRunning():
+            self.calc_thread.start()
+        self.update_status('计算进行中...', 'working')
+        self.easy_process.emit(data,'avg',mask)
 
-        if mask.dtype == bool:
-            if mask.shape != data.framesize:
-                QMessageBox.warning(self, "蒙版错误", "蒙版尺寸与数据不匹配")
-                return
-            if not self.calc_thread.isRunning():
-                self.calc_thread.start()
-            self.update_status('计算进行中...', 'working')
-            self.easy_process.emit(data,'avg',mask)
-        else:
-            raise TypeError(f"不支持的蒙版类型: {mask.dtype}")
 
     def process_signal_avg(self):
         """广义信号平均"""
@@ -2242,6 +2240,8 @@ class MainWindow(QMainWindow):
             return None
         match self.mode:
             case 0:
+                aim_data = self.data_pick()
+            case 1:
                 if aim_type == 'data':
                     aim_data = self.data
                 elif aim_type == 'all':
@@ -2257,40 +2257,48 @@ class MainWindow(QMainWindow):
                         (data for data in reversed(self.processed_data.history) if
                          data.type_processed in aim_type),
                         None)
-            case 1:
-                if self.processed_data is None:
-                    aim_data = self.data
-                elif self.data.timestamp > self.processed_data.timestamp:
-                    aim_data = self.data
-                else:
-                    aim_data = self.processed_data
             case 2:
                 aim_data = self.data_pick()
         return aim_data
 
-    def roi_selection(self):
+    def roi_selection(self, select = False):
         """ROI选择"""
         mask = None
         match self.mode:
-            case 0 | 1:
+            case 2:
                 mask = self.image_display.get_draw_roi()[1]
                 if mask is None:
                     logging.warning("选中画布没有绘制有效的ROI")
                     return None
-            case 2:
+            case 0:
                 dialog = ROIInfoDialog(self.image_display.get_all_canvas_info(), self)
                 if dialog.exec_():
                     aim_id = dialog.canvas_id
                     if dialog.roi_type == 'pixel_roi':
-                        mask = self.draw_result('pixel_roi', aim_id, self.image_display.get_draw_roi(aim_id), dialog.selected_roi_info)
+                        mask = self.image_display.get_draw_roi(aim_id)[1]
                     elif dialog.roi_type == 'v_line':
                         QMessageBox.warning(self,"警告","不支持该类型")
                         return None
                     elif dialog.roi_type == 'v_rect':
-                        mask = self.draw_result('v_rect', aim_id, self.image_display.display_canvas[aim_id].v_rect_roi,
-                                                     dialog.selected_roi_info)
+                        rect_mask = self.image_display.display_canvas[aim_id].v_rect_roi
+                        x, y, w, h = rect_mask[0][0], rect_mask[0][1], rect_mask[1], rect_mask[2]
+                        if w == 0 or h == 0:
+                            return None
+                        else:
+                            mask = np.zeros(self.image_display.display_canvas[aim_id].data.framesize, dtype=bool)
+                            mask[y:y + h, x:x + w] = True
+                    elif dialog.roi_type == 'anchor':
+                        mask = self.image_display.display_canvas[aim_id].anchor_mask
                     else:
                         return None
+            case 1:
+                if select:
+                    mask = self.image_display.get_draw_roi()[1]
+                    if mask is None:
+                        logging.warning("选中画布没有绘制有效的ROI")
+                        return None
+                else:
+                    return None
         return mask
 
     def data_pick(self, need_all=True):
@@ -2422,6 +2430,7 @@ class MainWindow(QMainWindow):
             if draw_type == "v_rect":
                 x,y,w,h = result[0][0],result[0][1],result[1],result[2]
                 if w == 0 or h == 0:
+                    logging.warning("未选中像素")
                     return None
                 else:
                     bool_mask = np.zeros(draw_data.framesize, dtype=bool)
@@ -2448,7 +2457,6 @@ class MainWindow(QMainWindow):
                                                         data_processed=roi_data,
                                                         out_processed=draw_data.out_processed,
                                                         ROI_applied=True)
-                return bool_mask
             elif draw_type == "v_line":
                 self.vector_array = result.getPixelValues(draw_data, self.space_step, self.time_step)
             elif draw_type == "pixel_roi":
@@ -2456,8 +2464,8 @@ class MainWindow(QMainWindow):
                 if dialog.inverse_check.isChecked():
                     bool_mask = ~bool_mask
                 self.roi_processed_signal.emit(draw_data, bool_mask, dialog.reset_value.value(),crop_roi, dialog.zoom_check.isChecked(), dialog.zoom_factor.value())
-                return bool_mask
             logging.info("ROI已确认选取")
+        return None
 
     def fast_roi_result(self):
         """roi快速选取，仅支持pixel_roi"""

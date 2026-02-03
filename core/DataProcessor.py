@@ -1149,8 +1149,8 @@ class MassDataProcessor(QObject):
             self.processed_result.emit({'type': "2D_Fourier_transform", 'error': str(e)})
             return False
 
-    @pyqtSlot(object, int, int ,list, str, str)
-    def heartbeat_movement(self, data, step, base_num, after_series, save_path = "", export_mode = 'video'):
+    @pyqtSlot(object, int, int ,list, str, str, float)
+    def heartbeat_movement(self, data, step, base_num, after_series, save_path = "", export_mode = 'video', scale = 1):
         """心肌细胞运动分析，使用
         稠密光流 (Farneback算法)"""
         # try:
@@ -1279,7 +1279,7 @@ class MassDataProcessor(QObject):
             # try:
                 # 直接调用独立的保存函数
                 # 因为在 Agg 后端下运行，且数据是独立的，不会冲突
-            video_file = HeartbeatDraw.save_video_task(result, save_path, step, export_mode = export_mode)
+            video_file = HeartbeatDraw.save_video_task(result, save_path, step, export_mode = export_mode, scale = 1/scale)
             logging.info(f"视频已保存至: {video_file}")
 
             # 你可以将视频路径放入 out_processed 以便 UI 知道

@@ -1463,7 +1463,7 @@ class ROIInfoDialog(QDialog):
                     x, y = roi['position']
                     mask = roi.get("anchor_mask", None)
                     if mask is not None:
-                        details = f"位置: ({x}, {y})，存在mask，尺寸:{mask}"
+                        details = f"位置: ({x}, {y})，存在mask，包含:{mask} pixels"
                     else:
                         details = f"位置: ({x}, {y})"
                 elif roi['type'] == 'pixel_roi':
@@ -2135,6 +2135,14 @@ class HeartBeatFrameSelectDialog(QDialog):
         mode_layout.addWidget(self.mode_combo)
         layout.addLayout(step_layout)
         layout.addLayout(mode_layout)
+
+        scale_layout = QHBoxLayout()
+        scale_layout.addWidget(QLabel("箭头缩放："))
+        self.scale_input = QDoubleSpinBox()
+        self.scale_input.setRange(0.1,100)
+        self.scale_input.setValue(1)
+        scale_layout.addWidget(self.scale_input)
+        layout.addLayout(scale_layout)
         self.base_label = QLabel("请输入基准帧:")
         layout.addWidget(self.base_label)
         self.base_frame_input = QSpinBox()
@@ -2188,7 +2196,7 @@ class HeartBeatFrameSelectDialog(QDialog):
             self.parent.heartbeat_signal.emit(self.data, self.step_input.value(),
                                               self.base_frame_input.value(),
                                               motion_frames, self.get_path(),
-                                              self.mode_map[self.save_mode.currentIndex()])
+                                              self.mode_map[self.save_mode.currentIndex()],self.scale_input.value())
             logging.info("完成帧数选择，开始心肌细胞运动分析")
             self.accept()
 
