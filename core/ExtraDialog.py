@@ -7,13 +7,13 @@ from math import ceil
 from typing import List
 
 import numpy as np
-from PyQt5.QtGui import QColor, QIntValidator, QFont
+from PyQt5.QtGui import QColor, QIntValidator, QFont, QCursor
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGroupBox,
                              QRadioButton, QSpinBox, QLineEdit, QPushButton,
                              QLabel, QMessageBox, QFormLayout, QDoubleSpinBox, QColorDialog, QComboBox, QCheckBox,
                              QFileDialog, QWhatsThis, QTextBrowser, QTableWidget, QDialogButtonBox, QTableWidgetItem,
                              QHeaderView, QAbstractItemView, QTabWidget, QWidget, QListWidget, QListWidgetItem,
-                             QSizePolicy, QTreeWidget, QTreeWidgetItem, QTextEdit)
+                             QSizePolicy, QTreeWidget, QTreeWidgetItem, QTextEdit, QToolButton, QStyle, QToolTip)
 from PyQt5.QtCore import Qt, QEvent, QTimer, QModelIndex, pyqtSignal, QSize
 from fontTools.merge import layoutPreMerge
 
@@ -1255,7 +1255,7 @@ class CustomHelpDialog(QDialog):
     def __init__(self, title, topics=None, content = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint)
+        self.setWindowFlags(Qt.Window)
         self.setAttribute(Qt.WA_DeleteOnClose)  # 关闭时自动释放
         self.htmlpath = self.get_html_path()
         self.HELP_CONTENT = {
@@ -1385,6 +1385,73 @@ class CustomHelpDialog(QDialog):
     #         FencedCodeExtension()
     #     ]
     #     return markdown.markdown(md_content, extensions=extensions)
+
+
+class InfoButton(QToolButton):
+    def __init__(self, tooltip_text="点击查看详情", topic_key=None, parent_window=None):
+        super().__init__(parent_window)
+
+        # --- 外观设置 ---
+        # 使用 Qt 自带的“信息”图标
+        self.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxInformation))
+        # 设置无边框，鼠标悬停时才显示背景（AutoRaise）
+        self.setAutoRaise(True)
+        # 设置鼠标手型
+        self.setCursor(Qt.PointingHandCursor)
+        # 设置图标大小（稍微小一点显得精致）
+        self.setIconSize(QSize(16, 16))
+
+        # --- 核心功能1：悬浮提示 ---
+        self.setToolTip(tooltip_text)
+
+        # --- 数据存储 ---
+        self.topic_key = topic_key
+        self.parent_window = parent_window
+        self.help_dialog = None  # 用来引用打开的窗口
+
+        # --- 核心功能2：点击事件 ---
+        if topic_key is not None:
+            self.clicked.connect(self.show_help_dialog)
+
+    def enterEvent(self, event):
+        """
+        重写鼠标进入事件，实现零延迟显示 ToolTip
+        """
+        # 获取当前设置的 tooltip 文本
+        text = self.toolTip()
+        if text:
+            # QCursor.pos() 获取鼠标当前在屏幕的绝对坐标
+            # self 是为了让 ToolTip 知道它是属于哪个控件的
+            QToolTip.showText(QCursor.pos(), text, self)
+
+        # 保持父类的默认行为（比如按钮的高亮效果）
+        super().enterEvent(event)
+
+    def show_help_dialog(self):
+        # 单例模式判断：如果窗口已存在且可见，就激活它，不重复创建
+        if self.help_dialog and self.help_dialog.isVisible():
+            self.help_dialog.raise_()  # 浮到最上层
+            self.help_dialog.activateWindow()  # 获得焦点
+            return
+
+        # 创建并显示窗口
+        # 注意：这里我们不传入 parent，或者传入 None，
+        # 这样它就是一个独立的非模态窗口，不会卡住主界面
+        self.help_dialog = CustomHelpDialog(
+            title=f"帮助 - {self.topic_key}",
+            topics=self.topic_key
+        )
+
+        # 因为设置了 WA_DeleteOnClose，窗口关闭后对象会被销毁
+        # 我们需要监听 destroyed 信号来重置 self.help_dialog 引用
+        self.help_dialog.finished.connect(self._on_dialog_closed)
+
+        self.help_dialog.show()
+
+    def _on_dialog_closed(self):
+        self.help_dialog = None
+
+
 
 # 画布及roi查看和选择
 class ROIInfoDialog(QDialog):

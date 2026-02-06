@@ -484,7 +484,27 @@ QTreeWidget QScrollBar::sub-line:vertical {
     height: 0px;
 }
 
+/* ========== QToolTip 样式 ========== */
+QToolTip {
+    /* 字体颜色：与全局深绿色字体保持一致 */
+    color: #0c0c0c;
 
+    /* 背景色：使用极淡的绿色 (比选中态 #E8F5E9 更淡一点，防止太抢眼，但比纯白 #ffffff 更有层次) */
+    background-color: #F1F8E9;
+
+    /* 边框：使用主色调 #4CAF50，清晰醒目 */
+    border: 1px solid #4CAF50;
+
+    /* 圆角：与按钮和输入框保持一致 */
+    border-radius: 4px;
+
+    /* 内边距：让文字呼吸，不要紧贴边框 */
+    padding: 4px;
+
+    /* 字体大小：通常比正文略小或持平，取决于具体需求，这里保持默认或继承 */
+    font-weight: 450;
+
+}
 
 /* /* ========== QTreeWidget / QTreeView 样式 ==========
 QTreeWidget, QTreeView {

@@ -797,6 +797,23 @@ class CalculationThread(QObject):
         shm_in = None
         shm_out = None
         pool = None
+        shm_in_name = "LifeCalor_lifetime_Input"
+        shm_out_name = "LifeCalor_lifetime_Output"
+
+        # --- 1. 自愈机制：清理上次可能残留的内存 ---
+        for name in [shm_in_name, shm_out_name]:
+            try:
+                # 尝试连接已存在的内存
+                temp_shm = shared_memory.SharedMemory(name=name)
+                # 如果能连上，说明它是僵尸内存，将其释放
+                temp_shm.unlink()
+                temp_shm.close()
+                logging.warning(f"发现并清理了异常残留的共享内存: {name}")
+            except FileNotFoundError:
+                # 这是好结果，说明没有残留
+                pass
+            except Exception as e:
+                logging.warning(f"清理共享内存警告: {e}")
 
         try:
             T, height, width = aim_data.shape
@@ -806,7 +823,7 @@ class CalculationThread(QObject):
 
             # 1. 创建共享内存
             # 输入数据 SHM
-            shm_in = shared_memory.SharedMemory(create=True, size=aim_data.nbytes)
+            shm_in = shared_memory.SharedMemory(create=True, size=aim_data.nbytes, name=shm_in_name)
             shm_in_arr = np.ndarray(aim_data.shape, dtype=aim_data.dtype, buffer=shm_in.buf)
             shm_in_arr[:] = aim_data[:]  # 复制数据
 
@@ -815,7 +832,7 @@ class CalculationThread(QObject):
             output_dtype = np.float64  # lifetime通常用float64
             # 计算字节数
             out_size = int(np.prod(output_shape) * np.dtype(output_dtype).itemsize)
-            shm_out = shared_memory.SharedMemory(create=True, size=out_size)
+            shm_out = shared_memory.SharedMemory(create=True, size=out_size, name=shm_out_name)
             shm_out_arr = np.ndarray(output_shape, dtype=output_dtype, buffer=shm_out.buf)
             shm_out_arr[:] = 0  # 初始化
 

@@ -60,7 +60,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "0.12.3"  # 当前程序版本
+        self.current_version = "0.12.4"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = "Bearer <your PAT>"
@@ -356,10 +356,13 @@ class MainWindow(QMainWindow):
         inner_layout.addWidget(self.add_data_btn)
         inner_layout.addWidget(self.reset_data_btn)
         inner_layout.addStretch()
+        inner_layout.addWidget(InfoButton("""<div style='width: 250px;'>本区域也会显示一些一维数据结果，但具有更灵活的功能
+                                                <br>可以即时显示，随意放大拖动，还能<b>添加数据</b>进行比较<div>"""))
         plot_layout.addLayout(inner_layout)
         self.graph_plot = PlotGraphWidget()
         plot_layout.addWidget(self.graph_plot)
         self.plot_dock.setWidget(plot_widget)
+        self.plot_dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
         self.plot_dock.setMinimumSize(350, 250)
         # self.plot_dock.setLayout(plot_layout)
         self.addDockWidget(Qt.RightDockWidgetArea, self.plot_dock)
@@ -485,6 +488,9 @@ class MainWindow(QMainWindow):
         self.fps_input.valueChanged.connect(lambda: self.update_param('EM', 'EM_fps', self.fps_input.value()))
         fps_layout.addWidget(self.fps_input)
         fps_layout.addWidget(QLabel(" Hz"))
+        fps_layout.addStretch(1)
+        fps_info = InfoButton("会根据<b>选择模式</b>自动调整可设置参数。\n帧率和时间单位不会同时设置", topic_key=None)
+        fps_layout.addWidget(fps_info)
         param_layout.addLayout(fps_layout)
 
         # 模式选择
@@ -495,8 +501,12 @@ class MainWindow(QMainWindow):
 
         self.funtion_stack = QStackedWidget()
         nothing_group = self.QGroupBoxCreator(style="inner")
-        nothing_layout = QVBoxLayout()
+        nothing_layout = QHBoxLayout()
         nothing_layout.addWidget(QLabel("首先：请选择分析模式!"))
+        nothing_layout.addStretch(1)
+        nothing_layout.addWidget(InfoButton("选择分析模式后，此处会显示对应的数据导入选项。"
+                                            "<br><b>点击按钮</b>显示<span style='font-weight: bold; color: #2E7D32;'>全体帮助指南</span>",
+                                            ['general']))
         nothing_group.setLayout(nothing_layout)
         self.funtion_stack.addWidget(nothing_group)
 
@@ -531,6 +541,7 @@ class MainWindow(QMainWindow):
         self.file_type_stack1.addWidget(PA_group)
         type_choose1.addWidget(self.file_type_selector1)
         type_choose1.addWidget(self.file_type_stack1)
+        type_choose1.addWidget(InfoButton("选择不区分可以导入无后缀的任意tif文件"))
         fs_iSCAT_group.setLayout(type_choose1)
         self.funtion_stack.addWidget(fs_iSCAT_group)
 
@@ -598,10 +609,10 @@ class MainWindow(QMainWindow):
         self.tri_switch.valueChanged.connect(self.mode_switch_change)
         self.mode_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: #999999")
         switch_layout.addWidget(self.mode_label)
+        self.mode_info = InfoButton("""<div style='white-space: pre;'>按标准处理流程执行的快速操作，<br>数据源和ROI会按照默认流程<b>自动</b>选择</div>""")
+        switch_layout.addWidget(self.mode_info)
         process_layout.addLayout(switch_layout)
         process_layout.addSpacing(5)
-        self.mode_explain = QLabel("按标准处理流程执行的快速操作，\n数据源会自动选择")
-        process_layout.addWidget(self.mode_explain)
         self.parameter_panel.setLayout(process_layout)
 
     def setup_modes_panel(self):
@@ -624,15 +635,16 @@ class MainWindow(QMainWindow):
         self.modes_panel.setLayout(left_layout1)
 
     def setup_fs_GROUP(self):
-    # fs_iSCAT下的功能选择
+        """fs_iSCAT下的功能选择"""
         fs_iSCAT_GROUP = self.QGroupBoxCreator(style="noborder")
         operation_layout = QVBoxLayout()
         # 寿命模型选择
         lifetime_layout = QHBoxLayout()
-        lifetime_layout.addWidget(QLabel("寿命模型:"))
+        lifetime_layout.addWidget(QLabel("寿命模型："))
         self.model_combo = QComboBox()
         self.model_combo.addItems(["单指数衰减", "双指数-仅区域"])
         lifetime_layout.addWidget(self.model_combo)
+        lifetime_layout.addWidget(InfoButton("<div style='white-space: pre;'><b>寿命模型</b>：双指数有问题不要用<br><b>卷积处理</b>：建议首选smooth或gaussian</div>"))
         # 区域分析设置
         # operation_layout.addSpacing(10)
         operation_mode_layout = QHBoxLayout()
@@ -651,8 +663,9 @@ class MainWindow(QMainWindow):
         self.multiprocess_check = QCheckBox()
         multipro_layout.addWidget(QLabel("启用加速："))
         multipro_layout.addWidget(self.multiprocess_check)
+        multipro_layout.addWidget(
+            InfoButton("建议关闭闲职程序，保证最佳内存,\n启用后偶尔卡顿属正常现象，进度条不显示实时进度。"))
         heatmap_layout.addLayout(multipro_layout)
-        heatmap_layout.addWidget(QLabel("建议关闭无用程序,启用后偶尔卡顿属正常现象"))
         cpunum_layout = QHBoxLayout()
         self.cpu_use_input = QSpinBox()
         self.cpu_use_input.setRange(0, 100)
@@ -710,6 +723,7 @@ class MainWindow(QMainWindow):
         self.model_combo = QComboBox()
         self.model_combo.addItems(["单指数衰减", "双指数-仅区域"])
         lifetime_layout.addWidget(self.model_combo)
+        lifetime_layout.addWidget(InfoButton("双指数没做好，不要用"))
         coord_layout = QHBoxLayout()
         coord_layout.addWidget(QLabel("中心X:"))
         coord_layout.addWidget(self.region_x_input)
@@ -721,6 +735,7 @@ class MainWindow(QMainWindow):
         size_layout = QHBoxLayout()
         size_layout.addWidget(QLabel("区域大小:"))
         size_layout.addWidget(self.region_size_input)
+        size_layout.addWidget(InfoButton("在图像上直接点击即可选取，并在图像上会有显示"))
         region_layout.addLayout(lifetime_layout)
         region_layout.addLayout(coord_layout)
         region_layout.addLayout(shape_layout)
@@ -748,7 +763,7 @@ class MainWindow(QMainWindow):
         self.between_stack.addWidget(fs_iSCAT_GROUP)
 
     def setup_EM_GROUP(self):
-    # EM_iSCAT下的功能选择
+        """EM_iSCAT下的功能选择"""
         EM_iSCAT_GROUP = self.QGroupBoxCreator(style="noborder")
         EM_iSCAT_layout = QVBoxLayout()
         scroll_area = QScrollArea()
@@ -805,7 +820,7 @@ class MainWindow(QMainWindow):
         stft_layout.addLayout(process_set_layout1)
         stft_layout.addLayout(process_set_layout2)
         stft_layout.addWidget(self.stft_quality_btn)
-        stft_layout.addWidget(self.retransform_input)
+        # stft_layout.addWidget(self.retransform_input)
         stft_layout.addWidget(self.stft_process_btn)
         self.EM_mode_stack.addWidget(stft_GROUP)
         # cwt 小波变换
@@ -824,8 +839,11 @@ class MainWindow(QMainWindow):
         cwt_layout.addWidget(self.cwt_process_btn)
         self.EM_mode_stack.addWidget(cwt_GROUP)
         EM_iSCAT_layout1.addWidget(self.EM_mode_stack)
+        output_btn_layout = QHBoxLayout()
         self.EM_output_btn = QPushButton("时频变换结果快捷导出")
-        EM_iSCAT_layout1.addWidget(self.EM_output_btn)
+        output_btn_layout.addWidget(self.EM_output_btn)
+        output_btn_layout.addWidget(InfoButton("""<div style='white-space: pre;'>这里是用于快速导出刚刚变换后的结果，导出还有其他方法：<br>1. 在图像显示区域显示后从右上角工具栏选择导出</div>"""))
+        EM_iSCAT_layout1.addLayout(output_btn_layout)
 
         EM_iSCAT_layout2 = QHBoxLayout()
         self.after_process_select = QComboBox()
@@ -841,9 +859,12 @@ class MainWindow(QMainWindow):
         # self.retransform_input.setFixedHeight(30)
         # self.retransform_btn = QPushButton("重设频率范围的变换")
         self.roi_signal_btn = QPushButton("选区信号均值变化(快速选择ROI)")
+        roi_signal_btn_layout = QHBoxLayout()
+        roi_signal_btn_layout.addWidget(self.roi_signal_btn)
+        roi_signal_btn_layout.addWidget(InfoButton("默认对数据流程有严格要求，如果绘制失败，请调到ROI模式重试"))
         # whole_cell_layout.addWidget(self.retransform_input)
         # whole_cell_layout.addWidget(self.retransform_btn)
-        whole_cell_layout.addWidget(self.roi_signal_btn)
+        whole_cell_layout.addLayout(roi_signal_btn_layout)
         whole_cell_layout.addWidget(self.tDFT_btn)
         whole_cell_GROUP.setLayout(whole_cell_layout)
         self.after_process_stack.addWidget(whole_cell_GROUP)
@@ -922,13 +943,13 @@ class MainWindow(QMainWindow):
         self.mode = mode
         if mode == 0:
             self.mode_label.setText('ROI模式')
-            self.mode_explain.setText("每次处理前都需要选择ROI，\n数据也需要选择，ROI需要与数据匹配")
+            self.mode_info.setToolTip("""<div style='white-space: pre;'>每次处理前都<b>需要</b>选择ROI，<br>数据也<b>需要</b>选择，ROI需要与数据匹配</div>""")
         elif mode == 1:
             self.mode_label.setText('默认模式')
-            self.mode_explain.setText("按标准处理流程执行的快速操作，\n数据源会自动选择")
+            self.mode_info.setToolTip("""<div style='white-space: pre;'>按标准处理流程执行的快速操作，<br>数据源和ROI会按照默认流程<b>自动</b>选择</div>""")
         elif mode == 2:
             self.mode_label.setText('自由模式')
-            self.mode_explain.setText("每次处理前都需要选择数据，\n数据自由选择，但可能会报错（无法处理）")
+            self.mode_info.setToolTip("""<div style='white-space: pre;'>每次处理前都<b>需要</b>选择数据，<br>数据自由选择，但可能会报错（无法处理）</div>""")
         colors = ["#34C759", "#999999", "#007AFF"]
 
         self.mode_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {colors[mode]}")

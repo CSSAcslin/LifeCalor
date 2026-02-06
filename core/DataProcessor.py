@@ -69,7 +69,7 @@ def _stft_worker_process(
             if mag_batch.ndim == 3:
                 mag_batch = np.mean(mag_batch, axis=1)
 
-            mag_batch *= 560
+            mag_batch *= 2
 
             # 写入输出共享内存
             # 注意：stft_out_flat 的形状是 (out_length, total_pixels)
@@ -460,6 +460,24 @@ class MassDataProcessor(QObject):
             shm_out = None
             pool = None
 
+            shm_in_name = "LifeCalor_STFT_Input"
+            shm_out_name = "LifeCalor_STFT_Output"
+
+            # --- 1. 自愈机制：清理上次可能残留的内存 ---
+            for name in [shm_in_name, shm_out_name]:
+                try:
+                    # 尝试连接已存在的内存
+                    temp_shm = shared_memory.SharedMemory(name=name)
+                    # 如果能连上，说明它是僵尸内存，将其释放
+                    temp_shm.unlink()
+                    temp_shm.close()
+                    logging.warning(f"发现并清理了异常残留的共享内存: {name}")
+                except FileNotFoundError:
+                    # 这是好结果，说明没有残留
+                    pass
+                except Exception as e:
+                    logging.warning(f"清理共享内存警告: {e}")
+
             try:
                 # --- 1. 参数校验与准备 ---
                 window = self.get_window(window_type, window_size)
@@ -499,15 +517,14 @@ class MassDataProcessor(QObject):
 
                 height, width = frame_size
                 total_pixels = unfolded_data.shape[0]
-
+                self.processing_progress_signal.emit(0, total_pixels)
                 nfft = max(custom_nfft, window_size)
 
                 # --- 2. 创建共享内存 (Shared Memory) ---
                 # 这一步非常关键：我们在主进程申请内存，子进程直接用，无需复制 16GB 数据
-
                 # A. 输入数据共享内存
                 # create=True 表示创建新内存块
-                shm_in = shared_memory.SharedMemory(create=True, size=unfolded_data.nbytes)
+                shm_in = shared_memory.SharedMemory(create=True, size=unfolded_data.nbytes, name=shm_in_name)
                 # 将 numpy 数据复制进共享内存
                 shm_in_arr = np.ndarray(unfolded_data.shape, dtype=unfolded_data.dtype, buffer=shm_in.buf)
                 shm_in_arr[:] = unfolded_data[:]  # copy data
@@ -519,7 +536,7 @@ class MassDataProcessor(QObject):
                 output_dtype = np.float32
                 output_bytes = int(np.prod(output_shape_flat) * np.dtype(output_dtype).itemsize)
 
-                shm_out = shared_memory.SharedMemory(create=True, size=output_bytes)
+                shm_out = shared_memory.SharedMemory(create=True, size=output_bytes, name=shm_out_name)
                 # 初始化为 0
                 shm_out_arr = np.ndarray(output_shape_flat, dtype=output_dtype, buffer=shm_out.buf)
                 shm_out_arr[:] = 0
@@ -530,7 +547,7 @@ class MassDataProcessor(QObject):
                 # 计算每个进程负责的像素范围
                 chunk_size = math.ceil(total_pixels / num_cores)
                 tasks = []
-
+                self.processing_progress_signal.emit(1, total_pixels)
                 # 使用 Manager Queue 进行进程间通信 (进度条)
                 m = Manager()
                 queue = m.Queue()
@@ -550,7 +567,7 @@ class MassDataProcessor(QObject):
                     )
                     tasks.append(task_args)
 
-                self.processing_progress_signal.emit(0, total_pixels)
+                self.processing_progress_signal.emit(2, total_pixels)
                 print(f"开始多进程计算: 核心数={len(tasks)}, SHM_IN={shm_in.name}, SHM_OUT={shm_out.name}")
 
                 # --- 4. 启动进程池 ---
@@ -563,7 +580,7 @@ class MassDataProcessor(QObject):
                 # --- 5. 监控进度 ---
                 # 主线程在这里循环，直到任务完成
                 # 这样既不会阻塞 UI (如果在 thread 里)，又能实时更新进度
-                processed_total = 0
+                processed_total = 2
                 while not result_async.ready():
                     # 检查中止信号
                     if self.abortion:
@@ -708,10 +725,10 @@ class MassDataProcessor(QObject):
                         noverlap=noverlap,
                         nfft=nfft,
                         return_onesided=False,
-                        scaling='psd'
+                        scaling='spectrum'
                     )
                     # 提取目标频率处的幅度
-                    magnitude = np.mean(np.abs(Zxx[target_idx, :]), axis=0) * 560
+                    magnitude = np.mean(np.abs(Zxx[target_idx, :]), axis=0) * 2
 
                     # 将结果存入对应像素位置
                     y = i // width
@@ -843,6 +860,7 @@ class MassDataProcessor(QObject):
             # 初始化结果数组
             height, width = frame_size
             cwt_py_out = np.zeros((data.timelength, height, width), dtype=np.float32)
+            fc = pywt.central_frequency(wavelet)
 
             # 5. 逐像素STFT处理
             self.processing_progress_signal.emit(1, total_pixels)
@@ -867,7 +885,7 @@ class MassDataProcessor(QObject):
                 # 将结果存入对应像素位置
                 y = i // width
                 x = i % width
-                cwt_py_out[:, y, x] = magnitude_avg * 30
+                cwt_py_out[:, y, x] = magnitude_avg  * 2 / np.sqrt(scales[:,None])
 
                 # 每100个像素更新一次进度
                 self.processing_progress_signal.emit(i, total_pixels)

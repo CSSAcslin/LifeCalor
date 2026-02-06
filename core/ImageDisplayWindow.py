@@ -83,7 +83,7 @@ class ImageDisplayWindow(QMainWindow):
         self.Drawing_bar.addSeparator()
         self.create_drawing_action(self.Drawing_bar,'Color', "Set the Style",'样式') # 原本色彩设置现改为样式设置
         self.create_drawing_action(self.Drawing_bar, 'Accept', "Accept Roi and check canvas", '确认')
-        self.create_drawing_action(self.Drawing_bar, 'Reset', "Reset all", '重置')
+        self.create_drawing_action(self.Drawing_bar, 'Reset', "Reset all", '重置（恢复初始状态）')
         self.create_drawing_action(self.Drawing_bar,'Export','Export your canvas','导出')
 
         # # 添加默认选中项（可选）
