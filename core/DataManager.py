@@ -1069,7 +1069,7 @@ class ProcessedData:
                 type_processed=new_type,
                 time_point=new_time_point,
                 data_processed=target_data.copy(),  # 深拷贝数据，保证独立性
-                out_processed={}  # 新实例通常没有附属输出，初始化为空
+                out_processed={**{k:self.out_processed.get(k) for k in self.out_processed if k in ['fps', 'time_step','time_unit','duration','space_step','space_unit']}}  # 新实例只继承基础参数
             )
 
             logging.info(f"已从 {self.name} 提取 '{key}' 生成新数据实例: {new_name}")

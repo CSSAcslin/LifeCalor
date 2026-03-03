@@ -7,13 +7,14 @@ from math import ceil
 from typing import List
 
 import numpy as np
-from PyQt5.QtGui import QColor, QIntValidator, QFont, QCursor
+from PyQt5.QtGui import QColor, QIntValidator, QFont, QCursor, QIcon
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGroupBox,
                              QRadioButton, QSpinBox, QLineEdit, QPushButton,
                              QLabel, QMessageBox, QFormLayout, QDoubleSpinBox, QColorDialog, QComboBox, QCheckBox,
                              QFileDialog, QWhatsThis, QTextBrowser, QTableWidget, QDialogButtonBox, QTableWidgetItem,
                              QHeaderView, QAbstractItemView, QTabWidget, QWidget, QListWidget, QListWidgetItem,
-                             QSizePolicy, QTreeWidget, QTreeWidgetItem, QTextEdit, QToolButton, QStyle, QToolTip)
+                             QSizePolicy, QTreeWidget, QTreeWidgetItem, QTextEdit, QToolButton, QStyle, QToolTip,
+                             QApplication)
 from PyQt5.QtCore import Qt, QEvent, QTimer, QModelIndex, pyqtSignal, QSize
 from fontTools.merge import layoutPreMerge
 
@@ -333,7 +334,7 @@ class CalculationSetDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("计算设置")
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
-        self.setMinimumWidth(350)
+        self.setMinimumWidth(250)
 
         # 默认参数
         self.params = params
@@ -344,15 +345,36 @@ class CalculationSetDialog(QDialog):
         layout = QVBoxLayout()
 
         # 计算设置组
-        cal_set_group = QGroupBox('计算方法修改')
+        cal_set_group = QGroupBox('计算方法修改（尤指指数拟合）')
+        # cal_set_group.setToolTip("目标信号的最大值不在此范围内的值将在运算时被忽略")
         cal_set_layout = QFormLayout()
         self.from_start_cal = QCheckBox()
         self.from_start_cal.setChecked(self.params['from_start_cal'])
         cal_set_layout.addRow(QLabel('从头拟合(默认为从最大值拟合)'),self.from_start_cal)
         cal_set_group.setLayout(cal_set_layout)
 
+        # 信号范围组
+        peak_group = QGroupBox("信号最大值允许范围 (帧位)")
+        peak_group.setToolTip("目标信号的最大值不在此范围内的值将在运算时被忽略（无论计算方法是否从最大值拟合）")
+        peak_layout = QFormLayout()
+
+        self.peak_min_spin = QSpinBox()
+        self.peak_min_spin.setRange(0, 1e4)
+        self.peak_min_spin.setValue(self.params['peak_min'])
+        self.peak_min_spin.setSingleStep(1)
+
+        self.peak_max_spin = QSpinBox()
+        self.peak_max_spin.setRange(0, 1e5)
+        self.peak_max_spin.setValue(self.params['peak_max'])
+        self.peak_max_spin.setSingleStep(1)
+
+        peak_layout.addRow(QLabel("最小值:"), self.peak_min_spin)
+        peak_layout.addRow(QLabel("最大值:"), self.peak_max_spin)
+        peak_group.setLayout(peak_layout)
+
         # R方设置组
         r2_group = QGroupBox("拟合质量筛选")
+        r2_group.setToolTip("运算结果R方小于此值将会被筛除")
         r2_layout = QFormLayout()
 
         self.r2_spin = QDoubleSpinBox()
@@ -364,26 +386,9 @@ class CalculationSetDialog(QDialog):
         r2_layout.addRow(QLabel("R²最小值:"), self.r2_spin)
         r2_group.setLayout(r2_layout)
 
-        # 信号范围组
-        peak_group = QGroupBox("信号幅值范围")
-        peak_layout = QFormLayout()
-
-        self.peak_min_spin = QDoubleSpinBox()
-        self.peak_min_spin.setRange(-1e8, 1e2)
-        self.peak_min_spin.setValue(self.params['peak_min'])
-        self.peak_min_spin.setSingleStep(0.1)
-
-        self.peak_max_spin = QDoubleSpinBox()
-        self.peak_max_spin.setRange(-1e2, 1e8)
-        self.peak_max_spin.setValue(self.params['peak_max'])
-        self.peak_max_spin.setSingleStep(0.1)
-
-        peak_layout.addRow(QLabel("最小值:"), self.peak_min_spin)
-        peak_layout.addRow(QLabel("最大值:"), self.peak_max_spin)
-        peak_group.setLayout(peak_layout)
-
         # 寿命范围组
-        tau_group = QGroupBox("寿命τ值范围 (ps)")
+        tau_group = QGroupBox("寿命τ值允许范围 (默认时间单位)")
+        tau_group.setToolTip("拟合出的τ值若不在此范围内将被置零")
         tau_layout = QFormLayout()
 
         self.tau_min_spin = QDoubleSpinBox()
@@ -414,8 +419,8 @@ class CalculationSetDialog(QDialog):
 
         # 组装布局
         layout.addWidget(cal_set_group)
-        layout.addWidget(r2_group)
         layout.addWidget(peak_group)
+        layout.addWidget(r2_group)
         layout.addWidget(tau_group)
         layout.addLayout(button_layout)
 
@@ -1386,7 +1391,7 @@ class CustomHelpDialog(QDialog):
     #     ]
     #     return markdown.markdown(md_content, extensions=extensions)
 
-
+# 快速提示帮助组件
 class InfoButton(QToolButton):
     def __init__(self, tooltip_text="点击查看详情", topic_key=None, parent_window=None):
         super().__init__(parent_window)
@@ -1450,8 +1455,6 @@ class InfoButton(QToolButton):
 
     def _on_dialog_closed(self):
         self.help_dialog = None
-
-
 
 # 画布及roi查看和选择
 class ROIInfoDialog(QDialog):
@@ -1890,7 +1893,8 @@ class DataTreeViewDialog(QDialog):
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.tree.header().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        # self.tree.header().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.tree.setColumnWidth(4, 160)
 
         self.tree.setAlternatingRowColors(True)   # 开启交替行颜色（可选，看起来更像表格）
         self.tree.setAnimated(True)              # 开启展开收起的动画
@@ -2088,7 +2092,7 @@ class DataTreeViewDialog(QDialog):
             new_name = QLineEdit()
             new_name.setPlaceholderText("请为数据重命名（默认为原名，建议改名）")
             new_name.setToolTip("重命名数据仅在可视化窗口内应用")
-            linear_btn = QPushButton("     数据可视化(线性)    ")
+            linear_btn = QPushButton(QIcon(':icons/icon_add.svg'),"数据可视化(线性)")
             linear_layout.addWidget(new_name)
             linear_layout.addWidget(linear_btn)
             linear_widget = QWidget()
@@ -2101,16 +2105,23 @@ class DataTreeViewDialog(QDialog):
             # 因为 QTreeWidget 是 ItemView，需要用 setItemWidget 将 Widget 放入单元格
             self.tree.setItemWidget(item, 5, linear_widget)
 
-        elif is_image and not is_father: # 不要父节点那些，只要参数字典里面的
+        elif is_image:
             image_layout = QHBoxLayout()
-            image_btn = QPushButton("     数据可视化(图像)    ")
-            image_layout.addWidget(image_btn)
-            image_btn.setToolTip("点击会创建新画布呈现选中的数据，同时新增ProcessedData")
+            if not is_father: # 不要父节点那些，只要参数字典里面的
+                image_btn = QPushButton(QIcon(':icons/icon_add.svg'),"数据可视化(图像)")
+                image_layout.addWidget(image_btn)
+                image_btn.setToolTip("点击会创建新画布呈现选中的数据，同时新增ProcessedData")
+                image_btn.clicked.connect(lambda _, data=original_obj, key=name: self.emit_canvas_signal(data, key))
+                # image_btn.setStyleSheet("padding: 0px;")
+                # image_btn.setMinimumHeight(14)
+            else:
+                name = None
+            export_btn = QPushButton(QIcon(':icons/icon_export.svg'),"数据直接导出")
+            # export_btn.setStyleSheet("padding: 0px;")
+            export_btn.clicked.connect(lambda _, data=original_obj, key=name: self.open_rawdata_export(data, key))
+            image_layout.addWidget(export_btn)
             image_widget = QWidget()
             image_widget.setLayout(image_layout)
-            image_btn.clicked.connect(lambda _, data = original_obj, key = name: self.emit_canvas_signal(data, key))
-            image_btn.setStyleSheet("padding: 0px;")
-            image_btn.setMinimumHeight(14)
 
             self.tree.setItemWidget(item, 5, image_widget)
 
@@ -2140,6 +2151,13 @@ class DataTreeViewDialog(QDialog):
         self.help_window.show()
         self.help_window.raise_()
         self.help_window.activateWindow()
+
+    def open_rawdata_export(self, data, name):
+        """打开数据导出窗口"""
+        self.export_window = RawDataExportDialog(data, name)
+        self.export_window.show()
+        self.export_window.raise_()
+        self.export_window.activateWindow()
 
     @staticmethod
     def _format_array_size(array):
@@ -2313,7 +2331,7 @@ class HeartBeatFrameSelectDialog(QDialog):
         else:
             return ""
 
-# 参数设置对话框
+# 基础参数设置对话框
 class ParamsResetDialog(QDialog):
     """
     :param data
@@ -2462,5 +2480,162 @@ class ParamsResetDialog(QDialog):
         # 5. 关闭对话框
         self.accept()
 
+# 纯数据直接导出对话框
+class RawDataExportDialog(QDialog):
+    def __init__(self, data, key_name, parent=None):
+        """
+        初始化导出对话框
+        :param data: 需要导出的二维或三维 numpy 数组
+        """
+        super().__init__(parent)
+        if isinstance(data, Data) and key_name is not None:
+            self.data = data.parameters[key_name]
+            self.key_name = data.name + key_name
+        elif isinstance(data, Data) and key_name is None:
+            self.data = data.data_origin
+            self.key_name = data.name
+        elif isinstance(data, ProcessedData) and key_name is not None:
+            self.data = data.out_processed[key_name]
+            self.key_name = data.name + key_name
+        elif isinstance(data, ProcessedData) and key_name is None:
+            self.data = data.data_processed
+            self.key_name = data.name
 
+        self.setWindowTitle("导出纯粹数据")
+        self.resize(200, 180)
+        self.setup_ui()
 
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # 1. 顶部数据信息提示
+        header_layout = QHBoxLayout()
+        shape_str = " × ".join(map(str, self.data.shape))
+        info_label = QLabel("<b>当前待导出数据:</b>")
+        info_label2 = QLabel(f"<div style='color: black;'>{self.key_name} <br> 维度: {self.data.ndim}D <br>形状: {shape_str} (T × H × W) </div>")
+        info_help = InfoButton("本导出是导出为纯粹的数据格式，如果要导出图像或视频，请从工具栏中导出画布")
+        header_layout.addWidget(info_label)
+        header_layout.addStretch()
+        header_layout.addWidget(info_help)
+        layout.addLayout(header_layout)
+        layout.addWidget(info_label2)
+
+        # 2. 路径选择区域
+        path_layout = QHBoxLayout()
+        self.path_edit = QLineEdit()
+        self.path_edit.setPlaceholderText("请选择保存位置和格式...")
+        self.path_edit.setReadOnly(True)  # 让用户强制通过浏览按钮选择，避免手误
+
+        browse_btn = QPushButton("浏览...")
+        browse_btn.clicked.connect(self.browse_file)
+
+        path_layout.addWidget(self.path_edit)
+        path_layout.addWidget(browse_btn)
+        layout.addLayout(path_layout)
+
+        layout.addSpacing(10)
+
+        # 3. 底部操作按钮
+        btn_layout = QHBoxLayout()
+        self.export_btn = QPushButton("确定导出")
+        self.export_btn.clicked.connect(self.execute_export)
+        self.export_btn.setEnabled(False)  # 未选择路径前禁用
+        self.export_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 5px;")
+
+        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn.clicked.connect(self.reject)
+
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.cancel_btn)
+        btn_layout.addWidget(self.export_btn)
+        layout.addLayout(btn_layout)
+
+    def browse_file(self):
+        """打开文件对话框，自动根据数据维度过滤支持的格式"""
+        # 基础支持格式 (2D 和 3D 共用)
+        filters_list = [
+            "HDF5 Files (*.h5 *.hdf5)",
+            "TIFF Image (*.tif *.tiff)",
+            "NumPy Array (*.npy)"
+        ]
+
+        # 如果是二维数据，追加 CSV 格式支持
+        if self.data.ndim == 2:
+            filters_list.insert(1, "CSV Files (*.csv)")  # 放在中间
+
+        filters_string = ";;".join(filters_list)
+
+        # 调用 QFileDialog
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "选择保存路径",
+            self.key_name,
+            filters_string
+        )
+
+        if save_path:
+            self.path_edit.setText(save_path)
+            self.export_btn.setEnabled(True)  # 启用导出按钮
+
+    def execute_export(self):
+        """执行导出操作"""
+        filepath = self.path_edit.text()
+        if not filepath:
+            return
+
+        self.export_btn.setEnabled(False)
+        self.export_btn.setText("正在导出...")
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setText("请稍等")
+        QApplication.processEvents()  # 刷新UI，避免假死
+
+        try:
+            # 调用核心导出函数
+            self.export_image_data(self.data, filepath)
+            QMessageBox.information(self, "导出成功", f"数据已成功保存至：\n{filepath}")
+            self.accept()  # 关闭对话框
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"导出过程中发生错误：\n{str(e)}")
+            self.export_btn.setEnabled(True)
+            self.export_btn.setText("确定导出")
+
+    @staticmethod
+    def export_image_data(data, filepath):
+        """
+        根据文件后缀名导出 2D 或 3D 图像数据
+        :param data: numpy array 格式的图像数据 (2D 或 3D)
+        :param filepath: 保存的完整文件路径 (包含后缀)
+        """
+        data = np.asarray(data)
+        ndim = data.ndim
+
+        if ndim not in [2, 3]:
+            raise ValueError(f"仅支持 2D 或 3D 数据，当前数据维度为 {ndim}D。")
+
+        # 获取文件后缀并转换为小写
+        _, ext = os.path.splitext(filepath)
+        ext = ext.lower()
+
+        if ext == '.csv':
+            if ndim != 2:
+                raise ValueError(f"CSV 格式仅支持 2D 数据，当前数据维度为 {ndim}D。")
+            # 保存为CSV，以逗号分隔
+            np.savetxt(filepath, data, delimiter=',')
+
+        elif ext in ['.h5', '.hdf5']:
+            import h5py
+            with h5py.File(filepath, 'w') as f:
+                # 存入HDF5，数据集命名为 'image_data'，并开启gzip压缩以减小体积
+                f.create_dataset('image_data', data=data, compression='gzip')
+
+        elif ext in ['.tif', '.tiff']:
+            import tifffile
+            # tifffile 可以完美兼容 2D 以及 3D (Image Stack)
+            tifffile.imwrite(filepath, data)
+
+        elif ext == '.npy':
+            # 保存为 numpy 原生格式
+            np.save(filepath, data)
+
+        else:
+            raise ValueError(f"不支持的保存格式: {ext}")

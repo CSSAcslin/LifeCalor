@@ -1135,6 +1135,7 @@ class MassDataProcessor(QObject):
                 height, width = data.datashape
             else:
                 frames, height, width = data.datashape
+            tfshift = np.zeros((frames, height, width),dtype=np.complex64)
             magnitude_spectra = np.zeros((frames, height, width))
             magnitude_log = np.zeros((frames, height, width))
             phase_spectra = np.zeros((frames, height, width))
@@ -1144,6 +1145,7 @@ class MassDataProcessor(QObject):
                 f = np.fft.fft2(pure_data[i])
                 fshift = np.fft.fftshift(f)  # 将低频移到中心
 
+                tfshift[i] = fshift.copy()
                 # 幅度谱
                 magnitude_spectra[i] = np.abs(fshift)
 
@@ -1158,13 +1160,93 @@ class MassDataProcessor(QObject):
                                        "2D_Fourier_transform",
                                        time_point = data.time_point,
                                        data_processed=np.squeeze(magnitude_log),
-                                       out_processed={'twoD_FFT':np.squeeze(fshift),
+                                       out_processed={'twoD_FFT':np.squeeze(tfshift),
                                                       'magnitude_spectra': np.squeeze(magnitude_spectra),
                                                       'phase_spectra': np.squeeze(phase_spectra),**data.out_processed}))
             self.processing_progress_signal.emit(frames, frames)
             return True
         except Exception as e:
             self.processed_result.emit({'type': "2D_Fourier_transform", 'error': str(e)})
+            return False
+
+    @pyqtSlot(object)
+    def twoD_inverse_fourier_transform(self, data):
+        """
+        对2D傅里叶变换后的频域数据进行逆变换，恢复3D时序视频数据（空间域）
+
+        参数:
+        data: ProcessedData对象 或 原始数据。必须包含复数频域数据。
+
+        返回:
+        reconstructed_data: 逆傅里叶变换后恢复的空间域/图像数组
+        """
+        # 1. 尝试获取包含幅度和相位的"复数频域数据"
+        if isinstance(data, ProcessedData):
+            # 优先从 out_processed 中提取正变换时保存的完整复数数据 'twoD_FFT'
+            if 'twoD_FFT' in data.out_processed:
+                pure_data = data.out_processed['twoD_FFT']
+            else:
+                pure_data = data.data_processed
+        else:
+            pure_data = data.data_origin
+
+        # 确保 pure_data 是复数类型。如果丢失了相位信息（纯实数），逆变换将是不准确的。
+        if not np.iscomplexobj(pure_data):
+            print("警告: 输入数据不包含复数信息(缺失相位)，恢复的图像可能只有边缘或失真。")
+
+        try:
+            # 2. 形状与帧数解析
+            # 由于之前存入 out_processed 时可能被 squeeze 过，这里做一个稳健的维度处理
+            pure_data = np.atleast_3d(pure_data) if pure_data.ndim == 2 else pure_data
+
+            if data.timelength == 1 or pure_data.shape[0] == 1:
+                frames = 1
+                height, width = pure_data.shape[-2], pure_data.shape[-1]
+            else:
+                frames, height, width = pure_data.shape
+
+            # 预分配内存保存恢复的图像数据
+            # 正常逆变换后的图像应该是实数，所以预分配为 float
+            reconstructed_data = np.zeros((frames, height, width), dtype=np.float32)
+
+            self.processing_progress_signal.emit(0, frames)
+
+            # 3. 逐帧进行逆变换
+            for i in range(frames):
+                # 如果只有1帧且被强行升维，pure_data[i]的提取需要注意，但上面的 atleast_3d 和 正常3D数据都能兼容
+                frame_data = pure_data[i] if pure_data.ndim == 3 else pure_data
+
+                # 第一步：逆中心化 (将低频从中心移回左上角)
+                f_ishift = np.fft.ifftshift(frame_data)
+
+                # 第二步：2D逆傅里叶变换
+                img_back = np.fft.ifft2(f_ishift)
+
+                # 第三步：取实部 (由于计算精度问题，ifft2的结果通常带有极微小的虚部，取实部或取绝对值来消除)
+                # 注：如果你的原图包含负数，用 np.real()；如果原图全是正数值亮度，用 np.abs() 也可以。这里使用标准 np.real()
+                reconstructed_data[i] = np.real(img_back)
+
+                self.processing_progress_signal.emit(i + 1, frames)  # 进度+1
+
+            # 4. 封装并发送处理完成信号
+            # 继承上一步的属性，修改标识
+            self.processed_result.emit(ProcessedData(
+                data.timestamp,
+                f'{data.name}@2DIFFT',
+                "2D_Inverse_Fourier_transform",
+                time_point=data.time_point,
+                data_processed=np.squeeze(reconstructed_data),  # 默认主参数为恢复的图像
+                out_processed={
+                    'reconstructed_img': np.squeeze(reconstructed_data),
+                    **data.out_processed  # 保留之前的处理记录
+                }
+            ))
+
+            self.processing_progress_signal.emit(frames, frames)
+            return True
+
+        except Exception as e:
+            self.processed_result.emit({'type': "2D_Inverse_Fourier_transform", 'error': str(e)})
             return False
 
     @pyqtSlot(object, int, int ,list, str, str, float)

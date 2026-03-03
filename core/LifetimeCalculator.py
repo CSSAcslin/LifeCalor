@@ -29,11 +29,11 @@ def _lifetime_fit_worker(
         # 2. 重构数组
         # 输入: [Time, Height, Width]
         aim_data = np.ndarray(shape_in, dtype=dtype_in, buffer=existing_shm_in.buf)
-        # 输出: [Height, Width]
-        lifetime_map = np.ndarray(shape_out, dtype=dtype_out, buffer=existing_shm_out.buf)
+        # 输出: [2, Height, Width]
+        map = np.ndarray(shape_out, dtype=dtype_out, buffer=existing_shm_out.buf)
 
         start_row, end_row = row_range
-        height, width = shape_out
+        _, height, width = shape_out
 
         # 3. 参数解包
         r_squared_min = fit_params['r_squared_min']
@@ -53,7 +53,8 @@ def _lifetime_fit_worker(
                     # --- A. Pearson 校验 (保留原有逻辑) ---
                     # 优化：提前判断全零或无效数据
                     if np.max(np.abs(time_series)) < 1e-6:
-                        lifetime_map[i, j] = 0
+                        map[0, i, j] = 0
+                        map[1, i, j] = 0
                         continue
 
                     window_size = min(10, len(time_points) // 2)
@@ -76,7 +77,8 @@ def _lifetime_fit_worker(
                             break  # 只要有一段满足，就认为有效，直接跳出循环节省时间
 
                     if not is_valid_signal:
-                        lifetime_map[i, j] = 0
+                        map[0, i, j] = 0
+                        map[1, i, j] = 0
                         continue
 
                     # --- B. 准备拟合数据 ---
@@ -97,7 +99,8 @@ def _lifetime_fit_worker(
 
                     # 极短数据保护
                     if len(decay_signal) < 3:
-                        lifetime_map[i, j] = 0
+                        map[0, i, j] = 0
+                        map[1, i, j] = 0
                         continue
 
                     # --- C. 执行 curve_fit ---
@@ -106,6 +109,7 @@ def _lifetime_fit_worker(
                     C_guess = np.min(decay_signal)
 
                     lifetime = 0
+                    r2 = 0
 
                     # 单指数
                     if model_type == 'single':
@@ -137,11 +141,13 @@ def _lifetime_fit_worker(
                         # ... 你的双指数逻辑 ...
                         pass
 
-                    lifetime_map[i, j] = lifetime
+                    map[0, i, j] = lifetime
+                    map[1, i, j] = r2
 
                 except Exception:
                     # 单个像素失败不影响整体
-                    lifetime_map[i, j] = 0
+                    map[0, i, j] = 0
+                    map[1, i, j] = 0
 
             # (可选) 可以在这里通过 Queue 发送 row 进度，但通常不需要那么细
             pass
@@ -165,7 +171,7 @@ class LifetimeCalculator:
     _cal_params = {
         'from_start_cal':False,
         'r_squared_min': 0.4,
-        'peak_range': (0.0, 1000.0),
+        'peak_range': (0, 50),
         'tau_range': (1e-3, 1e2)
     }
 
@@ -551,7 +557,7 @@ class CalculationThread(QObject):
 
             time_points = data.time_point * time_unit
             data_type = data.parameters['data_type'] if data.parameters is not None and 'data_type' in data.parameters else None
-            aim_data = data.data_origin
+            aim_data = data.data_origin.copy() if isinstance(data,Data) else data.data_processed.copy()
             T = data.timelength
 
             if pre_cov is not None:
@@ -564,9 +570,9 @@ class CalculationThread(QObject):
                 logging.info("预卷积完成，下面开始计算")
 
             if is_multipro:
-                lifetime_map = self._run_multiprocess_lifetime_cal(aim_data, data_type, time_points, model_type, cpu_num)
+                lifetime_map, r_squared_map = self._run_multiprocess_lifetime_cal(aim_data, data_type, time_points, model_type, cpu_num)
             else:
-                lifetime_map = self.lifetime_map_cal(aim_data,data_type,time_points,model_type)
+                lifetime_map, r_squared_map = self.lifetime_map_cal(aim_data,data_type,time_points,model_type)
             if isinstance(lifetime_map, np.ndarray):
                 pass
             else:
@@ -583,7 +589,8 @@ class CalculationThread(QObject):
                                                       'lifetime_distribution',
                                                      time_point=np.array([0]),
                                                       data_processed=lifetime_map_cov,
-                                                     out_processed={'lifetime_map': lifetime_map,
+                                                     out_processed={'lifetime_map': lifetime_map_cov,
+                                                                    'r_squared_map': r_squared_map,
                                                                     **(data.out_processed if isinstance(data,ProcessedData) else data.parameters)}))
         except Exception as e:
             self.update_status.emit(f'区域数据拟合出错:{e}','error')
@@ -675,7 +682,7 @@ class CalculationThread(QObject):
                 return True
             time_points = data.time_point * time_unit
             data_type = data.parameters.get('data_type')
-            aim_data = data.data_origin.copy()
+            aim_data = data.data_origin.copy() if isinstance(data,Data) else data.data_processed.copy()
             T = data.timelength
 
             if pre_cov is not None:
@@ -689,10 +696,10 @@ class CalculationThread(QObject):
 
             # 拟合计算
             if is_multipro:
-                lifetime_map = self._run_multiprocess_lifetime_cal(aim_data, data_type, time_points, model_type,
+                lifetime_map, r_squared_map = self._run_multiprocess_lifetime_cal(aim_data, data_type, time_points, model_type,
                                                                    cpu_num)
             else:
-                lifetime_map = self.lifetime_map_cal(aim_data, data_type, time_points, model_type)
+                lifetime_map, r_squared_map = self.lifetime_map_cal(aim_data, data_type, time_points, model_type)
 
             if isinstance(lifetime_map, np.ndarray):
                 pass
@@ -713,7 +720,8 @@ class CalculationThread(QObject):
                                                      'heat_transfer',
                                                      time_point=np.array([0]),
                                                      data_processed=heat_transfer_cov,
-                                                     out_processed={'heat_transfer_map': heat_transfer, }))
+                                                     out_processed={'heat_transfer_map': heat_transfer_cov,
+                                                                    'r_squared_map':r_squared_map}))
         except Exception as e:
             self.update_status.emit(f'传热计算出错:{e}', 'error')
         finally:
@@ -746,10 +754,12 @@ class CalculationThread(QObject):
         return True
 
     def lifetime_map_cal(self,aim_data,data_type,time_points,model_type):
-        """纯寿命热图计算"""
+        """纯寿命热图计算
+        :return 寿命τ值二维矩阵，R方矩阵"""
         try:
             T, height, width = aim_data.shape
             lifetime_map = np.zeros((height, width))
+            r_squared_map = np.zeros((height, width))
             logging.info("开始拟合热图...")
 
             loading_bar_value = 0  # 进度条
@@ -774,9 +784,11 @@ class CalculationThread(QObject):
                                 pass
                         if np.all(np.abs(pr) < 0.8):
                             lifetime = np.nan
+                            r_squared = np.nan
                         else:
                             pass
                         lifetime_map[i, j] = lifetime if not np.isnan(lifetime) else 0
+                        r_squared_map[i, j] = lifetime if not np.isnan(r_squared) else 0
                         loading_bar_value += 1
                         self.calculating_progress_signal.emit(loading_bar_value, total_l)
                 else:
@@ -784,7 +796,7 @@ class CalculationThread(QObject):
                     self.calculating_progress_signal.emit(total_l, total_l)  # 进度条更新
                     return "线程终止"
             logging.info("计算完成!")
-            return lifetime_map
+            return lifetime_map, r_squared_map,
         except Exception as e:
             return e
         finally:
@@ -820,15 +832,15 @@ class CalculationThread(QObject):
             total_pixels = height * width
 
             logging.info(f"开始多进程拟合: 尺寸 {width}x{height}, 帧数 {T}")
-
+            self.calculating_progress_signal.emit(0, 100)  # 假进度，表示开始
             # 1. 创建共享内存
             # 输入数据 SHM
             shm_in = shared_memory.SharedMemory(create=True, size=aim_data.nbytes, name=shm_in_name)
             shm_in_arr = np.ndarray(aim_data.shape, dtype=aim_data.dtype, buffer=shm_in.buf)
             shm_in_arr[:] = aim_data[:]  # 复制数据
 
-            # 输出结果 SHM (2D map)
-            output_shape = (height, width)
+            # 输出结果 SHM (2D map*2)
+            output_shape = (2, height, width)
             output_dtype = np.float64  # lifetime通常用float64
             # 计算字节数
             out_size = int(np.prod(output_shape) * np.dtype(output_dtype).itemsize)
@@ -859,8 +871,6 @@ class CalculationThread(QObject):
                     data_type, model_type, fit_params
                 ))
 
-            self.calculating_progress_signal.emit(0, 100)  # 假进度，表示开始
-
             # 4. 启动进程池
             pool = Pool(processes=len(tasks))
             result_async = pool.starmap_async(_lifetime_fit_worker, tasks)
@@ -879,10 +889,10 @@ class CalculationThread(QObject):
             result_async.get()  # 检查错误
 
             # 6. 取回结果
-            lifetime_map = shm_out_arr.copy()  # Copy out
+            map = shm_out_arr.copy()  # Copy out
             self.calculating_progress_signal.emit(99, 100)
             logging.info("多进程拟合完成")
-            return lifetime_map
+            return map[0], map[1]
 
         except Exception as e:
             raise e

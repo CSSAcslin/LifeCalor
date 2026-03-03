@@ -7,14 +7,14 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 import numpy as np
 from PyQt5 import sip
-from PyQt5.QtGui import QPixmap, QIcon, QFontDatabase
+from PyQt5.QtGui import QPixmap, QIcon, QFontDatabase, QDesktopServices
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QComboBox, QScrollArea,
                              QFileDialog, QSlider, QSpinBox, QDoubleSpinBox, QGroupBox,
                              QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QStackedWidget, QDockWidget,
                              QStatusBar, QScrollBar, QFrame
                              )
-from PyQt5.QtCore import Qt, pyqtSignal, QThread, QMetaObject, QElapsedTimer, QSettings, QCoreApplication
+from PyQt5.QtCore import Qt, pyqtSignal, QThread, QMetaObject, QElapsedTimer, QSettings, QCoreApplication, QUrl
 
 from ImportManager import *
 from DataProcessor import DataProcessor, MassDataProcessor
@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
     tDgf_signal = pyqtSignal(object,int,float,bool)
     sscs_signal = pyqtSignal(object, int, float, bool)
     tDFT_signal = pyqtSignal(object)
+    tDiFT_signal = pyqtSignal(object)
     heartbeat_signal = pyqtSignal(object, int, int ,list, str, str, float)
     easy_process = pyqtSignal(object, str, object)
     roi_processed_signal = pyqtSignal(object,np.ndarray,float,bool,bool,float)
@@ -60,7 +61,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "0.12.4"  # 当前程序版本
+        self.current_version = "0.12.6"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = "Bearer <your PAT>"
@@ -140,8 +141,8 @@ class MainWindow(QMainWindow):
         self.cal_set_params = self._load_param_group('cal_set', {
             'from_start_cal': False,
             'r_squared_min': 0.4,
-            'peak_min': 0.0,
-            'peak_max': 100.0,
+            'peak_min': 0,
+            'peak_max': 50,
             'tau_min': 1e-3,
             'tau_max': 1e3
         })
@@ -342,17 +343,31 @@ class MainWindow(QMainWindow):
         right_layout_horizontal.addWidget(self.time_slider_vertical)
         right_layout_horizontal.addWidget(self.result_display)
         result_layout.addLayout(right_layout_horizontal)
+        # 添加分析按钮和导出按钮
+        data_save_layout = QHBoxLayout()
+        save_help = InfoButton("此处需要先有绘图结果才能导出。<br>该处绘图结果为正常流程中的出图，暂无法自由绘制。<br>若需检验数据并绘制请使用下面的<b>数据结果</b>窗口，不能绘制的请请重新计算。")
+        data_save_layout.addWidget(save_help)
+        data_save_layout.addStretch()
+        self.export_image_btn = QPushButton("导出结果为图片")
+        self.export_data_btn = QPushButton("导出结果为数据")
+        self.export_data_btn.setObjectName("StressButton")
+        self.export_image_btn.setObjectName("StressButton")
+        data_save_layout.addWidget(self.export_image_btn)
+        data_save_layout.addWidget(self.export_data_btn)
+        result_layout.addLayout(data_save_layout)
         self.result_dock.setWidget(result_widget)
         self.result_dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
-        self.result_dock.setMinimumSize(350, 350)
+        self.result_dock.setMinimumSize(350, 300)
         self.addDockWidget(Qt.RightDockWidgetArea, self.result_dock)
 
         self.plot_dock = QDockWidget("数据结果", self)
         plot_widget = QWidget()
         plot_layout = QVBoxLayout(plot_widget)
         inner_layout = QHBoxLayout()
-        self.add_data_btn = QPushButton("添加数据")
+        self.add_data_btn = QPushButton("添加/导出数据")
         self.reset_data_btn = QPushButton("清除数据")
+        self.add_data_btn.setObjectName("StressButton")
+        self.reset_data_btn.setObjectName("StressButton")
         inner_layout.addWidget(self.add_data_btn)
         inner_layout.addWidget(self.reset_data_btn)
         inner_layout.addStretch()
@@ -363,7 +378,7 @@ class MainWindow(QMainWindow):
         plot_layout.addWidget(self.graph_plot)
         self.plot_dock.setWidget(plot_widget)
         self.plot_dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
-        self.plot_dock.setMinimumSize(350, 250)
+        self.plot_dock.setMinimumSize(350, 300)
         # self.plot_dock.setLayout(plot_layout)
         self.addDockWidget(Qt.RightDockWidgetArea, self.plot_dock)
 
@@ -380,36 +395,6 @@ class MainWindow(QMainWindow):
 
     def setup_left_panel(self):
         """设置左侧面板"""
-        button_style_sheet = """
-        QPushButton {
-            background-color: #4CAF50;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            padding: 6px 10px;
-            font-weight: 500;
-            min-width: 100px;
-        }
-        
-        QPushButton:hover {
-            background-color: #388E3C;
-        }
-        
-        QPushButton:pressed {
-            background-color: #2E7D32;
-        }
-        
-        QPushButton:disabled {
-            background-color: #A5D6A7;
-            color: #E8F5E9;
-        }
-        
-        QPushButton:focus {
-            outline: 1px solid #81C784;
-            border-radius: 4px;
-            padding: 5px 10px;
-            outline-offset: 1px;
-        }"""
         self.left_panel = QWidget()
         self.left_panel_layout = QVBoxLayout()
         self.left_panel_layout.setContentsMargins(15,15,15,15)
@@ -420,15 +405,7 @@ class MainWindow(QMainWindow):
         self.left_panel_layout.addWidget(self.parameter_panel)
         self.left_panel_layout.addWidget(self.modes_panel, stretch=1)
         self.left_panel_layout.addSpacing(15)
-        # 添加分析按钮和导出按钮
-        data_save_layout = QHBoxLayout()
-        self.export_image_btn = QPushButton("导出结果为图片")
-        self.export_data_btn = QPushButton("导出结果为数据")
-        self.export_data_btn.setStyleSheet(button_style_sheet)
-        self.export_image_btn.setStyleSheet(button_style_sheet)
-        data_save_layout.addWidget(self.export_image_btn)
-        data_save_layout.addWidget(self.export_data_btn)
-        self.left_panel_layout.addLayout(data_save_layout)
+
         self.left_panel.setLayout(self.left_panel_layout)
 
     def setup_data_panel(self):
@@ -609,7 +586,7 @@ class MainWindow(QMainWindow):
         self.tri_switch.valueChanged.connect(self.mode_switch_change)
         self.mode_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: #999999")
         switch_layout.addWidget(self.mode_label)
-        self.mode_info = InfoButton("""<div style='white-space: pre;'>按标准处理流程执行的快速操作，<br>数据源和ROI会按照默认流程<b>自动</b>选择</div>""")
+        self.mode_info = InfoButton("""<div style='white-space: pre;'>默认模式:<br>按标准处理流程执行的快速操作，<br>数据源和ROI会按照默认流程<b>自动</b>选择</div>""")
         switch_layout.addWidget(self.mode_info)
         process_layout.addLayout(switch_layout)
         process_layout.addSpacing(5)
@@ -910,6 +887,8 @@ class MainWindow(QMainWindow):
         Other_layout.addWidget(self.signal_extract)
         self.tDFT_btn2 = QPushButton("二维傅里叶变换")
         Other_layout.addWidget(self.tDFT_btn2)
+        self.tDiFT_btn = QPushButton("二维傅里叶逆变换")
+        Other_layout.addWidget(self.tDiFT_btn)
         self.atam_btn2 = QPushButton("累计时间振幅图")
         Other_layout.addWidget(self.atam_btn2)
         self.heartbeat_btn = QPushButton("心肌细胞跳动分析")
@@ -943,13 +922,13 @@ class MainWindow(QMainWindow):
         self.mode = mode
         if mode == 0:
             self.mode_label.setText('ROI模式')
-            self.mode_info.setToolTip("""<div style='white-space: pre;'>每次处理前都<b>需要</b>选择ROI，<br>数据也<b>需要</b>选择，ROI需要与数据匹配</div>""")
+            self.mode_info.setToolTip("""<div style='white-space: pre;'>ROI模式:<br>每次处理前都<b>需要</b>选择ROI，<br>数据也<b>需要</b>选择，ROI需要与数据匹配</div>""")
         elif mode == 1:
             self.mode_label.setText('默认模式')
-            self.mode_info.setToolTip("""<div style='white-space: pre;'>按标准处理流程执行的快速操作，<br>数据源和ROI会按照默认流程<b>自动</b>选择</div>""")
+            self.mode_info.setToolTip("""<div style='white-space: pre;'>默认模式:<br>按标准处理流程执行的快速操作，<br>数据源和ROI会按照默认流程<b>自动</b>选择</div>""")
         elif mode == 2:
             self.mode_label.setText('自由模式')
-            self.mode_info.setToolTip("""<div style='white-space: pre;'>每次处理前都<b>需要</b>选择数据，<br>数据自由选择，但可能会报错（无法处理）</div>""")
+            self.mode_info.setToolTip("""<div style='white-space: pre;'>自由模式:<br>每次处理前都<b>需要</b>选择数据，<br>数据自由选择，但可能会报错（无法处理）</div>""")
         colors = ["#34C759", "#999999", "#007AFF"]
 
         self.mode_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {colors[mode]}")
@@ -1007,7 +986,7 @@ class MainWindow(QMainWindow):
         EM_help = help_menu.addAction('电化学调制iSCAT')
         EM_help.triggered.connect(lambda: self.help_show('电化学调制分析帮助',["general","stft","cwt"]))
         about_action = help_menu.addAction("关于")
-
+        about_action.triggered.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/CSSAcslin/LifeCalor")))
 
         update_action = self.menu.addAction('检查更新')
         update_action.triggered.connect(self.update_dialog)
@@ -1322,6 +1301,7 @@ class MainWindow(QMainWindow):
         self.tDgf_signal.connect(self.mass_data_processor.twoD_gaussian_fit)
         self.sscs_signal.connect(self.mass_data_processor.simple_single_channel)
         self.tDFT_signal.connect(self.mass_data_processor.twoD_fourier_transform)
+        self.tDiFT_signal.connect(self.mass_data_processor.twoD_inverse_fourier_transform)
         self.heartbeat_signal.connect(self.mass_data_processor.heartbeat_movement)
 
         # self.avi_thread.start()
@@ -1356,6 +1336,7 @@ class MainWindow(QMainWindow):
         self.roi_signal_btn.clicked.connect(self.roi_signal_avg)
         self.tDFT_btn.clicked.connect(self.process_tDFT)
         self.tDFT_btn2.clicked.connect(self.process_tDFT)
+        self.tDiFT_btn.clicked.connect(self.process_tDiFT)
         self.vector_signal_btn.clicked.connect(self.vectorROI_signal_show)
         self.select_frames_btn.clicked.connect(self.vectorROI_selection)
         self.diffusion_coefficient_btn.clicked.connect(self.result_display.plot_variance_evolution)
@@ -1722,7 +1703,7 @@ class MainWindow(QMainWindow):
 
     """状态响应与更新"""
     def update_progress(self, current, total=None):
-        """更新进度条"""
+        """更新进度条（注意：统一0启动）"""
         if total is not None:
             self.progress_bar.setMaximum(total)
 
@@ -2240,6 +2221,17 @@ class MainWindow(QMainWindow):
             self.avi_thread.start()
         self.update_status('二维傅里叶变换计算进行中...', 'working')
         self.tDFT_signal.emit(aim_data)
+        return True
+
+    def process_tDiFT(self):
+        """二维傅里叶逆变换"""
+        aim_data = self.data_selection()
+        if aim_data is None:
+            return False
+        if not self.avi_thread.isRunning():
+            self.avi_thread.start()
+        self.update_status('二维傅里叶逆变换计算进行中...', 'working')
+        self.tDiFT_signal.emit(aim_data)
         return True
 
     def process_heartbeat(self):
