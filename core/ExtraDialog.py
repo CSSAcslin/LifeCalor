@@ -359,12 +359,12 @@ class CalculationSetDialog(QDialog):
         peak_layout = QFormLayout()
 
         self.peak_min_spin = QSpinBox()
-        self.peak_min_spin.setRange(0, 1e4)
+        self.peak_min_spin.setRange(0, 10000)
         self.peak_min_spin.setValue(self.params['peak_min'])
         self.peak_min_spin.setSingleStep(1)
 
         self.peak_max_spin = QSpinBox()
-        self.peak_max_spin.setRange(0, 1e5)
+        self.peak_max_spin.setRange(0, 10000)
         self.peak_max_spin.setValue(self.params['peak_max'])
         self.peak_max_spin.setSingleStep(1)
 

@@ -61,7 +61,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "0.12.6"  # 当前程序版本
+        self.current_version = "0.13.1"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = "Bearer <your PAT>"
@@ -1666,9 +1666,9 @@ class MainWindow(QMainWindow):
 
     def calculation_set_edit_dialog(self):
         """计算设置调整"""
-        if self.data is None or self.processed_data is None:
-            logging.warning("无数据，请先加载数据文件")
-            return
+        # if self.data is None or self.processed_data is None:
+        #     logging.warning("无数据，请先加载数据文件")
+        #     return
         self.update_status("计算设置ing", 'working')
         dialog = CalculationSetDialog(self.cal_set_params, parent=self)
         if dialog.exec_():
