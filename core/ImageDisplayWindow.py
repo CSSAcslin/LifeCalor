@@ -14,8 +14,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QGraphicsPathItem, QMenu, QInputDialog, QColorDialog, QToolButton, QDialogButtonBox,
                              QDialog, QMessageBox, QGraphicsTextItem, QSizePolicy, QCheckBox, QGraphicsObject
                              )
-from PyQt5.QtCore import Qt, pyqtSignal, QRectF, QSize, QTimer, QDateTime, QLineF, QPointF, QPoint
-
+from PyQt5.QtCore import Qt, pyqtSignal, QRectF, QSize, QTimer, QDateTime, QLineF, QPointF, QPoint, pyqtSlot
 
 from DataManager import ImagingData, ColorMapManager, PublicEasyMethod
 from ExtraDialog import ROIInfoDialog, ColorMapDialog, DataExportDialog, ParamsResetDialog
@@ -90,6 +89,7 @@ class ImageDisplayWindow(QMainWindow):
         # draw_pen.setChecked(True)
         self.addToolBar(self.Drawing_bar)
 
+    """工具栏初始化"""
     def create_drawing_action(self, toolbar, name, statustip,tooltip, slot = None):
         """创建绘图工具动作并添加上下文菜单"""
         # 创建动作
@@ -273,6 +273,7 @@ class ImageDisplayWindow(QMainWindow):
         self.dialog.raise_()
         self.dialog.activateWindow()
 
+    @pyqtSlot(int)
     def set_cursor_id(self,cursor_id):
         self.cursor_id = cursor_id
         if not self.display_canvas:
@@ -283,6 +284,7 @@ class ImageDisplayWindow(QMainWindow):
         if self.anchor_active:
             self.display_canvas[self.cursor_id].set_anchor_mode(True)
 
+    """画布控制"""
     def add_canvas(self,data):
         """新增图像显示画布"""
         if len(self.display_canvas) >= 4:
@@ -389,6 +391,21 @@ class ImageDisplayWindow(QMainWindow):
             canvas.clear_fast_selection()
             canvas.reset_view()
 
+    @pyqtSlot(float,int)
+    def on_canvas_sync_progress(self, ratio, source_id):
+        """将滑动进度同步给其他开启了同步的画布"""
+        for canvas_id, canvas in enumerate(self.display_canvas):
+            if canvas_id != source_id:  # 不要同步给发送者自己
+                canvas.set_sync_progress(ratio)
+
+    @pyqtSlot(str, int)
+    def on_canvas_sync_playback(self, action, source_id):
+        """将播放控制同步给其他开启了同步的画布"""
+        for canvas_id, canvas in enumerate(self.display_canvas):
+            if canvas_id != source_id:
+                canvas.execute_sync_playback(action)
+
+    """工具响应"""
     def set_tools(self,tool_name:str):
         if not self.display_canvas:
             logging.warning("请先创建图像画板")
@@ -570,6 +587,8 @@ class SubImageDisplayWidget(QDockWidget):
     current_canvas_signal = pyqtSignal(int)
     draw_result_signal = pyqtSignal(str,int,object,dict)
     get_fast_selection = pyqtSignal(object, np.ndarray, str, str)
+    sync_progress_signal = pyqtSignal(float, int)  # 参数: 进度比例(0.0~1.0), 画布ID
+    sync_playback_signal = pyqtSignal(str, int)  # 参数: 动作指令('play'/'pause'/'reset'), 画布ID
 
     def __init__(self, parent=None,canvas_id = None,name = None, data :ImagingData = None, args_dict :dict = None):
         super().__init__(name, parent)
@@ -627,6 +646,9 @@ class SubImageDisplayWidget(QDockWidget):
         self.play_start_time = 0
         self.play_paused_time = 0
         self.is_playing = False
+        # 同步播放设置
+        self.is_sync_enabled = False  # 是否开启了同步
+        self._is_syncing = False  # 防止信号死循环的标志
 
         self.init_ui()
         self.map_view = False
@@ -683,9 +705,6 @@ class SubImageDisplayWidget(QDockWidget):
         self.reset_button.setEnabled(False)  # 初始不可用
 
         # 全新时间轴
-        # self.time_slider = QSlider(Qt.Horizontal)
-        # self.time_slider.setMinimum(0)
-        # self.time_slider.setMaximum(self.max_time_idx-1)
         self.time_slider = AdvancedTimeline(total_frames=self.max_time_idx,fps=self.data.fps,time_point=self.data.time_point)
         self.time_slider.rightClicked.connect(self.on_timeline_right_click)
         self.time_label = QLabel(f"{self.current_time_idx}/{self.max_time_idx-1}")
@@ -702,7 +721,6 @@ class SubImageDisplayWidget(QDockWidget):
 
         self.add_overlay_label("请移动鼠标")
 
-    # 添加覆盖标签的方法
     def add_overlay_label(self, text):
         """添加覆盖文本标签"""
         # 如果已有标签，先删除
@@ -881,8 +899,11 @@ class SubImageDisplayWidget(QDockWidget):
             if isinstance(item, ResizableRectROI):
                 QGraphicsView.mousePressEvent(self.graphics_view, event)
                 return
-
-        if event.button() == Qt.MidButton :
+        if event.button() == Qt.RightButton:
+            self.show_context_menu(event.globalPos())
+            QGraphicsView.mousePressEvent(self.graphics_view, event)
+            return
+        elif event.button() == Qt.MidButton :
             # 中键按下：准备拖动
             self.drag_start_pos = event.pos()
             self.graphics_view.setCursor(Qt.ClosedHandCursor)
@@ -1247,7 +1268,7 @@ class SubImageDisplayWidget(QDockWidget):
         super().closeEvent(event)
 
     """下面是播放和图像更新的设置"""
-    def start_auto_play(self):
+    def start_auto_play(self, sync_call=False):
         if self.max_time_idx <= 1:
             return False # 没有足够的帧进行播放
 
@@ -1266,7 +1287,11 @@ class SubImageDisplayWidget(QDockWidget):
             frame_interval = max(1, 1000 // self.data.fps) if self.data.fps is not None else max(1, total_time // self.max_time_idx)
             self.play_timer.start(frame_interval)
 
-    def pause_auto_play(self):
+            # 同步播放
+            if not sync_call and self.is_sync_enabled:
+                self.sync_playback_signal.emit('play', self.id)
+
+    def pause_auto_play(self, sync_call=False):
         """暂停自动播放"""
         if self.is_playing:
             self.is_playing = False
@@ -1275,7 +1300,10 @@ class SubImageDisplayWidget(QDockWidget):
             self.start_button.setEnabled(True)
             self.pause_button.setEnabled(False)
 
-    def reset_auto_play(self):
+            if not sync_call and self.is_sync_enabled:
+                self.sync_playback_signal.emit('pause', self.id)
+
+    def reset_auto_play(self, sync_call=False):
         """重置自动播放"""
         self.play_timer.stop()
         self.is_playing = False
@@ -1287,6 +1315,9 @@ class SubImageDisplayWidget(QDockWidget):
         self.start_button.setEnabled(True)
         self.pause_button.setEnabled(False)
         self.reset_button.setEnabled(False)
+
+        if not sync_call and self.is_sync_enabled:
+            self.sync_playback_signal.emit('reset', self.id)
 
     def auto_play_update(self):
         """定时器回调，更新帧显示"""
@@ -1321,6 +1352,11 @@ class SubImageDisplayWidget(QDockWidget):
             image_data = self.data.image_data[idx] if self.data.is_temporary else self.data.image_data
         self.update_display(image_data)
 
+        if not self._is_syncing and self.is_sync_enabled and not self.is_playing:
+            # 计算当前进度比例 (0.0 到 1.0)
+            ratio = 0.0 if self.max_time_idx <= 1 else idx / (self.max_time_idx - 1)
+            self.sync_progress_signal.emit(ratio, self.id)
+
     def on_timeline_right_click(self, frame, in_selection, global_pos):
         """处理时间轴右键点击"""
         menu = QMenu(self)
@@ -1346,6 +1382,52 @@ class SubImageDisplayWidget(QDockWidget):
 
         # 2. 弹出菜单
         menu.exec_(global_pos)
+
+    def show_context_menu(self, global_pos):
+        """显示画布专属右键菜单"""
+        menu = QMenu(self)
+
+        sync_action = QAction("开启同步播放/滑动", self)
+        sync_action.setCheckable(True)
+        sync_action.setChecked(self.is_sync_enabled)
+        sync_action.triggered.connect(self.toggle_sync)
+
+        menu.addAction(sync_action)
+        menu.exec_(global_pos)
+
+    def toggle_sync(self, checked):
+        """切换同步状态"""
+        self.is_sync_enabled = checked
+
+    def set_sync_progress(self, ratio):
+        """外部调用：接收并执行同步滑动"""
+        if not self.is_sync_enabled or self.is_playing:
+            return
+
+        self._is_syncing = True  # 开启锁，防止回传导致死循环
+        # 根据比例计算目标帧
+        target_idx = int(round(ratio * max(1, self.max_time_idx - 1)))
+        target_idx = max(0, min(target_idx, self.max_time_idx - 1))
+
+        if self.current_time_idx != target_idx:
+            # 更新滑块（会级联触发 update_time_slice）
+            self.time_slider.set_current_frame(target_idx)
+            if self.current_time_idx != target_idx:
+                self.update_time_slice(target_idx)
+
+        self._is_syncing = False  # 解锁
+
+    def execute_sync_playback(self, action):
+        """外部调用：接收并执行同步播放控制"""
+        if not self.is_sync_enabled:
+            return
+
+        if action == 'play' and not self.is_playing:
+            self.start_auto_play(sync_call=True)
+        elif action == 'pause' and self.is_playing:
+            self.pause_auto_play(sync_call=True)
+        elif action == 'reset':
+            self.reset_auto_play(sync_call=True)
 
     def crop_image(self):
         """执行裁剪逻辑"""

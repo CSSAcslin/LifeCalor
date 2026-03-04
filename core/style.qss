@@ -19,10 +19,43 @@ QMenuBar::item:selected {
     background-color: #E8F5E9;
 }
 
+QMenuBar::item:hover {
+    background-color: #E8F5E9;
+    color: black
+}
+
 QMenuBar::item:pressed {
     background-color: #C8E6C9;
 }
 
+/* ========== QMenu&QAction 样式 ========== */
+QMenu {
+    background-color: white;
+    border: 2px solid #4CAF50;
+    padding: 2px 2px 2px 4px;
+}
+QMenu::item {
+    background-color: white;
+    padding: 2px 15px 2px 8px;
+/*    padding-left: 5px;*/
+/*    padding-right: 10px;*/
+    margin: 4px 6px 4px 6px;
+    color: black;
+}
+
+QMenu::item:selected {
+    background-color: #4CAF50;
+    color: white;
+}
+
+QMenu::separator {
+    height: 1px;
+    margin-left: 3px;
+    margin-right: 5px;
+    background-color: #9ad19a;
+}
+
+/* ========== QDockWidget 样式 ========== */
 QDockWidget {
     border: 1px solid #388E3C;
     border-radius: 4px;
@@ -59,6 +92,7 @@ QDockWidget::separator {
 QDockWidget[floating="true"] {
     border: 2px solid #C8E6C9;
 }
+
 /* ========== 状态栏渐变 ========== */
 QStatusBar {
     background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,

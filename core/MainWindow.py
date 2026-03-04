@@ -61,7 +61,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "0.13.1"  # 当前程序版本
+        self.current_version = "0.13.2"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = "Bearer <your PAT>"
@@ -1371,6 +1371,8 @@ class MainWindow(QMainWindow):
             canvas.current_canvas_signal.connect(self.image_display.set_cursor_id)
             canvas.draw_result_signal.connect(self.draw_result)
             canvas.get_fast_selection.connect(self.proc_thread.get_fast_selection)
+            canvas.sync_progress_signal.connect(self.image_display.on_canvas_sync_progress)
+            canvas.sync_playback_signal.connect(self.image_display.on_canvas_sync_playback)
             self.roi_pick.addItem(canvas.windowTitle())
 
     '''上面是初始化预设，下面是功能响应'''
@@ -2095,11 +2097,8 @@ class MainWindow(QMainWindow):
     def roi_signal_avg(self):
         """计算选区信号平均值并显示"""
         data = self.data_selection(['ROI_stft', 'ROI_cwt'])
-        if data is not None:
-            pass
-        else:
-            logging.warning("无变换后数据，请先处理数据")
-            return
+        if data is None:
+            return False
         mask = self.roi_selection(True)
         if mask is None:
             return

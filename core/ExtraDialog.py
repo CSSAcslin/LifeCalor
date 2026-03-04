@@ -2502,7 +2502,7 @@ class RawDataExportDialog(QDialog):
             self.key_name = data.name
 
         self.setWindowTitle("导出纯粹数据")
-        self.resize(200, 180)
+        self.resize(300, 210)
         self.setup_ui()
 
     def setup_ui(self):
@@ -2512,7 +2512,7 @@ class RawDataExportDialog(QDialog):
         header_layout = QHBoxLayout()
         shape_str = " × ".join(map(str, self.data.shape))
         info_label = QLabel("<b>当前待导出数据:</b>")
-        info_label2 = QLabel(f"<div style='color: black;'>{self.key_name} <br> 维度: {self.data.ndim}D <br>形状: {shape_str} (T × H × W) </div>")
+        info_label2 = QLabel(f"<div style='color: black;'>{self.key_name} <br> 维度: {self.data.ndim}D <br>形状: {shape_str} </div>")
         info_help = InfoButton("本导出是导出为纯粹的数据格式，如果要导出图像或视频，请从工具栏中导出画布")
         header_layout.addWidget(info_label)
         header_layout.addStretch()
@@ -2524,7 +2524,8 @@ class RawDataExportDialog(QDialog):
         path_layout = QHBoxLayout()
         self.path_edit = QLineEdit()
         self.path_edit.setPlaceholderText("请选择保存位置和格式...")
-        self.path_edit.setReadOnly(True)  # 让用户强制通过浏览按钮选择，避免手误
+        # self.path_edit.setReadOnly(True)  # 强制通过浏览按钮选择
+        self.path_edit.textChanged.connect(self.check_csv_frame_visibility)
 
         browse_btn = QPushButton("浏览...")
         browse_btn.clicked.connect(self.browse_file)
@@ -2535,7 +2536,28 @@ class RawDataExportDialog(QDialog):
 
         layout.addSpacing(10)
 
-        # 3. 底部操作按钮
+        # 3. 动态帧位选择区域 (默认隐藏)
+        self.frame_widget = QWidget()
+        frame_layout = QHBoxLayout(self.frame_widget)
+        frame_layout.setContentsMargins(0, 0, 0, 0)  # 去除额外边距
+
+        max_frame = self.data.shape[0] - 1 if self.data.ndim == 3 else 0
+        self.frame_label = QLabel(f"<b>将3D数据导出为CSV时，请选择抽取的帧 (0 - {max_frame}):</b>")
+        self.frame_spinbox = QSpinBox()
+
+        if self.data.ndim == 3:
+            self.frame_spinbox.setRange(0, max_frame)
+
+        frame_layout.addWidget(self.frame_label)
+        frame_layout.addWidget(self.frame_spinbox)
+        frame_layout.addStretch()
+
+        layout.addWidget(self.frame_widget)
+        self.frame_widget.setVisible(False)  # 初始隐藏
+
+        layout.addSpacing(5)
+
+        # 4. 底部操作按钮
         btn_layout = QHBoxLayout()
         self.export_btn = QPushButton("确定导出")
         self.export_btn.clicked.connect(self.execute_export)
@@ -2554,19 +2576,20 @@ class RawDataExportDialog(QDialog):
         """打开文件对话框，自动根据数据维度过滤支持的格式"""
         # 基础支持格式 (2D 和 3D 共用)
         filters_list = [
+            "CSV Files (*.csv)",
             "HDF5 Files (*.h5 *.hdf5)",
             "TIFF Image (*.tif *.tiff)",
-            "NumPy Array (*.npy)"
+            "NumPy Array (*.npy)",
         ]
 
-        # 如果是二维数据，追加 CSV 格式支持
-        if self.data.ndim == 2:
-            filters_list.insert(1, "CSV Files (*.csv)")  # 放在中间
+        # # 如果是二维数据，追加 CSV 格式支持
+        # if self.data.ndim == 2:
+        #     filters_list.insert(1, "CSV Files (*.csv)")  # 放在中间
 
         filters_string = ";;".join(filters_list)
 
         # 调用 QFileDialog
-        save_path, _ = QFileDialog.getSaveFileName(
+        save_path, selected_filter = QFileDialog.getSaveFileName(
             self,
             "选择保存路径",
             self.key_name,
@@ -2574,14 +2597,38 @@ class RawDataExportDialog(QDialog):
         )
 
         if save_path:
+            if "CSV" in selected_filter and not save_path.lower().endswith('.csv'):
+                save_path += '.csv'
             self.path_edit.setText(save_path)
             self.export_btn.setEnabled(True)  # 启用导出按钮
+
+    def check_csv_frame_visibility(self, text):
+        """核心交互：判断是否需要显示‘帧选择器’"""
+        _, ext = os.path.splitext(text)
+        # 只有当数据为 3D 且用户指定了保存为 .csv 时，显示帧选择器
+        if self.data.ndim == 3 and ext.lower() == '.csv':
+            self.frame_widget.setVisible(True)
+        else:
+            self.frame_widget.setVisible(False)
 
     def execute_export(self):
         """执行导出操作"""
         filepath = self.path_edit.text()
+        frame_idx = self.frame_spinbox.value()
         if not filepath:
             return
+
+        _, ext = os.path.splitext(filepath)
+        if self.data.ndim == 3 and ext.lower() == '.csv':
+            # 分离目录、主文件名、后缀
+            dir_name = os.path.dirname(filepath)
+            base_name = os.path.basename(filepath)
+            name_only, _ = os.path.splitext(base_name)
+
+            # 拼接新的文件名，例如： "my_data" -> "my_data_frame_5.csv"
+            new_filename = f"{name_only}_frame_{frame_idx}{ext}"
+            filepath = os.path.join(dir_name, new_filename)
+            self.path_edit.setText(filepath)
 
         self.export_btn.setEnabled(False)
         self.export_btn.setText("正在导出...")
@@ -2591,7 +2638,7 @@ class RawDataExportDialog(QDialog):
 
         try:
             # 调用核心导出函数
-            self.export_image_data(self.data, filepath)
+            self.export_image_data(self.data, filepath, frame_index=frame_idx)
             QMessageBox.information(self, "导出成功", f"数据已成功保存至：\n{filepath}")
             self.accept()  # 关闭对话框
         except Exception as e:
@@ -2600,11 +2647,12 @@ class RawDataExportDialog(QDialog):
             self.export_btn.setText("确定导出")
 
     @staticmethod
-    def export_image_data(data, filepath):
+    def export_image_data(data, filepath, frame_index=0):
         """
         根据文件后缀名导出 2D 或 3D 图像数据
         :param data: numpy array 格式的图像数据 (2D 或 3D)
         :param filepath: 保存的完整文件路径 (包含后缀)
+        :param frame_index: 如果是3D数据导出为CSV，指定导出的帧索引 (默认第0帧)
         """
         data = np.asarray(data)
         ndim = data.ndim
@@ -2617,10 +2665,13 @@ class RawDataExportDialog(QDialog):
         ext = ext.lower()
 
         if ext == '.csv':
-            if ndim != 2:
-                raise ValueError(f"CSV 格式仅支持 2D 数据，当前数据维度为 {ndim}D。")
-            # 保存为CSV，以逗号分隔
-            np.savetxt(filepath, data, delimiter=',')
+            if ndim == 3:
+                # 3D 数据：按照设定的帧位截取单帧数据 (默认基于第 0 维度切片)
+                data_to_save = data[frame_index]
+            else:
+                # 2D 数据直接保存
+                data_to_save = data
+            np.savetxt(filepath, data_to_save, delimiter=',')
 
         elif ext in ['.h5', '.hdf5']:
             import h5py

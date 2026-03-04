@@ -2,7 +2,7 @@ import sys
 import numpy as np
 import pyqtgraph as pg
 from PyQt5.QtWidgets import (QTabWidget, QWidget, QVBoxLayout, QApplication,
-                             QPushButton, QHBoxLayout, QCheckBox, QLabel, QAction)
+                             QPushButton, QHBoxLayout, QCheckBox, QLabel, QAction, QMenu, QActionGroup)
 from PyQt5.QtCore import Qt, pyqtSignal
 from scipy import signal
 
@@ -18,7 +18,8 @@ class PlotGraphWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         self.plot_widget = pg.PlotWidget()
         layout.addWidget(self.plot_widget)
-
+        legend = self.plot_widget.addLegend()
+        legend.anchor((1, 0), (1, 0), offset=(-10, 10))
         self.color_cycle = [
             '#E59473', '#A18EE0', '#3BEAE0', '#D5F088',
             '#D67D7C', '#89B5FF', '#51EFAA', '#EBD881',
@@ -93,18 +94,10 @@ class PlotGraphWidget(QWidget):
                - symbol: 散点形状 ('o', 's', 't', 'd', '+')
                - name: 图例名称
         """
-        # 自动添加图例（如果还没加）
-        if self.plot_widget.plotItem.legend is None:
-            self.plot_widget.addLegend()
 
         # 提取样式参数
         mode = kwargs.get('mode', 'line')
-        if 'color' in kwargs:
-            color = kwargs['color']
-        else:
-            # 取余数实现循环使用颜色
-            color_index = len(self.data_items) % len(self.color_cycle)
-            color = self.color_cycle[color_index]
+        color = kwargs.get('color', self.color_cycle[len(self.data_items) % len(self.color_cycle)])
         width = kwargs.get('width', 2)
         name = kwargs.get('name', 'data')
         symbol = kwargs.get('symbol', 'o')
@@ -149,29 +142,87 @@ class PlotGraphWidget(QWidget):
         # 加入缓存
         self.data_cache[item] = (x_data, y_data)
 
-        # 如果当前已经是 PSD 模式，新加的数据也要立即转换
-        if self.psd_action.isChecked():
-            self._apply_psd_to_item(item)
+        # 根据当前选中的模式立即进行转换
+        if self.action_psd.isChecked():
+            self._apply_psd(item)
+        elif self.action_hist.isChecked():
+            self._apply_histogram(item)
+
+        # 自动添加图例（如果还没加），并且自适应显示
+        if len(self.data_items) == 1:
+            self.plot_widget.autoRange()
 
     def clear_all(self):
         """清空所有绘图内容"""
         self.plot_widget.clear()
         self.data_items.clear()
+        self.data_cache.clear()
+        self.base_unit = None  # 重置基准时间单位
 
     def init_custom_context_menu(self):
         """向右键菜单添加自定义功能"""
         # 获取 ViewBox 的菜单
-        self.vb = self.plot_widget.plotItem.vb
+        # 1. 获取 pyqtgraph 原生的 "Plot Options" 菜单
+        plot_item = self.plot_widget.plotItem
+        ctrl_menu = plot_item.ctrlMenu
 
-        # 创建一个动作
-        self.psd_action = QAction("Show PSD (功率谱密度)", self.plot_widget)
-        self.psd_action.setCheckable(True)  # 设为复选框模式
-        self.psd_action.triggered.connect(self.toggle_psd_mode)
+        # 2. 创建一个 "Analysis" 子菜单
+        self.analysis_menu = QMenu("Analysis 信号分析", self.plot_widget)
+        ctrl_menu.addMenu(self.analysis_menu)
 
-        # 将动作添加到菜单顶部 (或者你可以加到子菜单里)
-        # 注意：pyqtgraph 的菜单构建是懒加载的，直接 addAction 可能需要在 menu 创建后
-        # 这里使用 ViewBox 自带的扩展接口
-        self.vb.menu.addAction(self.psd_action)
+        # 3. 创建三个视图动作
+        self.action_time = QAction("Time Domain (恢复时域)", self.plot_widget, checkable=True)
+        self.action_psd = QAction("PSD (功率谱密度)", self.plot_widget, checkable=True)
+        self.action_hist = QAction("Histogram (频数分布)", self.plot_widget, checkable=True)
+
+        # 默认选中时域
+        self.action_time.setChecked(True)
+
+        # 4. 使用 QActionGroup 实现单选互斥
+        self.analysis_group = QActionGroup(self.plot_widget)
+        self.analysis_group.addAction(self.action_time)
+        self.analysis_group.addAction(self.action_psd)
+        self.analysis_group.addAction(self.action_hist)
+
+        # 5. 把动作加到菜单里
+        self.analysis_menu.addAction(self.action_time)
+        self.analysis_menu.addAction(self.action_psd)
+        self.analysis_menu.addAction(self.action_hist)
+
+        # 6. 绑定切换事件
+        self.analysis_group.triggered.connect(self.update_analysis_mode)
+
+    def update_analysis_mode(self, action):
+        """统一处理不同分析模式的切换"""
+        if action == self.action_time:
+            # === 恢复时域 ===
+            label_unit = self.base_unit if self.base_unit else 's'
+            self.plot_widget.setLabel('bottom', "Time", units=label_unit)
+            self.plot_widget.setLabel('left', "Amplitude")
+            self.plot_widget.setLogMode(x=False, y=False)
+            for item in self.data_items:
+                if item in self.data_cache:
+                    x, y = self.data_cache[item]
+                    item.setData(x, y)
+
+        elif action == self.action_psd:
+            # === 切换 PSD ===
+            self.plot_widget.setLabel('bottom', "Frequency (Hz)")
+            self.plot_widget.setLabel('left', "PSD (V²/Hz)")
+            self.plot_widget.setLogMode(x=True, y=True)
+            for item in self.data_items:
+                self._apply_psd(item)
+
+        elif action == self.action_hist:
+            # === 切换频数分布 (Histogram) ===
+            self.plot_widget.setLabel('bottom', "Amplitude Value (幅度)")
+            self.plot_widget.setLabel('left', "Count (频数)")
+            self.plot_widget.setLogMode(x=False, y=False)  # 直方图不看对数
+            for item in self.data_items:
+                self._apply_histogram(item)
+
+        # 刷新坐标轴范围
+        self.plot_widget.autoRange()
 
     def toggle_psd_mode(self):
         """切换 PSD 模式和普通模式"""
@@ -198,16 +249,12 @@ class PlotGraphWidget(QWidget):
         # 重新适应坐标范围
         self.plot_widget.autoRange()
 
-    def _apply_psd_to_item(self, item):
+    def _apply_psd(self, item):
         """计算并应用 PSD 到单个 Item"""
         if item not in self.data_cache:
             return
 
         x_time, y_amp = self.data_cache[item]
-
-        # === PSD 计算逻辑 (自定义) ===
-        # 这里演示一个基于 numpy 的简单周期图法
-        # 实际建议使用: f, Pxx = scipy.signal.welch(y_amp, fs=fs)
 
         # 1. 计算采样率 (假设均匀采样)
         if len(x_time) > 1:
@@ -239,8 +286,26 @@ class PlotGraphWidget(QWidget):
         f, Pxx_den = signal.welch(y_amp, fs, nperseg=seg_len)  # Welch 方法更平滑
         item.setData(f, Pxx_den)
 
+    def _apply_histogram(self, item):
+        """统计分布计算 (Numpy Histogram)"""
+        if item not in self.data_cache: return
+        x_time, y_data = self.data_cache[item]
 
+        # 1. 使用 Numpy 计算直方图
+        # bins='auto' 会自动使用最科学的算法(Freedman-Diaconis)决定分桶数量
+        counts, bins = np.histogram(y_data, bins='auto')
 
+        # 2. 计算每个 Bin 的中心点作为 X 轴坐标
+        x_centers = (bins[:-1] + bins[1:]) / 2
+
+        # 3. 更新图表
+        # 因为你原本用的是折线图 PlotDataItem，直接传进去会画出“频率多边形(Frequency Polygon)”
+        # 这种图线在数学意义上和柱状直方图是完全等效的，且性能更好。
+        item.setData(x_centers, counts)
+
+        # 可选视觉优化: 让线下面有阴影填充，看起来更像分布图
+        # item.setFillLevel(0)
+        # item.setBrush(pg.mkBrush(color=item.opts['pen'].color().name() + '80')) # 加点透明度
 
     def _restore_item_data(self, item):
         """从缓存恢复原始数据"""
