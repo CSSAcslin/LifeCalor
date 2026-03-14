@@ -61,7 +61,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "0.13.2"  # 当前程序版本
+        self.current_version = "0.13.4"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = "Bearer <your PAT>"
@@ -386,7 +386,7 @@ class MainWindow(QMainWindow):
         self.splitDockWidget(self.image_dock, self.result_dock, Qt.Horizontal)
         self.splitDockWidget(self.result_dock, self.plot_dock, Qt.Vertical)
         self.resizeDocks([self.image_dock, self.result_dock], [800, 600], Qt.Horizontal)
-        self.resizeDocks([self.result_dock, self.plot_dock], [500, 400], Qt.Vertical)
+        self.resizeDocks([self.result_dock, self.plot_dock], [400, 400], Qt.Vertical)
 
         self.setup_status_bar()
 
@@ -1072,13 +1072,15 @@ class MainWindow(QMainWindow):
         self.console_dock.setWidget(self.console_widget)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.console_dock)
         self.splitDockWidget(self.plot_dock, self.console_dock, Qt.Vertical)
-        self.resizeDocks([self.plot_dock, self.console_dock], [300, 100], Qt.Vertical)
+        self.resizeDocks([self.plot_dock, self.console_dock], [340, 60], Qt.Vertical)
         # 设置控制台特性
         self.console_dock.setMinimumWidth(200)
         self.console_dock.setMinimumHeight(50)
         self.console_dock.setFeatures(QDockWidget.DockWidgetMovable |
                                       QDockWidget.DockWidgetFloatable |
                                       QDockWidget.DockWidgetClosable)
+
+        # self.console_dock.setVisible(False)
 
     def get_log_path(self):
         """生成配置文件地址"""
@@ -2110,7 +2112,6 @@ class MainWindow(QMainWindow):
         self.update_status('计算进行中...', 'working')
         self.easy_process.emit(data,'avg',mask)
 
-
     def process_signal_avg(self):
         """广义信号平均"""
         aim_data = self.data_selection()
@@ -2271,6 +2272,8 @@ class MainWindow(QMainWindow):
                         None)
             case 2:
                 aim_data = self.data_pick()
+        if aim_data is None:
+            logging.warning("未找到可处理的目标数据")
         return aim_data
 
     def roi_selection(self, select = False):

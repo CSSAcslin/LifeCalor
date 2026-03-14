@@ -1031,7 +1031,7 @@ class SubImageDisplayWidget(QDockWidget):
         # 鼠标值显示逻辑
         if 0 <= self.x_img < w_img and 0 <= self.y_img < h_img:
             self.mouse_pos = (self.x_img, self.y_img)
-            if not self.anchor_active:
+            if self.anchor_item is None:
                 self.get_value(self.y_img, self.x_img)
 
         # 绘图模式
