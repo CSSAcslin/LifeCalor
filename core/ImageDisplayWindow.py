@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from enum import Enum
 from math import atan2, pi, cos, sin
@@ -123,7 +124,7 @@ class ImageDisplayWindow(QMainWindow):
         elif name == 'Reset':
             action.triggered.connect(lambda checked: self.reset_all_canvas())
         elif name == 'Export':
-            action.triggered.connect(lambda checked: self.export_canvas_dialog())
+            action.triggered.connect(lambda checked: self.export_canvas_dialog(None,None))
 
         # 添加到动作组和工具栏
         self.drawing_action_group.addAction(action)
@@ -553,22 +554,29 @@ class ImageDisplayWindow(QMainWindow):
         except Exception as e:
             raise IndexError(f"canvas 未找到:{e}")
 
-    def export_canvas_dialog(self):
+    def export_canvas_dialog(self, info = None, is_temporal = None):
         """导出画布数据的对话框"""
         if not self.display_canvas:
             QMessageBox.warning(self, "图像错误", "当前没有显示任何图像画布")
             return
-        info = []
-        is_temporal = []
-        for canvas in self.display_canvas:
-            info.append(f'{canvas.id}-{canvas.windowTitle()}')
-            is_temporal.append(canvas.is_temporal)
+
+        if info is None and is_temporal is None:
+            info = []
+            is_temporal = []
+            for canvas in self.display_canvas:
+                info.append(f'{canvas.id}-{canvas.windowTitle()}')
+                is_temporal.append(canvas.is_temporal)
         dialog = DataExportDialog(self,export_type='canvas',canvas_info=info,is_temporal = is_temporal)
         if dialog.exec_():
             directory = dialog.directory
             prefix = dialog.text_edit.text().strip()
             filetype = dialog.type_combo.currentText()
-            canvas_id = dialog.canvas_selector.currentIndex()
+            match = re.search(r'\d+', dialog.canvas_selector.currentText())
+            if match:
+                canvas_id = int(match.group())
+            else:
+                logging.error(f"画布选择错误")
+                return
             arg_dict = dialog.get_values()
             arg_dict.update({'max_bound': self.display_canvas[canvas_id].max_value,
                              'min_bound': self.display_canvas[canvas_id].min_value,
@@ -577,7 +585,7 @@ class ImageDisplayWindow(QMainWindow):
                                           directory,prefix,filetype,
                                           self.display_canvas[canvas_id].is_temporal,
                                           arg_dict)
-            logging.info(f"开始导出图像数据{info[canvas_id]}")
+            logging.info(f"开始导出图像数据{info[canvas_id] or info}")
 
 
 class SubImageDisplayWidget(QDockWidget):
@@ -1391,8 +1399,12 @@ class SubImageDisplayWidget(QDockWidget):
         sync_action.setCheckable(True)
         sync_action.setChecked(self.is_sync_enabled)
         sync_action.triggered.connect(self.toggle_sync)
-
         menu.addAction(sync_action)
+
+        export_action = QAction("导出画布", self)
+        export_action.triggered.connect(lambda:self.parent_window.export_canvas_dialog([f'{self.id}-{self.windowTitle()}'],[self.is_temporal]))
+        menu.addAction(export_action)
+
         menu.exec_(global_pos)
 
     def toggle_sync(self, checked):
@@ -2296,6 +2308,7 @@ class AnchorSelectDialog(QDialog):
         self.param["anchor_select"] = self.active_check.isChecked()
         self.param["anchor_shape"] = self.shape_items[self.region_shape_combo.currentIndex()]
         self.param["anchor_size"] = self.region_size_input.value()
+        self.param["anchor_method"] = self.method_items[self.method_combo.currentIndex()]
         self.parent.params_update_signal.emit(self.param)
         self.parent.tool_parameters = self.param
         self.close()

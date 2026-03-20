@@ -55,13 +55,14 @@ class MainWindow(QMainWindow):
     tDFT_signal = pyqtSignal(object)
     tDiFT_signal = pyqtSignal(object)
     heartbeat_signal = pyqtSignal(object, int, int ,list, str, str, float)
+    basic_math_signal = pyqtSignal(object, str)
     easy_process = pyqtSignal(object, str, object)
     roi_processed_signal = pyqtSignal(object,np.ndarray,float,bool,bool,float)
 
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "0.13.4"  # 当前程序版本
+        self.current_version = "0.13.5"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = "Bearer <your PAT>"
@@ -893,6 +894,8 @@ class MainWindow(QMainWindow):
         Other_layout.addWidget(self.atam_btn2)
         self.heartbeat_btn = QPushButton("心肌细胞跳动分析")
         Other_layout.addWidget(self.heartbeat_btn)
+        self.basic_math_btn = QPushButton("基础运算器")
+        Other_layout.addWidget(self.basic_math_btn)
         Other_GROUP.setLayout(Other_layout)
         self.between_stack.addWidget(Other_GROUP)
 
@@ -1305,6 +1308,7 @@ class MainWindow(QMainWindow):
         self.tDFT_signal.connect(self.mass_data_processor.twoD_fourier_transform)
         self.tDiFT_signal.connect(self.mass_data_processor.twoD_inverse_fourier_transform)
         self.heartbeat_signal.connect(self.mass_data_processor.heartbeat_movement)
+        self.basic_math_signal.connect(self.mass_data_processor.basic_math_operation)
 
         # self.avi_thread.start()
 
@@ -1344,6 +1348,7 @@ class MainWindow(QMainWindow):
         self.diffusion_coefficient_btn.clicked.connect(self.result_display.plot_variance_evolution)
         self.roi_fast_btn.clicked.connect(self.fast_roi_result)
         self.heartbeat_btn.clicked.connect(self.process_heartbeat)
+        self.basic_math_btn.clicked.connect(self.process_math)
         self.signal_extract.clicked.connect(self.process_signal_avg)
         self.export_image_btn.clicked.connect(self.export_image)
         self.export_data_btn.clicked.connect(self.export_data)
@@ -2245,6 +2250,21 @@ class MainWindow(QMainWindow):
         self.update_status('心肌细胞跳动分析中...', 'working')
         return True
 
+    def process_math(self):
+        """基本运算简单计算处理"""
+        aim_data = self.data_selection()
+        if aim_data is None:
+            return False
+        if not self.avi_thread.isRunning():
+            self.avi_thread.start()
+        dialog = BasicCalDialog()
+        if dialog.exec_():
+            formula = dialog.get_formula()
+            if formula.strip():
+                self.basic_math_signal.emit(aim_data,formula)
+                return True
+        return False
+
     def data_selection(self, aim_type:str | list = 'all'):
         """数据选择代码（模式流程）"""
         aim_data = None
@@ -2422,6 +2442,8 @@ class MainWindow(QMainWindow):
                 logging.info("心肌细胞处理完成，开始作图")
                 self.result_display.display_heartbeat(self.processed_data)
                 logging.info("所有图绘制完成")
+            case 'Basic_math':
+                logging.info("对数据的基础运算完毕！")
 
     def draw_result(self,draw_type:str,canvas_id:int,result,roi_info = None):
         """canvas绘图结果处理"""

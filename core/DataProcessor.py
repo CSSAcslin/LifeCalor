@@ -1517,6 +1517,82 @@ class MassDataProcessor(QObject):
 
         return np.array(time_constants), np.array(mse_values)
 
+    @pyqtSlot(object, str)
+    def basic_math_operation(self, data, formula: str):
+        """
+        对3D时序视频数据进行自定义数学运算
+
+        参数:
+        data: ProcessedData对象 或 原始数据
+        formula: 从计算器UI获取的算式字符串，例如 "(<data><.max> <-> <data>) <*> 2"
+        """
+        if isinstance(data, ProcessedData):
+            pure_data = data.data_processed
+            out_processed = data.data_processed
+        else:
+            pure_data = data.data_origin
+            out_processed = data.parameters
+
+        try:
+            frames = data.datashape[0] if data.timelength != 1 else 1
+            self.processing_progress_signal.emit(0, frames)
+
+            # 1. 解析自定义算式，将其转化为合法的 Python/Numpy 表达式
+            parsed_expr = formula
+
+            # 替换数据变量
+            parsed_expr = parsed_expr.replace("data", "pure_data")
+
+            # 替换 Numpy 统计方法
+            parsed_expr = parsed_expr.replace(".max", ".max()")
+            parsed_expr = parsed_expr.replace(".min", ".min()")
+            parsed_expr = parsed_expr.replace(".mean", ".mean()")
+            # parsed_expr = parsed_expr.replace(".std", ".std()")
+            parsed_expr = parsed_expr.replace(".sum", ".sum()")
+
+            # # 替换自定义运算符
+            # parsed_expr = parsed_expr.replace("<+>", "+")
+            # parsed_expr = parsed_expr.replace("<->", "-")
+            # parsed_expr = parsed_expr.replace("<*>", "*")
+            # parsed_expr = parsed_expr.replace("</>", "/")
+
+            # 2. 安全地执行运算 (利用 Numpy 广播机制，一次性计算整个3D矩阵)
+            # 使用 eval 时限制命名空间，只允许使用 pure_data 和 numpy，保障系统安全
+            allowed_globals = {"__builtins__": None, "np": np}
+            allowed_locals = {"pure_data": pure_data}
+
+            result_data = eval(parsed_expr, allowed_globals, allowed_locals)
+
+            # 如果计算结果是一个标量（例如用户只输入了 <data><.mean>）
+            # 我们将其扩展回与原视频相同的维度，或者按需保留（这里选择保留并在控制台提示）
+            if np.isscalar(result_data) or result_data.ndim == 0:
+                print(f"提示: 自定义运算结果为单一标量值 {result_data}")
+
+            self.processing_progress_signal.emit(frames, frames)  # 因为是向量化运算，瞬间完成，直接满进度
+
+            # 3. 封装返回结果
+            self.processed_result.emit(ProcessedData(
+                data.timestamp,
+                f'{data.name}@math',
+                "Basic_math",
+                time_point=data.time_point,
+                data_processed=np.squeeze(result_data),
+                out_processed={
+                    'formula_used': formula,  # 记录使用的算式
+                    'parsed_expr': parsed_expr,  # 记录解析后的实际表达式
+                    **out_processed
+                }
+            ))
+            return True
+
+        except SyntaxError:
+            error_msg = f"算式语法错误，请检查您的输入: {formula}"
+            self.processed_result.emit({'type': "Basic_math", 'error': error_msg})
+            return False
+        except Exception as e:
+            self.processed_result.emit({'type': "Basic_math", 'error': str(e)})
+            return False
+
     # 4. 主分析流程
     # def analyze_single_peak_data(data, T, x_m, y_m):
     #     """

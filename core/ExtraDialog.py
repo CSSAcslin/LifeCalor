@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGroupBox,
                              QFileDialog, QWhatsThis, QTextBrowser, QTableWidget, QDialogButtonBox, QTableWidgetItem,
                              QHeaderView, QAbstractItemView, QTabWidget, QWidget, QListWidget, QListWidgetItem,
                              QSizePolicy, QTreeWidget, QTreeWidgetItem, QTextEdit, QToolButton, QStyle, QToolTip,
-                             QApplication)
+                             QApplication, QGridLayout)
 from PyQt5.QtCore import Qt, QEvent, QTimer, QModelIndex, pyqtSignal, QSize
 from fontTools.merge import layoutPreMerge
 
@@ -576,7 +576,7 @@ class PltSettingsDialog(QDialog):
         }
         self.accept()
 
-# 数据保存弹窗
+# 数据保存弹窗（绘图结果处）
 class DataSavingPop(QDialog):
     def __init__(self,parent = None):
         super().__init__(parent)
@@ -2690,3 +2690,92 @@ class RawDataExportDialog(QDialog):
 
         else:
             raise ValueError(f"不支持的保存格式: {ext}")
+
+# 数据计算器对话框
+class BasicCalDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("自定义数据运算计算器")
+        self.resize(400, 350)
+
+        # 主布局
+        layout = QVBoxLayout(self)
+
+        # 提示标签
+        tip_label = QLabel("请点击按钮或直接输入算式，例如: (data.max - data) * 2")
+        layout.addWidget(tip_label)
+
+        # 算式显示/输入框
+        self.display = QLineEdit()
+        self.display.setFont(self.display.font())
+        self.display.setStyleSheet("font-size: 16px; padding: 5px;")
+        layout.addWidget(self.display)
+
+        # 按钮网格布局
+        grid_layout = QGridLayout()
+
+        # 定义计算器按钮的布局 (标签, 行, 列, 跨度)
+        buttons = [
+            # 第一行：数据与统计方法
+            ('data', 0, 0), ('.max', 0, 1), ('.min', 0, 2), ('.mean', 0, 3), ('[]', 0, 4),
+            # 第二行：数字与基本运算
+            ('7', 1, 0), ('8', 1, 1), ('9', 1, 2), ('+', 1, 3), ('()', 1, 4),
+            # 第三行
+            ('4', 2, 0), ('5', 2, 1), ('6', 2, 2), ('-', 2, 3), (':', 2, 4),
+            # 第四行
+            ('1', 3, 0), ('2', 3, 1), ('3', 3, 2), ('*', 3, 3), ('C', 3, 4),  # C为清空
+            # 第五行
+            ('0', 4, 0), ('.', 4, 1), ('/', 4, 2), ('**', 4, 3), ('<- 退格', 4, 4)
+        ]
+
+        # 动态创建按钮并绑定事件
+        for btn_text, row, col in buttons:
+            btn = QPushButton(btn_text)
+            btn.setMinimumHeight(40)
+            btn.setStyleSheet("font-size: 14px; font-weight: bold;")
+
+            # 使用 lambda 捕获当前的 btn_text
+            if btn_text == 'C':
+                btn.clicked.connect(self.display.clear)
+                btn.setToolTip("清空")
+            elif btn_text == '<- 退格':
+                btn.clicked.connect(self.display.backspace)
+            elif btn_text in ('[]', '()') :
+                # 单独为[] 绑定特殊的光标回退函数
+                btn.clicked.connect(lambda checked, text = btn_text:self.insert_brackets(text))
+            else:
+                # 在光标当前位置插入文本
+                btn.clicked.connect(lambda checked, text=btn_text: self.display.insert(text))
+
+            grid_layout.addWidget(btn, row, col)
+
+        layout.addLayout(grid_layout)
+
+        # 确认与取消按钮
+        btn_layout = QHBoxLayout()
+        confirm_btn = QPushButton("确认运算")
+        confirm_btn.setObjectName("StressButton")
+        cancel_btn = QPushButton("取消")
+        confirm_btn.setMinimumHeight(40)
+        cancel_btn.setMinimumHeight(40)
+
+        confirm_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(confirm_btn)
+        layout.addLayout(btn_layout)
+
+    def insert_brackets(self,text:str):
+        """核心逻辑：插入 [] 并将光标左移一位"""
+        self.display.insert(text)
+        # 获取插入[] 后的光标位置（此时光标在 ']' 后面）
+        current_pos = self.display.cursorPosition()
+        # 将光标往回移动 1 位，正好落在 '[' 和 ']' 之间
+        self.display.setCursorPosition(current_pos - 1)
+        # 保持输入框的焦点，方便用户直接打字
+        self.display.setFocus()
+
+    def get_formula(self):
+        """返回用户最终输入的算式字符串"""
+        return self.display.text()
