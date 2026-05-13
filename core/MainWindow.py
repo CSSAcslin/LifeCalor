@@ -1,20 +1,12 @@
-import logging
 import multiprocessing
-from unittest import case
 
-import resources_rc
-from datetime import datetime
+import resources_rc # 重要不能删
 from logging.handlers import RotatingFileHandler
-import numpy as np
 from PyQt5 import sip
-from PyQt5.QtGui import QPixmap, QIcon, QFontDatabase, QDesktopServices
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QLabel, QLineEdit, QPushButton, QComboBox, QScrollArea,
-                             QFileDialog, QSlider, QSpinBox, QDoubleSpinBox, QGroupBox,
-                             QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QStackedWidget, QDockWidget,
-                             QStatusBar, QScrollBar, QFrame
+from PyQt5.QtGui import QFontDatabase, QDesktopServices
+from PyQt5.QtWidgets import (QStackedWidget, QStatusBar, QFrame, QSplitter, QDesktopWidget
                              )
-from PyQt5.QtCore import Qt, pyqtSignal, QThread, QMetaObject, QElapsedTimer, QSettings, QCoreApplication, QUrl
+from PyQt5.QtCore import QElapsedTimer, QSettings, QCoreApplication, QUrl
 
 from ImportManager import *
 from DataProcessor import DataProcessor, MassDataProcessor
@@ -26,6 +18,7 @@ from ExtraDialog import *
 from DataManager import *
 from UpdateModule import *
 from PlotGraphWidget import *
+from SpatialExtractor import SpatialExtractor
 from widget import TriStateSwitch
 
 
@@ -62,7 +55,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "0.13.5"  # 当前程序版本
+        self.current_version = "0.13.6"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = "Bearer <your PAT>"
@@ -292,20 +285,23 @@ class MainWindow(QMainWindow):
     """GUI生成"""
     def init_ui(self):
         self.setWindowTitle(f"成像数据分析工具箱 v{self.current_version}")
-        self.setGeometry(100, 50, 1700, 900)
+        screen = QDesktopWidget().screenGeometry()
+        screen_width = screen.width()
+        screen_height = screen.height()
 
-        # 主部件和布局
-        # main_widget = QWidget()
-        # self.setCentralWidget(main_widget)
+        # 计算窗口大小（例如，设为屏幕的80%）
+        window_width = int(screen_width * 0.86)
+        window_height = int(screen_height * 0.86)
+        self.setGeometry(int(screen_width * 0.07), int(screen_height * 0.07), window_width, window_height)
 
         # 左侧设置区域
         self.setup_left_panel()
         self.param_dock = QDockWidget("基础设置", self)
         self.param_dock.setWidget(self.left_panel)
         self.param_dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
-        self.param_dock.setMinimumSize(300, 700)
+        # self.param_dock.setMinimumSize(300, 700)
         self.param_dock.setMaximumWidth(350)
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.param_dock) # 加到左侧
+        # self.addDockWidget(Qt.LeftDockWidgetArea, self.param_dock) # 加到左侧
 
         # 右侧图像区域
         self.image_display = ImageDisplayWindow(self.tool_params,self)
@@ -327,9 +323,9 @@ class MainWindow(QMainWindow):
         # image_layout.addLayout(slider_layout)
         self.image_dock = QDockWidget("图像显示", self)
         self.image_dock.setWidget(image_widget)
-        self.image_dock.setMinimumSize(700, 600)
+        # self.image_dock.setMinimumSize(700, 600)
         self.image_dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.image_dock)
+        # self.addDockWidget(Qt.RightDockWidgetArea, self.image_dock)
 
         # 结果显示区域
         self.result_dock = QDockWidget("绘图结果", self)
@@ -358,8 +354,7 @@ class MainWindow(QMainWindow):
         result_layout.addLayout(data_save_layout)
         self.result_dock.setWidget(result_widget)
         self.result_dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
-        self.result_dock.setMinimumSize(350, 300)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.result_dock)
+        # self.result_dock.setMinimumSize(350, 300)
 
         self.plot_dock = QDockWidget("数据结果", self)
         plot_widget = QWidget()
@@ -379,24 +374,43 @@ class MainWindow(QMainWindow):
         plot_layout.addWidget(self.graph_plot)
         self.plot_dock.setWidget(plot_widget)
         self.plot_dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
-        self.plot_dock.setMinimumSize(350, 300)
+        # self.plot_dock.setMinimumSize(350, 300)
         # self.plot_dock.setLayout(plot_layout)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.plot_dock)
-
-        self.splitDockWidget(self.param_dock, self.image_dock, Qt.Horizontal)
-        self.splitDockWidget(self.image_dock, self.result_dock, Qt.Horizontal)
-        self.splitDockWidget(self.result_dock, self.plot_dock, Qt.Vertical)
-        self.resizeDocks([self.image_dock, self.result_dock], [800, 600], Qt.Horizontal)
-        self.resizeDocks([self.result_dock, self.plot_dock], [400, 400], Qt.Vertical)
-
         self.setup_status_bar()
 
         # 设置控制台
         self.setup_console()
 
+        # splitter架构的分区器
+        main_splitter = QSplitter(Qt.Horizontal, self)
+        right_splitter = QSplitter(Qt.Horizontal, self)
+        result_splitter = QSplitter(Qt.Vertical, self)
+        plot_splitter = QSplitter(Qt.Vertical, self)
+
+        main_splitter.addWidget(self.param_dock)
+        main_splitter.addWidget(right_splitter)
+        main_splitter.setSizes([1000, 4000])
+
+        right_splitter.addWidget(self.image_dock)
+        right_splitter.addWidget(result_splitter)
+        right_splitter.setSizes([3000, 2000])
+
+        plot_splitter.addWidget(self.result_dock)
+        plot_splitter.addWidget(self.plot_dock)
+        plot_splitter.setSizes([1000, 1000])
+
+        result_splitter.addWidget(plot_splitter)
+        result_splitter.addWidget(self.console_dock)
+        result_splitter.setSizes([2000, 300])
+
+        self.setCentralWidget(main_splitter)
+
     def setup_left_panel(self):
         """设置左侧面板"""
-        self.left_panel = QWidget()
+        self.left_panel = QScrollArea()
+        self.left_panel_widget = QWidget()
+        self.left_panel_widget.setStyleSheet(""" QWidget {background-color: white; }""")
+        self.left_panel.setWidgetResizable(True)
         self.left_panel_layout = QVBoxLayout()
         self.left_panel_layout.setContentsMargins(15,15,15,15)
         self.setup_data_panel()
@@ -406,8 +420,8 @@ class MainWindow(QMainWindow):
         self.left_panel_layout.addWidget(self.parameter_panel)
         self.left_panel_layout.addWidget(self.modes_panel, stretch=1)
         self.left_panel_layout.addSpacing(15)
-
-        self.left_panel.setLayout(self.left_panel_layout)
+        self.left_panel_widget.setLayout(self.left_panel_layout)
+        self.left_panel.setWidget(self.left_panel_widget)
 
     def setup_data_panel(self):
     # 数据导入面板
@@ -575,13 +589,13 @@ class MainWindow(QMainWindow):
 
     def setup_parameter_panel(self):
         """处理的模式设置"""
-        self.parameter_panel = self.QGroupBoxCreator("处理设置")
+        self.parameter_panel = self.QGroupBoxCreator("处理模式")
         process_layout = QVBoxLayout()
         switch_layout = QHBoxLayout()
         self.tri_switch = TriStateSwitch.TriStateSwitch()
         self.tri_switch.setValue(1)
         self.mode_label = QLabel("默认模式")
-        switch_layout.addWidget(QLabel('处理模式：'))
+        # switch_layout.addWidget(QLabel('处理模式：'))
         self.tri_switch.setFixedWidth(100)
         switch_layout.addWidget(self.tri_switch)
         self.tri_switch.valueChanged.connect(self.mode_switch_change)
@@ -954,16 +968,23 @@ class MainWindow(QMainWindow):
         bad_frame_edit.triggered.connect(self.bad_frame_edit_dialog)
 
         # 编辑菜单-计算设置功能
-        data_select_edit = edit_menu.addAction("计算设置")
-        data_select_edit.triggered.connect(self.calculation_set_edit_dialog)
+        cal_settings_edit = edit_menu.addAction("计算设置")
+        cal_settings_edit.triggered.connect(self.calculation_set_edit_dialog)
 
         # 编辑菜单-绘图设置调整
         plt_settings_edit = edit_menu.addAction("绘图设置")
         plt_settings_edit.triggered.connect(self.plt_settings_edit_dialog)
 
-        # # ROI绘图
-        # ROI_function = self.menu.addAction("ROI选取")
-        # ROI_function.triggered.connect(self.roi_select_dialog)
+        # 数据操作
+        data_manipulation_menu = self.menu.addMenu("数据操作")
+
+        # 数据操作——数据计算器
+        data_calculator = data_manipulation_menu.addAction('数据计算器')
+        data_calculator.triggered.connect(self.process_math)
+
+        # 数据操作——数据切片器
+        data_cropper = data_manipulation_menu.addAction('数据切片器')
+        data_cropper.triggered.connect(self.data_crop)
 
         # 历史数据管理
         data_menu = self.menu.addMenu('历史数据')
@@ -1043,18 +1064,21 @@ class MainWindow(QMainWindow):
 
         # 状态文本
         self.status_label = QLabel("准备就绪")
-        self.status_label.setFixedWidth(250)
+        self.status_label.setMinimumWidth(80)
+        self.status_label.setSizeIncrement(16,0)
         self.status_bar.addWidget(self.status_label)
         # 鼠标悬停显示
         self.mouse_pos_label = QLabel("光标位置: x= -, y= -, t= -; 值: -")
-        self.mouse_pos_label.setFixedWidth(500)
+        self.mouse_pos_label.setMinimumWidth(80)
+        self.mouse_pos_label.setSizeIncrement(16,0)
         self.status_bar.addWidget(self.mouse_pos_label)
         self._handle_hover = self.make_hover_handler()
         # 进度条
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setTextVisible(True)
-        self.progress_bar.setFixedWidth(650)
+        self.progress_bar.setMinimumWidth(120)
+        self.progress_bar.setSizeIncrement(24, 0)
         self.status_bar.addWidget(self.progress_bar)
 
         # 状态指示灯 (红绿灯)
@@ -1070,15 +1094,15 @@ class MainWindow(QMainWindow):
 
         # 创建控制台部件
         self.console_widget = ConsoleWidget(self)
-        self.command_processor = CommandProcessor(self)
+        # self.command_processor = CommandProcessor(self)
 
         self.console_dock.setWidget(self.console_widget)
-        self.addDockWidget(Qt.BottomDockWidgetArea, self.console_dock)
-        self.splitDockWidget(self.plot_dock, self.console_dock, Qt.Vertical)
-        self.resizeDocks([self.plot_dock, self.console_dock], [340, 60], Qt.Vertical)
+        # self.addDockWidget(Qt.BottomDockWidgetArea, self.console_dock)
+        # self.splitDockWidget(self.plot_dock, self.console_dock, Qt.Vertical)
+        # self.resizeDocks([self.plot_dock, self.console_dock], [340, 60], Qt.Vertical)
         # 设置控制台特性
-        self.console_dock.setMinimumWidth(200)
-        self.console_dock.setMinimumHeight(50)
+        # self.console_dock.setMinimumWidth(200)
+        # self.console_dock.setMinimumHeight(50)
         self.console_dock.setFeatures(QDockWidget.DockWidgetMovable |
                                       QDockWidget.DockWidgetFloatable |
                                       QDockWidget.DockWidgetClosable)
@@ -1359,11 +1383,11 @@ class MainWindow(QMainWindow):
         # 时间滑块
         # self.time_slider.valueChanged.connect(self.image_display.update_time_slice)
         self.time_slider_vertical.valueChanged.connect(self.update_result_display)
-        # 连接控制台信号
-        self.command_processor.terminate_requested.connect(self.stop_calculation)
-        self.command_processor.save_config_requested.connect(self.save_config)
-        self.command_processor.load_config_requested.connect(self.load_config)
-        self.command_processor.clear_result_requested.connect(self.clear_result)
+        # # 连接控制台信号
+        # self.command_processor.terminate_requested.connect(self.stop_calculation)
+        # self.command_processor.save_config_requested.connect(self.save_config)
+        # self.command_processor.load_config_requested.connect(self.load_config)
+        # self.command_processor.clear_result_requested.connect(self.clear_result)
         # 结果区域信号
         self.result_display.tab_type_changed.connect(self._handle_result_tab)
         self.add_data_btn.clicked.connect(self.data_plot_add)
@@ -2265,6 +2289,17 @@ class MainWindow(QMainWindow):
                 return True
         return False
 
+    def data_crop(self):
+        """数据空间切片器"""
+        aim_data = self.data_selection()
+        if aim_data is None:
+            return False
+        dialog = SpatialExtractor(aim_data)
+        if dialog.exec_() == QDialog.Accepted:
+            logging.info(f"数据切割完成, 切割后维度: {dialog.extracted_data.datashape}")
+            self.processed_result(dialog.extracted_data)
+
+
     def data_selection(self, aim_type:str | list = 'all'):
         """数据选择代码（模式流程）"""
         aim_data = None
@@ -2444,6 +2479,8 @@ class MainWindow(QMainWindow):
                 logging.info("所有图绘制完成")
             case 'Basic_math':
                 logging.info("对数据的基础运算完毕！")
+            case 'data_cropped':
+                logging.info("对数据的切片完成！")
 
     def draw_result(self,draw_type:str,canvas_id:int,result,roi_info = None):
         """canvas绘图结果处理"""
@@ -2804,6 +2841,8 @@ if __name__ == "__main__":
     # 应用全局样式
     app.setStyle('Fusion')
     app.setStyleSheet(read_qss_file("style.qss"))
+    app.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    app.setAttribute(Qt.AA_UseHighDpiPixmaps)
     QCoreApplication.setOrganizationName("CSSA")
     QCoreApplication.setApplicationName("LifeCalor")
     os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"

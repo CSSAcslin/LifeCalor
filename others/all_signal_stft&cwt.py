@@ -85,7 +85,7 @@ def analyze_signals(sig, fs, target_freq=150, wavelet = 'cmor1.5-1'):
     # nperseg 决定了频率分辨率。fs=1500, nperseg=256 -> 分辨率约为 5.8Hz
     # window = signal.get_window(('gaussian', 128 / 6), 128, fftbins=False)
     window = 'hann'
-    f_stft, t_stft, Zxx = signal.stft(sig, fs, window=window ,nperseg=100, noverlap=99, nfft= fs, return_onesided=True)
+    f_stft, t_stft, Zxx = signal.stft(sig, fs, window=window ,nperseg=128, noverlap=110, nfft= fs, return_onesided=True)
 
     # 计算功率谱密度 PSD (取模的平方)
     psd_stft = np.abs(Zxx) ** 2
@@ -347,6 +347,43 @@ def arrays_to_csv(time_array, signal_array, save_path,
 
     return df
 
+
+def read_channel_data(file_path, header_row=0, downsample_rate=1, channel_index=1):
+    """
+    从CSV文件中读取时间列和特定通道的信号列，并返回ndarray。
+
+    参数:
+    - file_path (str): CSV文件的相对或绝对路径。
+    - header_row (int): 标题行所在的行号（索引从0开始，默认为0。该行之下默认是数据）。
+    - downsample_rate (int): 降采样率（默认为1，即不降采样；如果为10，则每10行取1行）。
+    - channel_index (int): 要提取的通道索引（默认为1，即时间列[第0列]右侧的第一列）。
+
+    返回:
+    - np.ndarray: 包含两列数据 [时间, 对应通道信号] 的二维numpy数组。
+    """
+    try:
+        # 使用pandas读取CSV，header参数指定了标题行，pandas会自动将标题行以下的数据作为DataFrame的内容
+        df = pd.read_csv(file_path, header=header_row)
+
+        # 检查通道索引是否越界
+        if channel_index >= df.shape[1]:
+            raise ValueError(f"指定的通道索引 {channel_index} 超出了数据列数（总共有 {df.shape[1] - 1} 个信号通道）。")
+
+        # 使用 iloc 提取数据：
+        # 行切片: ::downsample_rate 实现降采样
+        # 列切片: [0, channel_index] 提取第0列（时间）和指定的通道列
+        extracted_data = df.iloc[::downsample_rate, [0, channel_index]]
+
+        # 将提取后的DataFrame转换为 numpy ndarray 并返回
+        return extracted_data.to_numpy().T
+
+    except FileNotFoundError:
+        print(f"错误: 找不到文件 {file_path}")
+        return None
+    except Exception as e:
+        print(f"读取数据时发生错误: {e}")
+        return None
+
 # ==========================================
 # 主程序执行
 # ==========================================
@@ -354,12 +391,17 @@ if __name__ == "__main__":
     # 参数设定
     FS = 1000
     DURATION = 4.0  # 为了绘图清晰，这里生成2秒数据，你可以改为5秒
-    MOD_FREQ = 50
+    MOD_FREQ = 60
     DENSITY = 0.5
     WAVELET = 'cmor1.5-1'
-    file_name = 'tri_phasechange_4s1000hz50'
 
-    full_signal = load_npy_file(fr"H:\Newera\programing\simulate_data\{file_name}.npy")
+    # 模拟数据
+    # file_name = 'tri_phasechange_4s1000hz50'
+    # full_signal = load_npy_file(fr"H:\Newera\programing\simulate_data\{file_name}.npy")
+    file_name = '0012-V'
+    # 采集信号
+    file_path = r'F:\splg0012.csv'
+    full_signal = read_channel_data(file_path, header_row=13, downsample_rate=1, channel_index=1)[1,0:50000]
 
     # 2. 分析信号
     results = analyze_signals(full_signal, FS, target_freq=MOD_FREQ, wavelet=WAVELET)
@@ -367,8 +409,8 @@ if __name__ == "__main__":
     # 3. 绘图
     plot_all_results(full_signal, results, FS, target_freq=MOD_FREQ, wavelet=WAVELET)
 
-    # arrays_to_csv(results['stft'][0],results['stft'][3], fr"H:\Newera\dataprocessing\simulate-findAP\{file_name}-stft.csv")
-    # arrays_to_csv(results['cwt'][0], results['cwt'][3], fr"H:\Newera\dataprocessing\simulate-findAP\{file_name}-cwt.csv")
+    arrays_to_csv(results['stft'][0],results['stft'][3], fr"H:\Newera\dataprocessing\simulate-findAP\{file_name}-stft.csv")
+    arrays_to_csv(results['cwt'][0], results['cwt'][3], fr"H:\Newera\dataprocessing\simulate-findAP\{file_name}-cwt.csv")
 
     # 4. 保存
     # df1 = pd.DataFrame({

@@ -4,6 +4,7 @@ from PyQt5.QtGui import QPainter, QColor, QBrush
 
 
 class TriStateSwitch(QWidget):
+    """三状态切换组件"""
     valueChanged = pyqtSignal(int)
 
     def __init__(self, parent=None):

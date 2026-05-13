@@ -154,11 +154,11 @@ class PlotGraphWidget(QWidget):
             if dist < closest_dist and dist < 0.05:  # 0.05 是吸附阈值
                 closest_dist = dist
                 closest_item = item
-                closest_val = (data_x, data_y)
+                closest_val = (data_x, data_y, idx)
 
         if closest_item:
             name = closest_item.opts['name']
-            self.hover_label.setText(f"◆ 取点 {name}\n  X: {closest_val[0]:.4g}\n  Y: {closest_val[1]:.4g}")
+            self.hover_label.setText(f"◆ 取点 {name}\n  X: {closest_val[0]:.4g}\n  Y: {closest_val[1]:.4g}\n  帧位：{closest_val[2]}")
             self.hover_label.adjustSize()
             self.hover_label.show()
 

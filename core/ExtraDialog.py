@@ -2010,7 +2010,7 @@ class DataTreeViewDialog(QDialog):
         item.setText(0, f"📦 {data_obj.name}")
         item.setText(1, f"原始 ({data_obj.format_import})")
         item.setText(2, self._shape_to_str(data_obj.datashape)+'\n'+self._format_array_size(data_obj.data_origin))
-        item.setText(3, f"{data_obj.datamin:.2f} ~ {data_obj.datamax:.2f}")
+        item.setText(3, f"{data_obj.datamin:.3f} ~ {data_obj.datamax:.3f}")
         # 将时间戳格式化
         time_str = time.strftime('%y/%m/%d %H:%M:%S', time.localtime(data_obj.timestamp))
         item.setText(4, time_str)
@@ -2024,7 +2024,7 @@ class DataTreeViewDialog(QDialog):
         item.setText(1, f"🏷️ {proc_obj.type_processed}")
         if proc_obj.data_processed is not None:
             item.setText(2, self._shape_to_str(proc_obj.datashape)+'\n'+self._format_array_size(proc_obj.data_processed))
-            item.setText(3, f"{proc_obj.datamin:.2f} ~ {proc_obj.datamax:.2f}")
+            item.setText(3, f"{proc_obj.datamin:.3f} ~ {proc_obj.datamax:.3f}")
         else:
             item.setText(2, "None")
         time_str = time.strftime('%y/%m/%d %H:%M:%S', time.localtime(proc_obj.timestamp))

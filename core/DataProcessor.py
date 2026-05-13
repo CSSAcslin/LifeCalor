@@ -426,6 +426,7 @@ class MassDataProcessor(QObject):
                                                              f'{data.name}@stft_q',
                                                              'stft_quality',
                                                              data_processed=Zxx,
+                                                            time_point=t,
                                                              out_processed={
                                                                  'window_type': window,
                                                                  'window_size': window_size,
@@ -814,17 +815,18 @@ class MassDataProcessor(QObject):
             self.processing_progress_signal.emit(70, 100)
             # 发送平均信号CWT结果
             self.processed_result.emit(ProcessedData(data.timestamp,
-                                                                 f'{data.name}@cwt_q',
-                                                                 'cwt_quality',
-                                                                 data_processed=np.abs(coefficients),
-                                                                 out_processed={
-                                                                     'frequencies' : frequencies,
-                                                                     'time_series' : np.arange(total_frames) / fps,
-                                                                     'target_freq' : target_freq,
-                                                                     'scale_range' : scale_range,
-                                                                     'total_scales' : totalscales,
-                                                                     'wavelet_name' : wavelet,
-                                                                 }))
+                                                     f'{data.name}@cwt_q',
+                                                     'cwt_quality',
+                                                     time_point=np.arange(total_frames) / fps,
+                                                     data_processed=np.abs(coefficients),
+                                                     out_processed={
+                                                         'frequencies' : frequencies,
+                                                         'time_series' : np.arange(total_frames) / fps,
+                                                         'target_freq' : target_freq,
+                                                         'scale_range' : scale_range,
+                                                         'total_scales' : totalscales,
+                                                         'wavelet_name' : wavelet,
+                                                     }))
             self.processing_progress_signal.emit(100, 100)
             return True
         except Exception as e:
@@ -1550,12 +1552,6 @@ class MassDataProcessor(QObject):
             # parsed_expr = parsed_expr.replace(".std", ".std()")
             parsed_expr = parsed_expr.replace(".sum", ".sum()")
 
-            # # 替换自定义运算符
-            # parsed_expr = parsed_expr.replace("<+>", "+")
-            # parsed_expr = parsed_expr.replace("<->", "-")
-            # parsed_expr = parsed_expr.replace("<*>", "*")
-            # parsed_expr = parsed_expr.replace("</>", "/")
-
             # 2. 安全地执行运算 (利用 Numpy 广播机制，一次性计算整个3D矩阵)
             # 使用 eval 时限制命名空间，只允许使用 pure_data 和 numpy，保障系统安全
             allowed_globals = {"__builtins__": None, "np": np}
@@ -1563,10 +1559,9 @@ class MassDataProcessor(QObject):
 
             result_data = eval(parsed_expr, allowed_globals, allowed_locals)
 
-            # 如果计算结果是一个标量（例如用户只输入了 <data><.mean>）
             # 我们将其扩展回与原视频相同的维度，或者按需保留（这里选择保留并在控制台提示）
             if np.isscalar(result_data) or result_data.ndim == 0:
-                print(f"提示: 自定义运算结果为单一标量值 {result_data}")
+                logging.info(f"提示: 自定义运算结果为单一标量值 {result_data}")
 
             self.processing_progress_signal.emit(frames, frames)  # 因为是向量化运算，瞬间完成，直接满进度
 

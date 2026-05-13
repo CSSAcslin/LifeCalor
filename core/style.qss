@@ -353,7 +353,25 @@ QScrollBar::handle:vertical:hover {
 }
 
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-    height: 0px;
+    height: 1px;
+}
+
+QScrollBar:horizontal {
+    height: 12px;
+    background: #f0f0f0;
+}
+
+QScrollBar::handle:horizontal {
+    background: #C8E6C9;
+    min-width: 20px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background: #A5D6A7;
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 1px;
 }
 
 /* ========== QDialog 样式 ========== */
