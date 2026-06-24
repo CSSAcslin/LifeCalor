@@ -20,6 +20,7 @@ from UpdateModule import *
 from PlotGraphWidget import *
 from SpatialExtractor import SpatialExtractor
 from widget import TriStateSwitch
+from AppConfig import get_github_auth_header, is_em_frequency_result
 
 
 class MainWindow(QMainWindow):
@@ -58,7 +59,7 @@ class MainWindow(QMainWindow):
         self.current_version = "0.13.7"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
-        self.PAT = "Bearer <your PAT>"
+        self.PAT = get_github_auth_header()
 
         # 参数初始化
         self.settings = QSettings()
@@ -2715,7 +2716,7 @@ class MainWindow(QMainWindow):
     def export_EM_data(self,result):
         """时频变换后目标频率下的结果导出"""
         if self.processed_data is not None:
-            if self.processed_data.type_processed == 'ROI_stft' or 'ROI_cwt':
+            if is_em_frequency_result(self.processed_data.type_processed):
                 dialog = DataExportDialog(datatypes=['tif','avi','gif','png'])
                 if dialog.exec_():
                     directory = dialog.directory

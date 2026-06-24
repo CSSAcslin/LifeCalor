@@ -4,6 +4,7 @@ import os
 import logging
 from datetime import datetime
 import requests
+from AppConfig import build_github_headers
 import json
 import zipfile
 import tempfile
@@ -380,11 +381,9 @@ class UpdateChecker(QThread):
         self.repo_name = repo_name
         self.current_version = current_version
         self.api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases"
-        self.headers = {
-                'User-Agent': 'Carrier-Lifetime-Calculator',
+        self.headers = build_github_headers({
                 'Accept': 'application/vnd.github+json',
-                'Authorization': f'{PAT}',
-                'X-GitHub-Api-Version': '2022-11-28'}
+                'X-GitHub-Api-Version': '2022-11-28'})
 
     def run(self):
         """主线程执行函数"""
@@ -474,10 +473,7 @@ class UpdateDownloader(QThread):
         self.download_url = download_url
         self.file_name = file_name
         self.temp_dir = tempfile.gettempdir()
-        self.headers = {
-                'User-Agent': 'Carrier-Lifetime-Calculator',
-                'Authorization': f'{PAT}',
-            }
+        self.headers = build_github_headers()
 
     def run(self):
         """下载主线程"""

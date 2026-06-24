@@ -1,0 +1,47 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE and local settings
+.idea/
+.vscode/
+*.code-workspace
+
+# Build and packaging outputs
+build/
+dist/
+core/build/
+core/dist/
+*.egg-info/
+
+# Runtime logs
+*.log
+*.log.*
+core/carrier_lifetime.log*
+
+# Local/generated scientific data and exports
+*.h5
+*.hdf5
+*.tif
+*.tiff
+*.avi
+*.csv
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+# Keep source assets and Qt resources tracked explicitly when needed
+!core/resources/*.png
+!core/resources/*.svg
+!core/LifeCalor.ico
+!core/resources.qrc
+!icon.png
+
+# Local worktrees
+.worktrees/
+worktrees/
