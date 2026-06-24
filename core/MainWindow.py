@@ -55,7 +55,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "0.13.6"  # 当前程序版本
+        self.current_version = "0.13.7"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = "Bearer <your PAT>"
@@ -2165,7 +2165,6 @@ class MainWindow(QMainWindow):
         self.atam_signal.emit(aim_data)
         self.atam_btn.setEnabled(False)
         return True
-        return False
         # if self.processed_data is None:
         #     if self.data.ndim not in [2,3]:
         #         logging.info("数据无法被处理，请重选数据焦点")

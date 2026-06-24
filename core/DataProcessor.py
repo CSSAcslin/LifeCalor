@@ -921,7 +921,7 @@ class MassDataProcessor(QObject):
                                          "Accumulated_time_amplitude_map",
                                          time_point=data.time_point, # 忘记为什么0.12.1要改这个了，改这个就没法处理单通道了
                                          data_processed=np.mean(data.data_processed if isinstance(data,ProcessedData) else data.data_origin, axis=0),
-                                         out_processed={**data.out_processed}
+                                         out_processed={**(data.out_processed if isinstance(data,ProcessedData) else data.parameters),}
                                                              ))
         logging.info("累计时间振幅计算已完成")
 
@@ -1530,7 +1530,7 @@ class MassDataProcessor(QObject):
         """
         if isinstance(data, ProcessedData):
             pure_data = data.data_processed
-            out_processed = data.data_processed
+            out_processed = data.out_processed
         else:
             pure_data = data.data_origin
             out_processed = data.parameters
