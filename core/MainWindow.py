@@ -21,6 +21,8 @@ from PlotGraphWidget import *
 from SpatialExtractor import SpatialExtractor
 from widget import TriStateSwitch
 from AppConfig import get_github_auth_header, is_em_frequency_result
+from ParameterStore import load_param_group
+from TaskState import TaskState
 
 
 class MainWindow(QMainWindow):
@@ -90,6 +92,12 @@ class MainWindow(QMainWindow):
 
         # 状态控制
         self._is_calculating = False
+        self.task_states = {
+            "import": TaskState("import"),
+            "calculation": TaskState("calculation"),
+            "em_processing": TaskState("em_processing"),
+            "export": TaskState("export"),
+        }
         # 信号连接
         self.signal_connect()
         # 更新检查
@@ -187,38 +195,11 @@ class MainWindow(QMainWindow):
 
     def _load_param_group(self, group_name, defaults):
         """加载参数组，如果没有则使用默认值"""
-        params = {}
         self.settings.beginGroup(group_name)
-
-        for key, default_value in defaults.items():
-            # 尝试从QSettings读取
-            saved_value = self.settings.value(key, default_value)
-
-            # 处理类型转换
-            if isinstance(default_value, bool):
-                # 处理布尔值
-                params[key] = self.settings.value(key, default_value, type=bool)
-            elif isinstance(default_value, int):
-                # 处理整数
-                try:
-                    params[key] = int(self.settings.value(key, default_value))
-                except (ValueError, TypeError):
-                    params[key] = default_value
-            elif isinstance(default_value, float):
-                # 处理浮点数
-                try:
-                    params[key] = float(self.settings.value(key, default_value))
-                except (ValueError, TypeError):
-                    params[key] = default_value
-            elif isinstance(default_value, str) and not saved_value:
-                # 处理空字符串
-                params[key] = default_value
-            else:
-                # 其他情况（主要是字符串）
-                params[key] = str(self.settings.value(key, default_value))
-
-        self.settings.endGroup()
-        return params
+        try:
+            return load_param_group(self.settings.value, defaults)
+        finally:
+            self.settings.endGroup()
 
     def save_params(self):
         """保存所有参数到QSettings"""

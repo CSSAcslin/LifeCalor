@@ -49,3 +49,14 @@ $env:LIFECALOR_GITHUB_TOKEN = "your-token"
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+## 维护与扩展地基
+
+本仓库已开始把主窗口中的长期职责逐步抽出，当前新增的维护入口包括：
+
+- `core/ParameterStore.py`：统一参数读取与类型转换，供 `MainWindow` 的 `QSettings` 参数组使用。
+- `core/TaskState.py`：统一任务状态模型，状态值包括 `idle/running/cancelling/failed/completed`，后续导入、计算、EM 处理、导出线程都应逐步接入。
+- `core/ProcessingBenchmark.py`：小型性能测量 helper，用于记录处理操作名称、耗时和输出 shape；后续 STFT/CWT 专项 benchmark 可直接复用。
+- `core/AlgorithmRegistry.py`：新算法扩展注册表，新算法推荐以 `name + handler + description` 形式注册，handler 输入数据并返回处理结果，再由现有流程包装为 `ProcessedData`。
+
+新增功能建议遵循：参数收集 -> 任务执行 -> `ProcessedData` -> 绘图/画布/导出。
