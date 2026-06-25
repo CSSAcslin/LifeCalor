@@ -26,6 +26,16 @@ class MainWindowArchitectureTests(unittest.TestCase):
         self.assertIn("TaskState(\"em_processing\")", source)
         self.assertIn("TaskState(\"export\")", source)
 
+    def test_mainwindow_delegates_thread_and_export_policy(self):
+        source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
+
+        self.assertIn("from ThreadController import is_thread_active as thread_is_active", source)
+        self.assertIn("return thread_is_active(", source)
+        self.assertIn("stop_qthread(", source)
+        self.assertIn("from ExportPolicy import can_export_em_data, prepare_dataframe_for_export", source)
+        self.assertIn("prepare_dataframe_for_export(", source)
+        self.assertIn("can_export_em_data(", source)
+
 
 if __name__ == "__main__":
     unittest.main()

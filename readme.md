@@ -60,3 +60,5 @@ python -m unittest discover -s tests -v
 - `core/AlgorithmRegistry.py`：新算法扩展注册表，新算法推荐以 `name + handler + description` 形式注册，handler 输入数据并返回处理结果，再由现有流程包装为 `ProcessedData`。
 
 新增功能建议遵循：参数收集 -> 任务执行 -> `ProcessedData` -> 绘图/画布/导出。
+- `core/ThreadController.py`：线程活动检测和停止动作封装，`MainWindow` 通过它停止计算/EM 处理线程，并同步任务状态。
+- `core/ExportPolicy.py`：导出前策略封装，包含拟合列过滤和 EM 时频结果可导出判断。

@@ -20,9 +20,11 @@ from UpdateModule import *
 from PlotGraphWidget import *
 from SpatialExtractor import SpatialExtractor
 from widget import TriStateSwitch
-from AppConfig import get_github_auth_header, is_em_frequency_result
+from AppConfig import get_github_auth_header
 from ParameterStore import load_param_group
 from TaskState import TaskState
+from ThreadController import is_thread_active as thread_is_active, stop_thread as stop_qthread
+from ExportPolicy import can_export_em_data, prepare_dataframe_for_export
 
 
 class MainWindow(QMainWindow):
@@ -2568,15 +2570,8 @@ class MainWindow(QMainWindow):
     '''其他功能'''
     def is_thread_active(self, thread_name: str) -> bool:
         """检查指定名称的线程是否存在且正在运行"""
-        # :param thread_name: 线程对象的变量名（str）
-        # :return: True（线程存在且运行中）/ False（线程不存在或已结束）
-
-        if hasattr(self, thread_name):
-            thread = getattr(self, thread_name)  # 动态获取线程对象
-            if isinstance(thread, QThread) and not sip.isdeleted(thread):
-                return thread.isRunning()
-        return False
-
+        thread = getattr(self, thread_name, None)
+        return thread_is_active(thread, expected_type=QThread, is_deleted=sip.isdeleted)
     def btn_safety(self, cal_run=False):
         """关闭按钮的功能"""
         if cal_run:
@@ -2590,24 +2585,25 @@ class MainWindow(QMainWindow):
         return
 
     def stop_thread(self,type = 0):
-        """彻底删除线程（反正关闭也不能重启）后续线程多了加入选择关闭的能力"""
-        if type == 0 and self.is_thread_active("calc_thread"):
-            try:
-                self.calc_thread.quit()  # 请求退出
-                self.calc_thread.wait()  # 等待结束
-                self.calc_thread.deleteLater()  # 标记删除
-                logging.info("计算线程关闭")
-            except Exception as e:
-                logging.error(f"线程退出错误{e}")
-        if type == 1 and hasattr(self,"avi_thread") and self.is_thread_active("avi_thread"):
-            try:
-                self.avi_thread.quit()
-                self.avi_thread.wait()
-                self.avi_thread.deleteLater()
-                logging.info("大数据处理线程关闭")
-            except Exception as e:
-                logging.error(f"线程退出错误{e}")
-
+        """停止指定后台线程。"""
+        thread_map = {
+            0: ("calc_thread", "calculation", "计算线程关闭"),
+            1: ("avi_thread", "em_processing", "大数据处理线程关闭"),
+        }
+        if type not in thread_map:
+            logging.warning(f"未知线程类型: {type}")
+            return False
+        thread_name, task_key, success_message = thread_map[type]
+        try:
+            stopped = stop_qthread(getattr(self, thread_name, None), expected_type=QThread, is_deleted=sip.isdeleted)
+            if stopped:
+                self.task_states[task_key].complete()
+                logging.info(success_message)
+            return stopped
+        except Exception as e:
+            self.task_states[task_key].fail(str(e))
+            logging.error(f"线程退出错误{e}")
+            return False
     def export_image(self):
         """导出热图为图片"""
         current_index = self.result_display.currentIndex()
@@ -2631,8 +2627,8 @@ class MainWindow(QMainWindow):
                 canvas.figure.savefig(path, dpi=300)
                 QMessageBox.information(self, "导出成功", f"图像已保存至:\n{path}")
                 logging.info(f"导出成功,图像已保存至:{path}")
-        except:
-            logging.info("数据未保存")
+        except Exception as e:
+            logging.info(f"数据未保存: {e}")
 
         # if hasattr(self.result_display, 'current_data'):
         #     file_path, _ = QFileDialog.getSaveFileName(
@@ -2652,7 +2648,6 @@ class MainWindow(QMainWindow):
             if dialog.exec_():
                 isfiting = dialog.fitting_check.isChecked()
                 hasheader = dialog.index_check.isChecked()
-                extra_check = dialog.extra_check.isChecked()
                 file_path, _ = QFileDialog.getSaveFileName(
                     self, "保存数据", "", "CSV文件 (*.csv);;文本文件 (*.txt)")
         else:
@@ -2661,43 +2656,32 @@ class MainWindow(QMainWindow):
             return
 
         if file_path:
-            df = self.result_display.current_dataframe
-            if not isfiting:
-                if self.result_display.current_mode == 'curve':
-                    df = df.loc[:, df.columns != 'fit_curve']
-                elif self.result_display.current_mode == 'diff':
-                    df = df.loc[:, df.columns.get_level_values(1) != '拟合曲线']
-                elif self.result_display.current_mode == 'heatmap':
-                    pass
-                elif self.result_display.current_mode == 'roi':
-                    pass
-                elif self.result_display.current_mode == 'var':
-                    pass
-                elif self.result_display.current_mode == 'series':
-                    pass
-            # 保存为CSV或TXT
+            df = prepare_dataframe_for_export(
+                self.result_display.current_dataframe,
+                self.result_display.current_mode,
+                include_fitting=isfiting,
+            )
             if file_path.lower().endswith('.csv'):
                 try:
                     df.to_csv(file_path, index=False, header=hasheader)
                     logging.info("数据已保存")
-                except:
-                    logging.info("数据未保存")
+                except Exception as e:
+                    logging.info(f"数据未保存: {e}")
             else:
                 try:
                     df.to_csv(file_path, sep='\t', index=False, header=hasheader)
                     logging.info("数据已保存")
-                except:
-                    logging.info("数据未保存")
+                except Exception as e:
+                    logging.info(f"数据未保存: {e}")
             self.update_status("准备就绪", 'idle')
         else:
             logging.info("数据未保存")
             self.update_status("准备就绪", 'idle')
             return
-
     def export_EM_data(self,result):
         """时频变换后目标频率下的结果导出"""
         if self.processed_data is not None:
-            if is_em_frequency_result(self.processed_data.type_processed):
+            if can_export_em_data(self.processed_data.type_processed):
                 dialog = DataExportDialog(datatypes=['tif','avi','gif','png'])
                 if dialog.exec_():
                     directory = dialog.directory
