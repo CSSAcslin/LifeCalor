@@ -1,4 +1,4 @@
-import copy
+﻿import copy
 import logging
 
 import cv2
@@ -16,6 +16,22 @@ import math
 import traceback
 
 from ResultDisplayWidget import HeartbeatDraw
+
+
+def get_unfolded_data(data):
+    """Return pixel-major [pixels, frames] data for EM analysis without persisting duplicate arrays."""
+    out_processed = getattr(data, "out_processed", {}) or {}
+    if "unfolded_data" in out_processed:
+        return out_processed["unfolded_data"]
+    source = getattr(data, "data_processed", None)
+    if source is None:
+        source = getattr(data, "data_origin", None)
+    if source is None:
+        raise ValueError("无法展开数据：缺少 data_processed/data_origin")
+    if source.ndim != 3:
+        raise ValueError(f"无法展开数据：期望3维数组，实际维度 {source.ndim}")
+    t, h, w = source.shape
+    return source.reshape((t, h * w)).T
 
 
 # --- 全局 Worker 函数 ---
@@ -377,7 +393,7 @@ class MassDataProcessor(QObject):
                                                   out_processed={
                                                       'fps' : parameters['fps'],
                                                       'bg_frame': bg_frame,
-                                                      'unfolded_data': unfolded_data,**parameters
+                                                      **parameters
                                                   })
 
             self.processed_result.emit(processed)
@@ -391,13 +407,7 @@ class MassDataProcessor(QObject):
     def quality_stft(self,data,target_freq: float,scale_range:int,fps:int, window_size: int, noverlap: int,
                     custom_nfft: int, window_type: str):
         """STFT质量分析"""
-        # try:
-        try:
-            unfolded_data = data.out_processed['unfolded_data']  # [像素数 x 帧数]
-        except:
-            processed_data = data.data_origin.copy() if isinstance(data, Data) else data.data_processed.copy()
-            T, H, W = processed_data.shape
-            unfolded_data = processed_data.reshape((T, H * W)).T
+        unfolded_data = get_unfolded_data(data)
 
         # 窗函数的选择和生成
         window = self.get_window(window_type, window_size)
@@ -483,12 +493,7 @@ class MassDataProcessor(QObject):
                 # --- 1. 参数校验与准备 ---
                 window = self.get_window(window_type, window_size)
                 frame_size = data.framesize
-                try:
-                    unfolded_data = data.out_processed['unfolded_data']  # [像素数 x 帧数]
-                except:
-                    processed_data = data.data_origin.copy() if isinstance(data, Data) else data.data_processed.copy()
-                    T, H, W = processed_data.shape
-                    unfolded_data = processed_data.reshape((T, H * W)).T  # Shape: [Pixels, Frames]
+                unfolded_data = get_unfolded_data(data)
 
                 mean_signal = np.mean(unfolded_data, axis=0)
                 f0, t0, Zxx0 = signal.stft(
@@ -662,12 +667,7 @@ class MassDataProcessor(QObject):
             try:
                 window = self.get_window(window_type, window_size)
                 frame_size = data.framesize
-                try:
-                    unfolded_data = data.out_processed['unfolded_data']  # [像素数 x 帧数]
-                except:
-                    processed_data = data.data_origin.copy() if isinstance(data, Data) else data.data_processed.copy()
-                    T, H, W = processed_data.shape
-                    unfolded_data = processed_data.reshape((T, H * W)).T  # Shape: [Pixels, Frames]
+                unfolded_data = get_unfolded_data(data)
 
                 mean_signal = np.mean(unfolded_data, axis=0)
                 f0, t0, Zxx0 = signal.stft(
@@ -792,12 +792,7 @@ class MassDataProcessor(QObject):
             wavelet: 使用的小波类型(默认为'morl'墨西哥帽小波)
         """
         try:
-            try:
-                unfolded_data = data.out_processed['unfolded_data']  # [像素数 x 帧数]
-            except:
-                processed_data = data.data_origin.copy() if isinstance(data, Data) else data.data_processed.copy()
-                T, H, W = processed_data.shape
-                unfolded_data = processed_data.reshape((T, H * W)).T
+            unfolded_data = get_unfolded_data(data)
             frame_size = data.framesize  # (宽度, 高度)
             cparam = 2 * pywt.central_frequency(wavelet) * totalscales
             scales = cparam/np.arange(totalscales,1,-1)
@@ -845,12 +840,7 @@ class MassDataProcessor(QObject):
             wavelet: 使用的小波类型(默认为cmor3-3)
         """
         try:
-            try:
-                unfolded_data = data.out_processed['unfolded_data']  # [像素数 x 帧数]
-            except:
-                processed_data = data.data_origin.copy() if isinstance(data, Data) else data.data_processed.copy()
-                T, H, W = processed_data.shape
-                unfolded_data = processed_data.reshape((T, H * W)).T
+            unfolded_data = get_unfolded_data(data)
             frame_size = data.framesize  # (宽度, 高度)
             # cparam = 2 * pywt.central_frequency(wavelet) * totalscales
             # scales = cparam / np.arange(totalscales, 1, -1)
@@ -1642,3 +1632,7 @@ class MassDataProcessor(QObject):
     #     }
     #
     #     return results
+
+
+
+

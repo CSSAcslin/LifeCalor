@@ -1,8 +1,9 @@
-import logging
+﻿import logging
 import os
 import time
 import copy
 import weakref
+from pathlib import Path
 
 import numpy as np
 import tifffile as tiff
@@ -18,6 +19,31 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from scipy.ndimage.interpolation import zoom
+from ArrayCache import (
+    ArrayCacheConfig,
+    ArrayStore,
+    ArrayRef,
+    cache_large_arrays_in_mapping,
+    resolve_array,
+    should_cache_array,
+)
+_ARRAY_CACHE_CONFIG = ArrayCacheConfig(cache_dir=Path.cwd() / ".lifecalor_cache", threshold_bytes=512 * 1024 * 1024)
+_ARRAY_CACHE_PROGRESS_CALLBACK = None
+
+
+def configure_array_cache(config: ArrayCacheConfig) -> None:
+    global _ARRAY_CACHE_CONFIG
+    _ARRAY_CACHE_CONFIG = config
+    _ARRAY_CACHE_CONFIG.ensure_dir()
+
+
+def set_array_cache_progress_callback(callback) -> None:
+    global _ARRAY_CACHE_PROGRESS_CALLBACK
+    _ARRAY_CACHE_PROGRESS_CALLBACK = callback
+
+
+def get_array_store(progress_callback=None) -> ArrayStore:
+    return ArrayStore(_ARRAY_CACHE_CONFIG, progress_callback=progress_callback or _ARRAY_CACHE_PROGRESS_CALLBACK)
 
 
 class DataManager(QObject):
@@ -478,9 +504,7 @@ class DataManager(QObject):
                     self.data_progress_signal.emit(i, total_frames)
 
         data_processed = np.squeeze(np.array(data_roi))
-        if 'unfolded_data' in out_processed:
-            T, H, W = data_processed.shape
-            out_processed['unfolded_data'] = data_processed.reshape((T, H * W)).T
+        out_processed = {k: v for k, v in out_processed.items() if k != 'unfolded_data'}
         self.processed_result.emit(ProcessedData(data.timestamp,
                                                  f'{data.name}@ROIed',
                                                  'Roi_applied',
@@ -531,7 +555,21 @@ class Data:
     serial_number: int = field(init=False)
     _counter: int = field(init=False, repr=False, default=0)
     _amend_counter: int = field(init=False, default=0)
+    _data_origin_storage: object = field(init=False, repr=False, default=None)
+    _image_import_storage: object = field(init=False, repr=False, default=None)
 
+    def __getattribute__(self, name):
+        if name in {"data_origin", "image_import"}:
+            storage_name = f"_{name}_storage"
+            values = object.__getattribute__(self, "__dict__")
+            if storage_name in values and values[storage_name] is not None:
+                return resolve_array(values[storage_name])
+        return object.__getattribute__(self, name)
+
+    def __setattr__(self, name, value):
+        if name in {"data_origin", "image_import"}:
+            object.__setattr__(self, f"_{name}_storage", value)
+        object.__setattr__(self, name, value)
     def __post_init__(self):
         Data._counter += 1
         self.serial_number = Data._counter  # 生成序号
@@ -541,7 +579,7 @@ class Data:
             self.name = f"{self.format_import}_{self.serial_number}"
         else:
             self.name = f"{self.name}_{self.serial_number}"
-        Data.history.append(copy.deepcopy(self))  # 实例存储
+        Data.history.append(self._history_snapshot())  # 实例存储
 
     def _recalculate(self):
         self.datashape = self.data_origin.shape
@@ -799,13 +837,31 @@ class Data:
             )
         return " | ".join(summary)
 
+    def _history_snapshot(self):
+        """Create a history snapshot that caches large primary arrays by reference."""
+        snapshot = copy.copy(self)
+        store = get_array_store()
+        owner_id = str(self.timestamp)
+        data_origin = self.data_origin
+        image_import = self.image_import
+        if should_cache_array(data_origin, store.config):
+            object.__setattr__(snapshot, "_data_origin_storage", store.put_array(data_origin, owner_id, "data_origin"))
+            object.__setattr__(snapshot, "data_origin", None)
+        else:
+            object.__setattr__(snapshot, "_data_origin_storage", data_origin)
+        if should_cache_array(image_import, store.config):
+            object.__setattr__(snapshot, "_image_import_storage", store.put_array(image_import, owner_id, "image_import"))
+            object.__setattr__(snapshot, "image_import", None)
+        else:
+            object.__setattr__(snapshot, "_image_import_storage", image_import)
+        return snapshot
     def _update_history(self):
         """更新历史记录中的当前实例"""
         # 查找历史记录中的当前实例
         for i, record in enumerate(Data.history):
             if record.serial_number == self.serial_number:
                 # 更新历史记录中的实例
-                Data.history[i] = copy.deepcopy(self)
+                Data.history[i] = self._history_snapshot()
                 break
         return None
 
@@ -844,7 +900,22 @@ class ProcessedData:
     serial_number: int = field(init=False)
     _counter: int = field(init=False, repr=False, default=0)
     history: ClassVar[deque] = deque(maxlen=30)
+    _data_processed_storage: object = field(init=False, repr=False, default=None)
 
+    def __getattribute__(self, name):
+        if name == "data_processed":
+            values = object.__getattribute__(self, "__dict__")
+            if "_data_processed_storage" in values and values["_data_processed_storage"] is not None:
+                return resolve_array(values["_data_processed_storage"])
+        return object.__getattribute__(self, name)
+
+    def __setattr__(self, name, value):
+        if name == "data_processed":
+            object.__setattr__(self, "_data_processed_storage", value)
+        object.__setattr__(self, name, value)
+
+    def out_processed_array(self, key: str):
+        return resolve_array(self.out_processed[key])
     def __post_init__(self):
         Data._counter += 1
         self.serial_number = Data._counter  # 生成序号
@@ -867,7 +938,7 @@ class ProcessedData:
         # 加序列号
         self.name = f"{self.name}-{self.serial_number}"
         # 添加到历史记录
-        ProcessedData.history.append(copy.deepcopy(self))
+        ProcessedData.history.append(self._history_snapshot())
 
     def update_params(self, **kwargs):
         """
@@ -973,13 +1044,26 @@ class ProcessedData:
         history_list.reverse()
         return history_list
 
+    def _history_snapshot(self):
+        """Create a history snapshot that caches large result arrays by reference."""
+        snapshot = copy.copy(self)
+        store = get_array_store()
+        owner_id = str(self.timestamp)
+        data_processed = self.data_processed
+        if should_cache_array(data_processed, store.config):
+            object.__setattr__(snapshot, "_data_processed_storage", store.put_array(data_processed, owner_id, "data_processed"))
+            object.__setattr__(snapshot, "data_processed", None)
+        else:
+            object.__setattr__(snapshot, "_data_processed_storage", data_processed)
+        snapshot.out_processed = cache_large_arrays_in_mapping(self.out_processed, store, owner_id=owner_id)
+        return snapshot
     def _update_history(self):
         """更新历史记录中的当前实例"""
         # 查找历史记录中的当前实例
         for i, record in enumerate(ProcessedData.history):
             if record.serial_number == self.serial_number:
                 # 更新历史记录中的实例
-                ProcessedData.history[i] = copy.deepcopy(self)
+                ProcessedData.history[i] = self._history_snapshot()
                 break
         return None
 
@@ -1444,4 +1528,9 @@ class PublicEasyMethod:
         elif shape == 'custom':  # 留给绘制roi
             pass
         return mask
+
+
+
+
+
 

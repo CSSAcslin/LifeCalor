@@ -1,12 +1,13 @@
 import multiprocessing
+from pathlib import Path
 
 import resources_rc # 重要不能删
 from logging.handlers import RotatingFileHandler
 from PyQt5 import sip
 from PyQt5.QtGui import QFontDatabase, QDesktopServices
-from PyQt5.QtWidgets import (QStackedWidget, QStatusBar, QFrame, QSplitter, QDesktopWidget
+from PyQt5.QtWidgets import (QStackedWidget, QStatusBar, QFrame, QSplitter, QDesktopWidget, QInputDialog
                              )
-from PyQt5.QtCore import QElapsedTimer, QSettings, QCoreApplication, QUrl
+from PyQt5.QtCore import QElapsedTimer, QSettings, QCoreApplication, QUrl, QStandardPaths
 
 from ImportManager import *
 from DataProcessor import DataProcessor, MassDataProcessor
@@ -191,12 +192,64 @@ class MainWindow(QMainWindow):
             'auto_boundary_set': True,
             'min_value': '',
             'max_value': '',
+            'cache_directory': self.default_cache_directory(),
+            'cache_threshold_mb': 512,
         })
+        self.apply_cache_settings()
 
         self.save_params()
         self.save_timer = QTimer()
         self.save_timer.timeout.connect(self.save_params)
         self.save_timer.start(30000)  # 每10秒自动保存一次
+
+
+
+    def default_cache_directory(self):
+        """???????"""
+        base_path = QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)
+        if not base_path:
+            base_path = os.path.join(os.getcwd(), ".lifecalor_cache")
+        return os.path.join(base_path, "cache")
+
+    def apply_cache_settings(self):
+        """???????????????"""
+        cache_directory = self.tool_params.get('cache_directory') or self.default_cache_directory()
+        cache_threshold_mb = int(self.tool_params.get('cache_threshold_mb', 512))
+        configure_array_cache(ArrayCacheConfig(
+            cache_dir=Path(cache_directory),
+            threshold_bytes=cache_threshold_mb * 1024 * 1024,
+        ))
+        set_array_cache_progress_callback(self.cache_progress_update)
+
+    def cache_progress_update(self, current, total, message):
+        """?????????"""
+        self.update_status(message, 'working')
+        self.update_progress(current, total)
+
+    def choose_cache_directory(self):
+        """???????"""
+        directory = QFileDialog.getExistingDirectory(self, "??????", self.tool_params.get('cache_directory', ''))
+        if directory:
+            self.update_param('tool', 'cache_directory', directory)
+            self.apply_cache_settings()
+            logging.info(f"???????: {directory}")
+
+    def choose_cache_threshold(self):
+        """??????????"""
+        value, ok = QInputDialog.getInt(
+            self,
+            "??????",
+            "????????????????MB?:",
+            int(self.tool_params.get('cache_threshold_mb', 512)),
+            1,
+            1024 * 1024,
+            1,
+        )
+        if ok:
+            self.update_param('tool', 'cache_threshold_mb', value)
+            self.apply_cache_settings()
+            logging.info(f"???????: {value} MB")
+
 
     def _load_param_group(self, group_name, defaults):
         """加载参数组，如果没有则使用默认值"""
