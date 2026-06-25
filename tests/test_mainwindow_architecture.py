@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 import unittest
 from pathlib import Path
 
@@ -37,5 +37,15 @@ class MainWindowArchitectureTests(unittest.TestCase):
         self.assertIn("can_export_em_data(", source)
 
 
+    def test_mainwindow_delegates_selection_export_workflow_and_task_start(self):
+        source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
+
+        self.assertIn("from SelectionPolicy import select_data, rect_mask_from_canvas", source)
+        self.assertIn("from ExportWorkflow import save_dataframe", source)
+        self.assertIn("from TaskController import ensure_thread_running", source)
+        self.assertIn("select_data(", source)
+        self.assertIn("rect_mask_from_canvas(", source)
+        self.assertIn("save_dataframe(", source)
+        self.assertIn("ensure_task_thread_running(", source)
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,9 @@ from ParameterStore import load_param_group
 from TaskState import TaskState
 from ThreadController import is_thread_active as thread_is_active, stop_thread as stop_qthread
 from ExportPolicy import can_export_em_data, prepare_dataframe_for_export
+from SelectionPolicy import select_data, rect_mask_from_canvas
+from ExportWorkflow import save_dataframe
+from TaskController import ensure_thread_running
 
 
 class MainWindow(QMainWindow):
@@ -1471,7 +1474,7 @@ class MainWindow(QMainWindow):
     def load_avi(self):
         """加载avi读取线程传递函数"""
         self.status_label.setText("正在处理数据...")
-        self.avi_thread.start()
+        self.ensure_task_thread_running("avi_thread", "import")
         file_types = "AVI视频文件 (*.avi);;所有文件 (*)"
 
         # 获取文件路径
@@ -1496,7 +1499,7 @@ class MainWindow(QMainWindow):
     def load_tiff_folder_EM(self):
         """加载TIFF文件夹(FS-iSCAT)"""
         self.status_label.setText("正在处理数据...")
-        self.avi_thread.start()
+        self.ensure_task_thread_running("avi_thread", "import")
         folder_path = QFileDialog.getExistingDirectory(
             self,
             "选择TIFF图像序列文件夹",
@@ -1901,8 +1904,7 @@ class MainWindow(QMainWindow):
         # 如果线程没了，要开启
         if not self.is_thread_active("calc_thread"):
             self.cal_thread_open()
-        if not self.calc_thread.isRunning():
-            self.calc_thread.start()
+        self.ensure_task_thread_running("calc_thread", "calculation")
         self.update_status('计算进行中...', 'working')
         self.time_step = float(self.time_step_input.value())
         center = (self.region_y_input.value(), self.region_x_input.value())
@@ -1922,8 +1924,7 @@ class MainWindow(QMainWindow):
         # 如果线程没了，要创建
         if not self.is_thread_active("calc_thread"):
             self.cal_thread_open()
-        if not self.calc_thread.isRunning():
-            self.calc_thread.start()
+        self.ensure_task_thread_running("calc_thread", "calculation")
         self.update_status('长时计算进行中...', 'working')
         self.time_step = float(self.time_step_input.value())
         model_type = 'single' if self.model_combo.currentText() == "单指数衰减" else 'double'
@@ -1943,8 +1944,7 @@ class MainWindow(QMainWindow):
             return False
         if not self.is_thread_active("calc_thread"):
             self.cal_thread_open()
-        if not self.calc_thread.isRunning():
-            self.calc_thread.start()
+        self.ensure_task_thread_running("calc_thread", "calculation")
         self.update_status('传热系数计算进行中...', 'working')
         self.time_step = float(self.time_step_input.value())
         model_type = 'single' if self.model_combo.currentText() == "单指数衰减" else 'double'
@@ -1970,7 +1970,7 @@ class MainWindow(QMainWindow):
         if not self.is_thread_active("calc_thread"):
             self.cal_thread_open()
 
-        self.calc_thread.start()
+        self.ensure_task_thread_running("calc_thread", "calculation")
         self.update_status('计算进行中...', 'working')
         self.time_step = float(self.time_step_input.value())
         self.space_step = float(self.space_step_input.value())
@@ -1986,8 +1986,7 @@ class MainWindow(QMainWindow):
             # self.EM_thread_open()
             pass
         # 如果有线程在运算，要提示（不过目前不需要，保留语句）
-        if not self.avi_thread.isRunning():
-            self.avi_thread.start()
+        self.ensure_task_thread_running("avi_thread", "em_processing")
         self.pre_process_signal.emit(data, self.bg_nums_input.value(), True)
         return True
 
@@ -2007,8 +2006,7 @@ class MainWindow(QMainWindow):
                 self.update_param('EM', 'stft_window_size',dialog.window_size_input.value())
                 self.update_param('EM', 'stft_noverlap', dialog.noverlap_input.value())
                 self.update_param('EM', 'custom_nfft',dialog.custom_nfft_input.value())
-                if not self.avi_thread.isRunning():
-                    self.avi_thread.start()
+                self.ensure_task_thread_running("avi_thread", "em_processing")
                 self.stft_quality_signal.emit(data,
                                               self.EM_params['target_freq'],self.EM_params['stft_scale_range'],self.EM_params['EM_fps'],
                                              self.EM_params['stft_window_size'],
@@ -2040,8 +2038,7 @@ class MainWindow(QMainWindow):
             self.update_param('EM', 'stft_window_size',dialog.window_size_input.value())
             self.update_param('EM', 'stft_noverlap', dialog.noverlap_input.value())
             self.update_param('EM', 'custom_nfft',dialog.custom_nfft_input.value())
-            if not self.avi_thread.isRunning():
-                self.avi_thread.start()
+            self.ensure_task_thread_running("avi_thread", "em_processing")
             target_freq = self.EM_params['target_freq'] #if target_freq is None else target_freq
             logging.info(f"目标频率：{target_freq}")
             self.stft_python_signal.emit(data,
@@ -2070,8 +2067,7 @@ class MainWindow(QMainWindow):
             self.update_param('EM', 'cwt_total_scales',dialog.cwt_size_input.value())
             self.update_param('EM', 'cwt_scale_range',dialog.cwt_scale_range.value())
             self.update_param('EM', 'cwt_type', dialog.wavelet.currentText())
-            if not self.avi_thread.isRunning():
-                self.avi_thread.start()
+            self.ensure_task_thread_running("avi_thread", "em_processing")
             self.cwt_quality_signal.emit(data,
                                          self.EM_params['target_freq'],
                                          int(self.EM_params['cwt_scale_range']),
@@ -2096,8 +2092,7 @@ class MainWindow(QMainWindow):
             self.update_param('EM', 'cwt_total_scales',dialog.cwt_size_input.value())
             self.update_param('EM', 'cwt_scale_range',dialog.cwt_scale_range.value())
             self.update_param('EM', 'cwt_type', dialog.wavelet.currentText())
-            if not self.avi_thread.isRunning():
-                self.avi_thread.start()
+            self.ensure_task_thread_running("avi_thread", "em_processing")
             self.cwt_python_signal.emit(data,
                                         self.EM_params['target_freq'],
                                         self.EM_params['EM_fps'],
@@ -2120,8 +2115,7 @@ class MainWindow(QMainWindow):
         if mask.shape != data.framesize:
             QMessageBox.warning(self, "蒙版错误", "蒙版尺寸与数据不匹配")
             return
-        if not self.calc_thread.isRunning():
-            self.calc_thread.start()
+        self.ensure_task_thread_running("calc_thread", "calculation")
         self.update_status('计算进行中...', 'working')
         self.easy_process.emit(data,'avg',mask)
 
@@ -2130,10 +2124,8 @@ class MainWindow(QMainWindow):
         aim_data = self.data_selection()
         if aim_data is None:
             return False
-        if not self.avi_thread.isRunning():
-            self.avi_thread.start()
-        if not self.calc_thread.isRunning():
-            self.calc_thread.start()
+        self.ensure_task_thread_running("avi_thread", "em_processing")
+        self.ensure_task_thread_running("calc_thread", "calculation")
         self.update_status('计算进行中...', 'working')
         self.easy_process.emit(aim_data,'avg',None)
         return None
@@ -2190,8 +2182,7 @@ class MainWindow(QMainWindow):
                 self.update_param('EM', 'scs_thr',dialog.thr_input.value())
                 self.update_param('EM', 'thr_known', dialog.thr_known_check.isChecked())
                 self.update_param('EM', 'scs_zoom',dialog.zoom_input.value())
-                if not self.avi_thread.isRunning():
-                    self.avi_thread.start()
+                self.ensure_task_thread_running("avi_thread", "em_processing")
                 self.tDgf_signal.emit(data,
                                       self.EM_params['scs_zoom'],
                                       self.EM_params['scs_thr'],
@@ -2212,8 +2203,7 @@ class MainWindow(QMainWindow):
                 self.update_param('EM', 'scs_thr', dialog.thr_input.value())
                 self.update_param('EM', 'thr_known', dialog.thr_known_check.isChecked())
                 self.update_param('EM', 'scs_zoom', dialog.zoom_input.value())
-                if not self.avi_thread.isRunning():
-                    self.avi_thread.start()
+                self.ensure_task_thread_running("avi_thread", "em_processing")
                 self.sscs_signal.emit(data,
                                       self.EM_params['scs_zoom'],
                                       self.EM_params['scs_thr'],
@@ -2229,8 +2219,7 @@ class MainWindow(QMainWindow):
         aim_data = self.data_selection()
         if aim_data is None:
             return False
-        if not self.avi_thread.isRunning():
-            self.avi_thread.start()
+        self.ensure_task_thread_running("avi_thread", "em_processing")
         self.update_status('二维傅里叶变换计算进行中...', 'working')
         self.tDFT_signal.emit(aim_data)
         return True
@@ -2240,8 +2229,7 @@ class MainWindow(QMainWindow):
         aim_data = self.data_selection()
         if aim_data is None:
             return False
-        if not self.avi_thread.isRunning():
-            self.avi_thread.start()
+        self.ensure_task_thread_running("avi_thread", "em_processing")
         self.update_status('二维傅里叶逆变换计算进行中...', 'working')
         self.tDiFT_signal.emit(aim_data)
         return True
@@ -2262,8 +2250,7 @@ class MainWindow(QMainWindow):
         aim_data = self.data_selection()
         if aim_data is None:
             return False
-        if not self.avi_thread.isRunning():
-            self.avi_thread.start()
+        self.ensure_task_thread_running("avi_thread", "em_processing")
         dialog = BasicCalDialog()
         if dialog.exec_():
             formula = dialog.get_formula()
@@ -2285,35 +2272,18 @@ class MainWindow(QMainWindow):
 
     def data_selection(self, aim_type:str | list = 'all'):
         """数据选择代码（模式流程）"""
-        aim_data = None
+        aim_data = select_data(
+            mode=self.mode,
+            raw_data=self.data,
+            processed_data=self.processed_data,
+            aim_type=aim_type,
+            picker=self.data_pick,
+        )
         if self.data is None and self.processed_data is None:
             logging.warning("无数据可处理，请先加载数据")
-            return None
-        match self.mode:
-            case 0:
-                aim_data = self.data_pick()
-            case 1:
-                if aim_type == 'data':
-                    aim_data = self.data
-                elif aim_type == 'all':
-                    aim_data = self.data_pick()
-                elif self.processed_data is None:
-                    return None
-                elif aim_type == 'processed':
-                    aim_data = self.processed_data
-                elif self.processed_data.type_processed in aim_type:
-                    aim_data = self.processed_data
-                else:
-                    aim_data = next(
-                        (data for data in reversed(self.processed_data.history) if
-                         data.type_processed in aim_type),
-                        None)
-            case 2:
-                aim_data = self.data_pick()
-        if aim_data is None:
+        elif aim_data is None:
             logging.warning("未找到可处理的目标数据")
         return aim_data
-
     def roi_selection(self, select = False):
         """ROI选择"""
         mask = None
@@ -2333,13 +2303,9 @@ class MainWindow(QMainWindow):
                         QMessageBox.warning(self,"警告","不支持该类型")
                         return None
                     elif dialog.roi_type == 'v_rect':
-                        rect_mask = self.image_display.display_canvas[aim_id].v_rect_roi
-                        x, y, w, h = rect_mask[0][0], rect_mask[0][1], rect_mask[1], rect_mask[2]
-                        if w == 0 or h == 0:
+                        mask = rect_mask_from_canvas(self.image_display.display_canvas[aim_id])
+                        if mask is None:
                             return None
-                        else:
-                            mask = np.zeros(self.image_display.display_canvas[aim_id].data.framesize, dtype=bool)
-                            mask[y:y + h, x:x + w] = True
                     elif dialog.roi_type == 'anchor':
                         mask = self.image_display.display_canvas[aim_id].anchor_mask
                     else:
@@ -2572,6 +2538,16 @@ class MainWindow(QMainWindow):
         """检查指定名称的线程是否存在且正在运行"""
         thread = getattr(self, thread_name, None)
         return thread_is_active(thread, expected_type=QThread, is_deleted=sip.isdeleted)
+
+    def ensure_task_thread_running(self, thread_name: str, task_key: str) -> bool:
+        """启动线程并同步任务状态。"""
+        return ensure_thread_running(
+            getattr(self, thread_name, None),
+            self.task_states[task_key],
+            expected_type=QThread,
+            is_deleted=sip.isdeleted,
+        )
+
     def btn_safety(self, cal_run=False):
         """关闭按钮的功能"""
         if cal_run:
@@ -2661,18 +2637,10 @@ class MainWindow(QMainWindow):
                 self.result_display.current_mode,
                 include_fitting=isfiting,
             )
-            if file_path.lower().endswith('.csv'):
-                try:
-                    df.to_csv(file_path, index=False, header=hasheader)
-                    logging.info("数据已保存")
-                except Exception as e:
-                    logging.info(f"数据未保存: {e}")
+            if save_dataframe(df, file_path, hasheader, self.task_states["export"]):
+                logging.info("数据已保存")
             else:
-                try:
-                    df.to_csv(file_path, sep='\t', index=False, header=hasheader)
-                    logging.info("数据已保存")
-                except Exception as e:
-                    logging.info(f"数据未保存: {e}")
+                logging.info(f"数据未保存: {self.task_states['export'].error}")
             self.update_status("准备就绪", 'idle')
         else:
             logging.info("数据未保存")

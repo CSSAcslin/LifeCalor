@@ -58,7 +58,10 @@ python -m unittest discover -s tests -v
 - `core/TaskState.py`：统一任务状态模型，状态值包括 `idle/running/cancelling/failed/completed`，后续导入、计算、EM 处理、导出线程都应逐步接入。
 - `core/ProcessingBenchmark.py`：小型性能测量 helper，用于记录处理操作名称、耗时和输出 shape；后续 STFT/CWT 专项 benchmark 可直接复用。
 - `core/AlgorithmRegistry.py`：新算法扩展注册表，新算法推荐以 `name + handler + description` 形式注册，handler 输入数据并返回处理结果，再由现有流程包装为 `ProcessedData`。
-
-新增功能建议遵循：参数收集 -> 任务执行 -> `ProcessedData` -> 绘图/画布/导出。
 - `core/ThreadController.py`：线程活动检测和停止动作封装，`MainWindow` 通过它停止计算/EM 处理线程，并同步任务状态。
 - `core/ExportPolicy.py`：导出前策略封装，包含拟合列过滤和 EM 时频结果可导出判断。
+- `core/SelectionPolicy.py`：数据焦点与 ROI 矩形蒙版选择策略，减少 `MainWindow` 内部条件分支。
+- `core/ExportWorkflow.py`：导出保存动作与 `TaskState('export')` 状态同步。
+- `core/TaskController.py`：线程启动入口与任务状态 `running` 同步。
+
+新增功能建议遵循：参数收集 -> 任务执行 -> `ProcessedData` -> 绘图/画布/导出。
