@@ -5,7 +5,7 @@ import resources_rc # 重要不能删
 from logging.handlers import RotatingFileHandler
 from PyQt5 import sip
 from PyQt5.QtGui import QFontDatabase, QDesktopServices
-from PyQt5.QtWidgets import (QStackedWidget, QStatusBar, QFrame, QSplitter, QDesktopWidget, QInputDialog
+from PyQt5.QtWidgets import (QStackedWidget, QStatusBar, QFrame, QSplitter, QDesktopWidget
                              )
 from PyQt5.QtCore import QElapsedTimer, QSettings, QCoreApplication, QUrl, QStandardPaths
 
@@ -60,6 +60,7 @@ class MainWindow(QMainWindow):
     basic_math_signal = pyqtSignal(object, str)
     easy_process = pyqtSignal(object, str, object)
     roi_processed_signal = pyqtSignal(object,np.ndarray,float,bool,bool,float)
+    cache_progress_signal = pyqtSignal(int, int, str)
 
     def __init__(self):
         super().__init__()
@@ -80,6 +81,7 @@ class MainWindow(QMainWindow):
         self.idx = None
         self.vector_array = None
         self.focus_canvas = None
+        self.cache_progress_signal.connect(self.cache_progress_update)
         self.init_params()
 
         # 界面加载
@@ -202,54 +204,27 @@ class MainWindow(QMainWindow):
         self.save_timer.timeout.connect(self.save_params)
         self.save_timer.start(30000)  # 每10秒自动保存一次
 
-
-
     def default_cache_directory(self):
-        """???????"""
+        """返回默认缓存目录。"""
         base_path = QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)
         if not base_path:
             base_path = os.path.join(os.getcwd(), ".lifecalor_cache")
         return os.path.join(base_path, "cache")
 
     def apply_cache_settings(self):
-        """???????????????"""
+        """应用缓存目录和大数组写入阈值。"""
         cache_directory = self.tool_params.get('cache_directory') or self.default_cache_directory()
         cache_threshold_mb = int(self.tool_params.get('cache_threshold_mb', 512))
         configure_array_cache(ArrayCacheConfig(
             cache_dir=Path(cache_directory),
             threshold_bytes=cache_threshold_mb * 1024 * 1024,
         ))
-        set_array_cache_progress_callback(self.cache_progress_update)
+        set_array_cache_progress_callback(self.cache_progress_signal.emit)
 
     def cache_progress_update(self, current, total, message):
-        """?????????"""
+        """在主线程更新缓存读写进度。"""
         self.update_status(message, 'working')
         self.update_progress(current, total)
-
-    def choose_cache_directory(self):
-        """???????"""
-        directory = QFileDialog.getExistingDirectory(self, "??????", self.tool_params.get('cache_directory', ''))
-        if directory:
-            self.update_param('tool', 'cache_directory', directory)
-            self.apply_cache_settings()
-            logging.info(f"???????: {directory}")
-
-    def choose_cache_threshold(self):
-        """??????????"""
-        value, ok = QInputDialog.getInt(
-            self,
-            "??????",
-            "????????????????MB?:",
-            int(self.tool_params.get('cache_threshold_mb', 512)),
-            1,
-            1024 * 1024,
-            1,
-        )
-        if ok:
-            self.update_param('tool', 'cache_threshold_mb', value)
-            self.apply_cache_settings()
-            logging.info(f"???????: {value} MB")
-
 
     def _load_param_group(self, group_name, defaults):
         """加载参数组，如果没有则使用默认值"""
@@ -1015,6 +990,10 @@ class MainWindow(QMainWindow):
         plt_settings_edit = edit_menu.addAction("绘图设置")
         plt_settings_edit.triggered.connect(self.plt_settings_edit_dialog)
 
+        # 编辑菜单-缓存设置调整
+        cache_settings_edit = edit_menu.addAction("缓存设置")
+        cache_settings_edit.triggered.connect(self.cache_settings_edit_dialog)
+
         # 数据操作
         data_manipulation_menu = self.menu.addMenu("数据操作")
 
@@ -1766,6 +1745,18 @@ class MainWindow(QMainWindow):
             logging.info("绘图已更新")
         self.update_status("准备就绪", 'idle')
 
+    def cache_settings_edit_dialog(self):
+        """缓存设置。"""
+        dialog = CacheSettingsDialog(params=self.tool_params, parent=self)
+        self.update_status("缓存设置ing", 'working')
+        if dialog.exec_():
+            self.update_param('tool', 'cache_directory', dialog.params['cache_directory'])
+            self.update_param('tool', 'cache_threshold_mb', dialog.params['cache_threshold_mb'])
+            self.apply_cache_settings()
+            logging.info("缓存设置已更新")
+        self.update_status("准备就绪", 'idle')
+
+
     def start_calculation(self):
         """开始计算时调用此方法"""
         self.elapsed_timer.start()
@@ -2322,7 +2313,6 @@ class MainWindow(QMainWindow):
             logging.info(f"数据切割完成, 切割后维度: {dialog.extracted_data.datashape}")
             self.processed_result(dialog.extracted_data)
 
-
     def data_selection(self, aim_type:str | list = 'all'):
         """数据选择代码（模式流程）"""
         aim_data = select_data(
@@ -2337,6 +2327,7 @@ class MainWindow(QMainWindow):
         elif aim_data is None:
             logging.warning("未找到可处理的目标数据")
         return aim_data
+
     def roi_selection(self, select = False):
         """ROI选择"""
         mask = None
@@ -2633,6 +2624,7 @@ class MainWindow(QMainWindow):
             self.task_states[task_key].fail(str(e))
             logging.error(f"线程退出错误{e}")
             return False
+
     def export_image(self):
         """导出热图为图片"""
         current_index = self.result_display.currentIndex()
@@ -2699,6 +2691,7 @@ class MainWindow(QMainWindow):
             logging.info("数据未保存")
             self.update_status("准备就绪", 'idle')
             return
+
     def export_EM_data(self,result):
         """时频变换后目标频率下的结果导出"""
         if self.processed_data is not None:
