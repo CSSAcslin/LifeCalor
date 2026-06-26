@@ -438,10 +438,10 @@ class CalculationSetDialog(QDialog):
         }
         self.accept()
 
-# 绘图设置对话框
-
 # 缓存设置对话框
 class CacheSettingsDialog(QDialog):
+    clear_cache_requested = pyqtSignal()
+
     def __init__(self, params, parent=None):
         super().__init__(parent)
         self.setWindowTitle("缓存设置")
@@ -472,8 +472,16 @@ class CacheSettingsDialog(QDialog):
         self.cache_threshold_spin.setValue(int(self.params.get('cache_threshold_mb', 512)))
         self.cache_threshold_spin.setSuffix(" MB")
 
+        self.cache_cleanup_startup_check = QCheckBox()
+        self.cache_cleanup_startup_check.setChecked(bool(self.params.get('cache_cleanup_startup', True)))
+
+        self.clear_cache_btn = QPushButton("清除缓存文件")
+        self.clear_cache_btn.clicked.connect(self.clear_cache_requested.emit)
+
         cache_layout.addRow(QLabel("缓存目录:"), directory_layout)
         cache_layout.addRow(QLabel("写入阈值:"), self.cache_threshold_spin)
+        cache_layout.addRow(QLabel("启动时清理孤立缓存:"), self.cache_cleanup_startup_check)
+        cache_layout.addRow(QLabel("手动清理:"), self.clear_cache_btn)
         cache_group.setLayout(cache_layout)
 
         button_layout = QHBoxLayout()
@@ -508,9 +516,11 @@ class CacheSettingsDialog(QDialog):
             **self.params,
             'cache_directory': directory,
             'cache_threshold_mb': int(self.cache_threshold_spin.value()),
+            'cache_cleanup_startup': self.cache_cleanup_startup_check.isChecked(),
         }
         self.accept()
 
+# 绘图设置对话框
 class PltSettingsDialog(QDialog):
     def __init__(self, params,parent=None):
         super().__init__(parent)

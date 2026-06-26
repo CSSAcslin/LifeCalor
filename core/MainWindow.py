@@ -196,8 +196,11 @@ class MainWindow(QMainWindow):
             'max_value': '',
             'cache_directory': self.default_cache_directory(),
             'cache_threshold_mb': 512,
+            'cache_cleanup_startup': True,
         })
         self.apply_cache_settings()
+        if self.tool_params.get('cache_cleanup_startup', True):
+            self.cleanup_array_cache_orphans()
 
         self.save_params()
         self.save_timer = QTimer()
@@ -1748,14 +1751,32 @@ class MainWindow(QMainWindow):
     def cache_settings_edit_dialog(self):
         """缓存设置。"""
         dialog = CacheSettingsDialog(params=self.tool_params, parent=self)
+        dialog.clear_cache_requested.connect(self.clear_array_cache_files)
         self.update_status("缓存设置ing", 'working')
         if dialog.exec_():
             self.update_param('tool', 'cache_directory', dialog.params['cache_directory'])
             self.update_param('tool', 'cache_threshold_mb', dialog.params['cache_threshold_mb'])
+            self.update_param('tool', 'cache_cleanup_startup', dialog.params['cache_cleanup_startup'])
             self.apply_cache_settings()
             logging.info("缓存设置已更新")
         self.update_status("准备就绪", 'idle')
 
+    def cleanup_array_cache_orphans(self):
+        """清理当前历史记录未引用的缓存文件。"""
+        active_refs = collect_array_refs(Data.history) + collect_array_refs(ProcessedData.history)
+        deleted = clear_array_cache(active_refs)
+        if deleted:
+            logging.info(f"已自动清理孤立缓存文件 {deleted} 个")
+        return deleted
+
+    def clear_array_cache_files(self):
+        """手动清除缓存文件，并同步清空依赖缓存的历史记录。"""
+        Data.clear_history(remove_cache=True)
+        ProcessedData.clear_history(remove_cache=True)
+        deleted = clear_array_cache()
+        logging.info(f"已清除缓存文件 {deleted} 个")
+        self.update_status("缓存已清理", 'idle')
+        return deleted
 
     def start_calculation(self):
         """开始计算时调用此方法"""

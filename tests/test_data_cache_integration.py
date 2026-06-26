@@ -53,16 +53,17 @@ def _install_missing_dependency_stubs():
 
 _install_missing_dependency_stubs()
 from ArrayCache import ArrayCacheConfig, ArrayRef
-from DataManager import Data, ProcessedData, configure_array_cache
+from DataManager import Data, ProcessedData, configure_array_cache, get_array_store
 
 
 class DataCacheIntegrationTests(unittest.TestCase):
     def setUp(self):
         Data.clear_history()
         ProcessedData.clear_history()
-        configure_array_cache(ArrayCacheConfig(cache_dir=Path(tempfile.mkdtemp()), threshold_bytes=8))
+        self.cache_dir = Path(tempfile.mkdtemp())
+        configure_array_cache(ArrayCacheConfig(cache_dir=self.cache_dir, threshold_bytes=8))
 
-    def test_data_history_caches_large_primary_arrays_but_remains_array_accessible(self):
+    def test_data_history_caches_large_data_origin_but_keeps_image_import_in_memory(self):
         source = np.arange(12, dtype=np.float32).reshape(3, 2, 2)
         image = source.mean(axis=0)
         data = Data(source, np.arange(3), "test", image)
@@ -71,7 +72,7 @@ class DataCacheIntegrationTests(unittest.TestCase):
 
         self.assertFalse(isinstance(data._data_origin_storage, ArrayRef))
         self.assertIsInstance(history_item._data_origin_storage, ArrayRef)
-        self.assertIsInstance(history_item._image_import_storage, ArrayRef)
+        self.assertIsInstance(history_item._image_import_storage, np.ndarray)
         np.testing.assert_array_equal(history_item.data_origin, source)
         np.testing.assert_array_equal(history_item.image_import, image)
         np.testing.assert_array_equal(data.data_origin, source)
@@ -105,6 +106,30 @@ class DataCacheIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(selected)
         np.testing.assert_array_equal(selected.data_processed, source)
         self.assertEqual(selected.framesize, (2, 2))
+
+    def test_clear_history_removes_cached_npy_files(self):
+        source = np.arange(12, dtype=np.float32).reshape(3, 2, 2)
+        Data(source, np.arange(3), "test", source.mean(axis=0))
+        ProcessedData(1.0, "processed", "ROI_stft", np.arange(3), source, out_processed={"large_extra": source.copy()})
+
+        cached_files = list(self.cache_dir.glob("*.npy"))
+        self.assertGreaterEqual(len(cached_files), 2)
+
+        Data.clear_history(remove_cache=True)
+        ProcessedData.clear_history(remove_cache=True)
+
+        self.assertEqual(list(self.cache_dir.glob("*.npy")), [])
+
+    def test_clear_all_cache_removes_files_even_after_history_is_gone(self):
+        source = np.arange(12, dtype=np.float32).reshape(3, 2, 2)
+        Data(source, np.arange(3), "test", source.mean(axis=0))
+        Data.clear_history(remove_cache=False)
+
+        self.assertGreaterEqual(len(list(self.cache_dir.glob("*.npy"))), 1)
+        deleted = get_array_store().clear_all()
+
+        self.assertGreaterEqual(deleted, 1)
+        self.assertEqual(list(self.cache_dir.glob("*.npy")), [])
 
 
 if __name__ == "__main__":

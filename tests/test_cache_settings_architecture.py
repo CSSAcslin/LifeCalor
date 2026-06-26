@@ -14,6 +14,8 @@ class CacheSettingsArchitectureTests(unittest.TestCase):
         self.assertIn("cache_settings_edit_dialog", source)
         self.assertIn("CacheSettingsDialog", source)
         self.assertIn("cache_settings_edit.triggered.connect(self.cache_settings_edit_dialog)", source)
+        self.assertIn("clear_array_cache", source)
+        self.assertIn("cache_cleanup_startup", source)
         self.assertIn("cache_progress_update", source)
         self.assertIn("cache_progress_signal = pyqtSignal(int, int, str)", source)
         self.assertIn("self.cache_progress_signal.connect(self.cache_progress_update)", source)
@@ -27,6 +29,8 @@ class CacheSettingsArchitectureTests(unittest.TestCase):
         self.assertIn("cache_directory_edit", source)
         self.assertIn("cache_threshold_spin", source)
         self.assertIn("browse_cache_directory", source)
+        self.assertIn("clear_cache_btn", source)
+        self.assertIn("clear_cache_requested", source)
         self.assertIn("QFileDialog.getExistingDirectory", source)
         self.assertIn("def apply_settings(self):", source)
 
@@ -34,6 +38,8 @@ class CacheSettingsArchitectureTests(unittest.TestCase):
         source = (CORE / "DataManager.py").read_text(encoding="utf-8")
         self.assertIn("set_array_cache_progress_callback", source)
         self.assertIn("progress_callback", source)
+        self.assertIn("clear_array_cache", source)
+        self.assertIn("collect_array_refs", source)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,9 @@
-﻿import time
+import logging
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 import numpy as np
 
@@ -14,6 +15,7 @@ ProgressCallback = Optional[Callable[[int, int, str], None]]
 class ArrayCacheConfig:
     cache_dir: Path
     threshold_bytes: int = DEFAULT_CACHE_THRESHOLD_BYTES
+    slow_write_seconds: float = 5.0
 
     def ensure_dir(self) -> Path:
         path = Path(self.cache_dir)
@@ -48,9 +50,40 @@ class ArrayStore:
         safe_field = _safe_name(field_name)
         path = cache_dir / f"{safe_owner}_{safe_field}_{uuid.uuid4().hex}.npy"
         total = int(array.nbytes)
+        start = time.perf_counter()
+        logging.info(
+            "准备写入缓存: field=%s shape=%s dtype=%s nbytes=%s path=%s",
+            safe_field,
+            tuple(array.shape),
+            array.dtype,
+            total,
+            path,
+        )
         if self.progress_callback:
             self.progress_callback(0, total, f"正在写入缓存: {safe_field}")
-        np.save(path, array)
+        try:
+            np.save(path, array)
+        except Exception:
+            logging.exception(
+                "缓存写入失败: field=%s shape=%s dtype=%s nbytes=%s path=%s",
+                safe_field,
+                tuple(array.shape),
+                array.dtype,
+                total,
+                path,
+            )
+            raise
+        elapsed = time.perf_counter() - start
+        if elapsed >= float(self.config.slow_write_seconds):
+            logging.warning(
+                "缓存写入耗时较长: field=%s shape=%s dtype=%s nbytes=%s elapsed=%.3fs path=%s",
+                safe_field,
+                tuple(array.shape),
+                array.dtype,
+                total,
+                elapsed,
+                path,
+            )
         if self.progress_callback:
             self.progress_callback(total, total, f"缓存写入完成: {safe_field}")
         return ArrayRef(
@@ -61,6 +94,46 @@ class ArrayStore:
             created_at=time.time(),
             field_name=safe_field,
         )
+
+    def delete_ref(self, ref: ArrayRef) -> bool:
+        if not isinstance(ref, ArrayRef):
+            return False
+        path = Path(ref.path)
+        try:
+            if path.exists() and path.is_file():
+                path.unlink()
+                logging.info("已删除缓存文件: %s", path)
+                return True
+        except Exception:
+            logging.exception("删除缓存文件失败: %s", path)
+        return False
+
+    def clear_all(self) -> int:
+        cache_dir = self.config.ensure_dir()
+        deleted = 0
+        for path in cache_dir.glob("*.npy"):
+            try:
+                if path.is_file():
+                    path.unlink()
+                    deleted += 1
+            except Exception:
+                logging.exception("删除缓存文件失败: %s", path)
+        logging.info("缓存目录清理完成: deleted=%s dir=%s", deleted, cache_dir)
+        return deleted
+
+    def cleanup_orphans(self, active_refs: Iterable[ArrayRef]) -> int:
+        cache_dir = self.config.ensure_dir()
+        active_paths = {Path(ref.path).resolve() for ref in active_refs if isinstance(ref, ArrayRef)}
+        deleted = 0
+        for path in cache_dir.glob("*.npy"):
+            try:
+                if path.resolve() not in active_paths:
+                    path.unlink()
+                    deleted += 1
+            except Exception:
+                logging.exception("清理孤立缓存文件失败: %s", path)
+        logging.info("孤立缓存清理完成: deleted=%s active=%s dir=%s", deleted, len(active_paths), cache_dir)
+        return deleted
 
 
 def _safe_name(value: Any) -> str:

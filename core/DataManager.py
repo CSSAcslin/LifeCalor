@@ -46,6 +46,39 @@ def get_array_store(progress_callback=None) -> ArrayStore:
     return ArrayStore(_ARRAY_CACHE_CONFIG, progress_callback=progress_callback or _ARRAY_CACHE_PROGRESS_CALLBACK)
 
 
+def collect_array_refs(value) -> list[ArrayRef]:
+    refs = []
+    if isinstance(value, ArrayRef):
+        return [value]
+    if isinstance(value, dict):
+        for item in value.values():
+            refs.extend(collect_array_refs(item))
+        return refs
+    if isinstance(value, (list, tuple, set, deque)):
+        for item in value:
+            refs.extend(collect_array_refs(item))
+        return refs
+    if hasattr(value, "__dict__"):
+        for item in vars(value).values():
+            refs.extend(collect_array_refs(item))
+    return refs
+
+
+def clear_array_cache(active_refs=None) -> int:
+    store = get_array_store()
+    if active_refs is None:
+        return store.clear_all()
+    return store.cleanup_orphans(active_refs)
+
+
+def cache_array_or_keep_memory(store: ArrayStore, array: np.ndarray, owner_id: str, field_name: str):
+    try:
+        return store.put_array(array, owner_id, field_name)
+    except Exception:
+        logging.error("缓存写入失败，保留内存数组: field=%s shape=%s dtype=%s", field_name, getattr(array, "shape", None), getattr(array, "dtype", None))
+        return array
+
+
 class DataManager(QObject):
     # save_request_back = pyqtSignal(dict)
     # read_request_back = pyqtSignal(dict)
@@ -845,15 +878,14 @@ class Data:
         data_origin = self.data_origin
         image_import = self.image_import
         if should_cache_array(data_origin, store.config):
-            object.__setattr__(snapshot, "_data_origin_storage", store.put_array(data_origin, owner_id, "data_origin"))
-            object.__setattr__(snapshot, "data_origin", None)
+            cached_origin = cache_array_or_keep_memory(store, data_origin, owner_id, "data_origin")
+            object.__setattr__(snapshot, "_data_origin_storage", cached_origin)
+            if isinstance(cached_origin, ArrayRef):
+                object.__setattr__(snapshot, "data_origin", None)
         else:
             object.__setattr__(snapshot, "_data_origin_storage", data_origin)
-        if should_cache_array(image_import, store.config):
-            object.__setattr__(snapshot, "_image_import_storage", store.put_array(image_import, owner_id, "image_import"))
-            object.__setattr__(snapshot, "image_import", None)
-        else:
-            object.__setattr__(snapshot, "_image_import_storage", image_import)
+        # image_import is display-oriented preview data; keep it in memory to avoid UI stalls from disk I/O.
+        object.__setattr__(snapshot, "_image_import_storage", image_import)
         return snapshot
     def _update_history(self):
         """更新历史记录中的当前实例"""
@@ -866,8 +898,12 @@ class Data:
         return None
 
     @classmethod
-    def clear_history(cls):
-        """清空所有历史记录"""
+    def clear_history(cls, remove_cache: bool = True):
+        """清空所有历史记录，并按需删除历史引用的缓存文件。"""
+        if remove_cache:
+            store = get_array_store()
+            for ref in collect_array_refs(cls.history):
+                store.delete_ref(ref)
         cls.history.clear()
 
 
@@ -1033,8 +1069,12 @@ class ProcessedData:
     #         del cls.history[name]
     #
     @classmethod
-    def clear_history(cls):
-        """清空所有历史记录"""
+    def clear_history(cls, remove_cache: bool = True):
+        """清空所有历史记录，并按需删除历史引用的缓存文件。"""
+        if remove_cache:
+            store = get_array_store()
+            for ref in collect_array_refs(cls.history):
+                store.delete_ref(ref)
         cls.history.clear()
 
     @classmethod
@@ -1051,11 +1091,17 @@ class ProcessedData:
         owner_id = str(self.timestamp)
         data_processed = self.data_processed
         if should_cache_array(data_processed, store.config):
-            object.__setattr__(snapshot, "_data_processed_storage", store.put_array(data_processed, owner_id, "data_processed"))
-            object.__setattr__(snapshot, "data_processed", None)
+            cached_processed = cache_array_or_keep_memory(store, data_processed, owner_id, "data_processed")
+            object.__setattr__(snapshot, "_data_processed_storage", cached_processed)
+            if isinstance(cached_processed, ArrayRef):
+                object.__setattr__(snapshot, "data_processed", None)
         else:
             object.__setattr__(snapshot, "_data_processed_storage", data_processed)
-        snapshot.out_processed = cache_large_arrays_in_mapping(self.out_processed, store, owner_id=owner_id)
+        try:
+            snapshot.out_processed = cache_large_arrays_in_mapping(self.out_processed, store, owner_id=owner_id)
+        except Exception:
+            logging.exception("out_processed 缓存写入失败，保留内存数据: %s", self.name)
+            snapshot.out_processed = self.out_processed
         return snapshot
     def _update_history(self):
         """更新历史记录中的当前实例"""

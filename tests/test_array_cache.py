@@ -1,6 +1,7 @@
 ﻿import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import numpy as np
@@ -74,6 +75,46 @@ class ArrayCacheTests(unittest.TestCase):
         self.assertIsInstance(cached["whole_mean"], np.ndarray)
         self.assertIsInstance(cached["unfolded_data"], ArrayRef)
         np.testing.assert_array_equal(resolve_array(cached["unfolded_data"]), mapping["unfolded_data"])
+
+    def test_store_can_delete_refs_and_clear_all_cache_files(self):
+        config = ArrayCacheConfig(cache_dir=Path(tempfile.mkdtemp()), threshold_bytes=1)
+        store = ArrayStore(config)
+        ref_one = store.put_array(np.arange(4, dtype=np.float32), owner_id="abc", field_name="one")
+        ref_two = store.put_array(np.arange(4, dtype=np.float32), owner_id="abc", field_name="two")
+
+        self.assertTrue(ref_one.path.exists())
+        self.assertTrue(ref_two.path.exists())
+
+        self.assertTrue(store.delete_ref(ref_one))
+        self.assertFalse(ref_one.path.exists())
+        deleted = store.clear_all()
+
+        self.assertEqual(deleted, 1)
+        self.assertFalse(ref_two.path.exists())
+
+    def test_store_cleans_orphan_cache_files_without_active_refs(self):
+        config = ArrayCacheConfig(cache_dir=Path(tempfile.mkdtemp()), threshold_bytes=1)
+        store = ArrayStore(config)
+        active = store.put_array(np.arange(4, dtype=np.float32), owner_id="abc", field_name="active")
+        orphan = store.put_array(np.arange(4, dtype=np.float32), owner_id="abc", field_name="orphan")
+
+        deleted = store.cleanup_orphans([active])
+
+        self.assertEqual(deleted, 1)
+        self.assertTrue(active.path.exists())
+        self.assertFalse(orphan.path.exists())
+
+    def test_store_logs_slow_cache_writes_with_array_metadata(self):
+        config = ArrayCacheConfig(cache_dir=Path(tempfile.mkdtemp()), threshold_bytes=1, slow_write_seconds=0.1)
+        store = ArrayStore(config)
+
+        with patch("ArrayCache.time.perf_counter", side_effect=[10.0, 10.25]), self.assertLogs(level="WARNING") as logs:
+            store.put_array(np.arange(4, dtype=np.complex64), owner_id="abc", field_name="complex_data")
+
+        message = "\n".join(logs.output)
+        self.assertIn("complex_data", message)
+        self.assertIn("complex64", message)
+        self.assertIn("shape=(4,)", message)
 
 
 if __name__ == "__main__":
