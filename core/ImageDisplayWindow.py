@@ -15,11 +15,12 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QGraphicsPathItem, QMenu, QInputDialog, QColorDialog, QToolButton, QDialogButtonBox,
                              QDialog, QMessageBox, QGraphicsTextItem, QSizePolicy, QCheckBox, QGraphicsObject
                              )
-from PyQt5.QtCore import Qt, pyqtSignal, QRectF, QSize, QTimer, QDateTime, QLineF, QPointF, QPoint, pyqtSlot
+from PyQt5.QtCore import Qt, pyqtSignal, QRectF, QSize, QTimer, QDateTime, QLineF, QPointF, QPoint, pyqtSlot, QThread
 
 from DataManager import ImagingData, ColorMapManager, PublicEasyMethod
 from FrameRenderer import FrameRenderParams
 from FrameRenderService import FrameRenderService
+from FrameRenderWorker import FrameRenderWorker
 from ExtraDialog import ROIInfoDialog, ColorMapDialog, DataExportDialog, ParamsResetDialog
 from widget.AdvancedTimeline import AdvancedTimeline
 
@@ -599,6 +600,7 @@ class SubImageDisplayWidget(QDockWidget):
     get_fast_selection = pyqtSignal(object, np.ndarray, str, str)
     sync_progress_signal = pyqtSignal(float, int)  # 参数: 进度比例(0.0~1.0), 画布ID
     sync_playback_signal = pyqtSignal(str, int)  # 参数: 动作指令('play'/'pause'/'reset'), 画布ID
+    frame_render_requested = pyqtSignal(int, object, int, object)
 
     def __init__(self, parent=None,canvas_id = None,name = None, data :ImagingData = None, args_dict :dict = None):
         super().__init__(name, parent)
@@ -629,6 +631,9 @@ class SubImageDisplayWidget(QDockWidget):
         self.colorbar_padding = 5  # 颜色条边距
         self.color_map_manager = ColorMapManager()  # 伪彩色管理器
         self.frame_render_service = FrameRenderService(cache_capacity=12)
+        self._frame_render_request_id = 0
+        self._latest_frame_render_request_id = 0
+        self._start_frame_render_worker()
         self.colormap = None
 
         # 工具响应
@@ -1273,8 +1278,46 @@ class SubImageDisplayWidget(QDockWidget):
             pixels.append((x, y + 1))
             pixels.append((x, y - 1))
 
+    def _start_frame_render_worker(self):
+        self.frame_render_thread = QThread(self)
+        self.frame_render_worker = FrameRenderWorker(cache_capacity=12)
+        self.frame_render_worker.moveToThread(self.frame_render_thread)
+        self.frame_render_requested.connect(self.frame_render_worker.render)
+        self.frame_render_worker.rendered.connect(self.on_frame_rendered)
+        self.frame_render_worker.failed.connect(self.on_frame_render_failed)
+        self.frame_render_thread.finished.connect(self.frame_render_worker.deleteLater)
+        self.frame_render_thread.start()
+
+    def stop_frame_render_worker(self):
+        if hasattr(self, 'frame_render_thread') and self.frame_render_thread.isRunning():
+            self.frame_render_thread.quit()
+            self.frame_render_thread.wait(1000)
+
+    def request_frame_render(self, idx):
+        self._frame_render_request_id += 1
+        request_id = self._frame_render_request_id
+        self._latest_frame_render_request_id = request_id
+        frame_index = idx if self.data.is_temporary else 0
+        self.frame_render_requested.emit(
+            request_id,
+            self.data.display_source,
+            frame_index,
+            FrameRenderParams(use_colormap=False, auto_range=True),
+        )
+
+    def on_frame_rendered(self, request_id, rendered):
+        if request_id != self._latest_frame_render_request_id:
+            return
+        self.update_display(rendered.image)
+
+    def on_frame_render_failed(self, request_id, message):
+        if request_id != self._latest_frame_render_request_id:
+            return
+        logging.error(f'Frame render failed on canvas {self.id}: {message}')
+
     def closeEvent(self, event):
         """重写关闭事件"""
+        self.stop_frame_render_worker()
         self.parent_window.del_canvas(self.id)
         super().closeEvent(event)
 
@@ -1384,8 +1427,11 @@ class SubImageDisplayWidget(QDockWidget):
             raise ValueError('idx out of range(impossible Fault)')
         self.current_time_idx = idx
         self.time_label.setText(f"{self.current_time_idx}/{self.max_time_idx - 1}")
-        image_data = self.frame_for_display(idx)
-        self.update_display(image_data)
+        if (not self.use_colormap) and getattr(self.data, 'display_source', None) is not None:
+            self.request_frame_render(idx)
+        else:
+            image_data = self.frame_for_display(idx)
+            self.update_display(image_data)
 
         if not self._is_syncing and self.is_sync_enabled and not self.is_playing:
             # 计算当前进度比例 (0.0 到 1.0)

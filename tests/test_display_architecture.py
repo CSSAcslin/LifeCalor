@@ -26,6 +26,14 @@ class DisplayArchitectureTests(unittest.TestCase):
         self.assertIn("self.frame_render_service", source)
         self.assertIn("render_source", source)
 
+    def test_image_display_uses_worker_and_stale_request_guard_for_async_frames(self):
+        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        self.assertIn("FrameRenderWorker", source)
+        self.assertIn("frame_render_requested", source)
+        self.assertIn("_latest_frame_render_request_id", source)
+        self.assertIn("def on_frame_rendered", source)
+        self.assertIn("request_id != self._latest_frame_render_request_id", source)
+
 
 if __name__ == "__main__":
     unittest.main()
