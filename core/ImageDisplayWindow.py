@@ -1346,18 +1346,33 @@ class SubImageDisplayWidget(QDockWidget):
             self.time_slider.set_current_frame(target_idx)
             self.time_label.setText(f"{self.current_time_idx}/{self.max_time_idx - 1}")
 
+    def raw_frame(self, idx=None):
+        idx = self.current_time_idx if idx is None else idx
+        if getattr(self.data, 'display_source', None) is not None:
+            return self.data.display_source.get_frame(idx if self.data.is_temporary else 0)
+        if self.data.is_temporary:
+            return self.data.image_backup[idx]
+        return self.data.image_backup
+
+    def _indexed_display_array(self, array, idx):
+        if self.data.is_temporary and getattr(array, 'ndim', 0) == self.data.ndim:
+            return array[idx]
+        if self.data.is_temporary and idx != 0:
+            return self.data.to_uint8(self.raw_frame(idx))
+        return array
+
+    def frame_for_display(self, idx=0):
+        if self.use_colormap:
+            if self.data.colormode == self.colormap:
+                return self._indexed_display_array(self.data.image_data, idx)
+            return self.raw_frame(idx)
+        return self._indexed_display_array(self.data.image_data, idx)
     def update_time_slice(self,idx=0):
         if not 0 <= idx <= self.max_time_idx:
             raise ValueError('idx out of range(impossible Fault)')
         self.current_time_idx = idx
         self.time_label.setText(f"{self.current_time_idx}/{self.max_time_idx - 1}")
-        if self.use_colormap:  # 是否伪彩
-            if self.data.colormode == self.colormap:  # 是否模式匹配
-                image_data = self.data.image_data[idx] if self.data.is_temporary else self.data.image_data  # 是否时间分辨
-            else:
-                image_data = self.data.image_backup[idx] if self.data.is_temporary else self.data.to_uint8()
-        else:
-            image_data = self.data.image_data[idx] if self.data.is_temporary else self.data.image_data
+        image_data = self.frame_for_display(idx)
         self.update_display(image_data)
 
         if not self._is_syncing and self.is_sync_enabled and not self.is_playing:
@@ -1559,13 +1574,7 @@ class SubImageDisplayWidget(QDockWidget):
         """显示图像数据 (使用QPixmap)并记录当前时间索引
         ROI_applied 暂时放弃"""
         try:
-            if self.use_colormap: # 是否伪彩
-                if self.data.colormode == self.colormap: # 是否模式匹配
-                    image_data = self.data.image_data[0] if self.data.is_temporary else self.data.image_data # 是否时间分辨
-                else:
-                    image_data = self.data.image_backup[0] if self.data.is_temporary else self.data.image_backup
-            else:
-                image_data = self.data.image_data[0] if self.data.is_temporary else self.data.image_data
+            image_data = self.frame_for_display(0)
         except Exception as e:
             raise  ValueError(f'nodata(impossible Fault):{e}')
 
@@ -1766,10 +1775,7 @@ class SubImageDisplayWidget(QDockWidget):
 
     def get_value(self,y,x):
         value = self.current_image[y,x]
-        if self.data.is_temporary:
-            original_value = self.data.image_backup[self.current_time_idx][y, x]
-        else:
-            original_value = self.data.image_backup[y, x]
+        original_value = self.raw_frame(self.current_time_idx)[y, x]
         # 发射信号(需要主窗口连接此信号)
         self.mouse_position_signal.emit(x, y, self.current_time_idx, value, original_value)
 
@@ -2312,4 +2318,5 @@ class AnchorSelectDialog(QDialog):
         self.parent.params_update_signal.emit(self.param)
         self.parent.tool_parameters = self.param
         self.close()
+
 

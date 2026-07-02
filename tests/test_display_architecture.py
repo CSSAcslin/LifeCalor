@@ -13,6 +13,13 @@ class DisplayArchitectureTests(unittest.TestCase):
         self.assertNotIn("data_obj.data_processed.copy()", create_image)
         self.assertIn("DisplaySourceFactory", source)
 
+    def test_image_display_uses_frame_accessors_for_temporal_preview_data(self):
+        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        self.assertIn("def frame_for_display", source)
+        self.assertIn("def raw_frame", source)
+        self.assertNotIn("self.data.image_data[0]", source)
+        self.assertNotIn("self.data.image_data[idx]", source)
+
 
 if __name__ == "__main__":
     unittest.main()
