@@ -1628,6 +1628,18 @@ class SubImageDisplayWidget(QDockWidget):
         self.time_slider.set_fps(self.data.fps)
         self.update_time_slice(0)
 
+    def display_array_to_qimage(self, image_data):
+        image_data = np.ascontiguousarray(image_data)
+        if image_data.ndim == 3:
+            height, width, _ = image_data.shape
+            qimage = QImage(image_data.data, width, height, image_data.strides[0], QImage.Format_RGBA8888)
+            return image_data, qimage, width, height
+        if image_data.ndim == 2:
+            height, width = image_data.shape
+            qimage = QImage(image_data.data, width, height, image_data.strides[0], QImage.Format_Grayscale8)
+            return image_data, qimage, width, height
+        raise ValueError(f'unsupported display image shape: {image_data.shape}')
+
     def display_image(self):
         """显示图像数据 (使用QPixmap)并记录当前时间索引
         ROI_applied 暂时放弃"""
@@ -1648,19 +1660,7 @@ class SubImageDisplayWidget(QDockWidget):
                 self.min_value,
                 self.max_value
             )
-
-            # 创建QImage
-            height, width, _ = image_data.shape
-            qimage = QImage(image_data.data, width, height,
-                            image_data.strides[0], QImage.Format_RGBA8888)
-        elif self.use_colormap and self.data.colormode == self.colormap:
-            height, width, _ = image_data.shape
-            qimage = QImage(image_data.data, width, height,
-                            image_data.strides[0], QImage.Format_RGBA8888)
-        else:
-            height, width = image_data.shape
-            qimage = QImage(image_data, image_data.shape[1], image_data.shape[0],
-                            image_data.shape[1], QImage.Format_Grayscale8)
+        image_data, qimage, width, height = self.display_array_to_qimage(image_data)
         pixmap = QPixmap.fromImage(qimage)
         # 显示图像
         self.current_image = image_data
@@ -1695,18 +1695,7 @@ class SubImageDisplayWidget(QDockWidget):
                 self.min_value,
                 self.max_value
             )
-
-            # 创建QImage
-            height, width, _ = image_data.shape
-            qimage = QImage(image_data.data, width, height,
-                            image_data.strides[0], QImage.Format_RGBA8888)
-        elif self.use_colormap and self.data.colormode == self.colormap:
-            height, width, _ = image_data.shape
-            qimage = QImage(image_data.data, width, height,
-                            image_data.strides[0], QImage.Format_RGBA8888)
-        else:
-            qimage = QImage(image_data, image_data.shape[1], image_data.shape[0],
-                            image_data.shape[1], QImage.Format_Grayscale8)
+        image_data, qimage, width, height = self.display_array_to_qimage(image_data)
         pixmap = QPixmap.fromImage(qimage)
         # 直接更新现有pixmap，避免重置场景，其它层保持不变
         self.data_layer.setPixmap(pixmap)

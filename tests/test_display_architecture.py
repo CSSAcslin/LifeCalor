@@ -34,6 +34,11 @@ class DisplayArchitectureTests(unittest.TestCase):
         self.assertIn("def on_frame_rendered", source)
         self.assertIn("request_id != self._latest_frame_render_request_id", source)
 
+    def test_image_display_centralizes_qimage_creation(self):
+        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        self.assertIn("def display_array_to_qimage", source)
+        self.assertIn("np.ascontiguousarray", source)
+
 
 if __name__ == "__main__":
     unittest.main()
