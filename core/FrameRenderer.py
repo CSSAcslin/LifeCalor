@@ -72,11 +72,31 @@ class FrameRenderer:
             alpha = np.full(gray.shape, 255, dtype=np.uint8)
             return np.stack((gray, gray, gray, alpha), axis=-1)
 
-        try:
-            import matplotlib.cm as cm
+        import matplotlib.cm as cm
 
-            cmap = cm.get_cmap(colormap)
-            return (cmap(gray.astype(np.float32) / 255.0) * 255).astype(np.uint8)
-        except Exception:
-            alpha = np.full(gray.shape, 255, dtype=np.uint8)
-            return np.stack((gray, gray, gray, alpha), axis=-1)
+        if colormap == "Rainbow*":
+            cmap = FrameRenderer._rainbow_colormap()
+        elif hasattr(cm, colormap):
+            cmap = getattr(cm, colormap)
+        else:
+            cmap = cm.jet
+        return (cmap(gray.astype(np.float32) / 255.0) * 255).astype(np.uint8)
+
+    @staticmethod
+    def _rainbow_colormap():
+        stops = np.array([0.0, 0.15, 0.3, 0.45, 0.6, 0.75, 1.0], dtype=np.float32)
+        red = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float32)
+        green = np.array([0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0], dtype=np.float32)
+        blue = np.array([0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+
+        def cmap(values):
+            values = np.asarray(values, dtype=np.float32)
+            rgba = np.empty(values.shape + (4,), dtype=np.float32)
+            rgba[..., 0] = np.interp(values, stops, red)
+            rgba[..., 1] = np.interp(values, stops, green)
+            rgba[..., 2] = np.interp(values, stops, blue)
+            rgba[..., 3] = 1.0
+            return rgba
+
+        return cmap
+

@@ -1293,6 +1293,17 @@ class SubImageDisplayWidget(QDockWidget):
             self.frame_render_thread.quit()
             self.frame_render_thread.wait(1000)
 
+    def render_params_for_display(self):
+        if self.use_colormap:
+            return FrameRenderParams(
+                use_colormap=self.use_colormap,
+                colormap=self.colormap,
+                auto_range=False,
+                min_value=self.min_value,
+                max_value=self.max_value,
+            )
+        return FrameRenderParams(use_colormap=False, auto_range=True)
+
     def request_frame_render(self, idx):
         self._frame_render_request_id += 1
         request_id = self._frame_render_request_id
@@ -1302,7 +1313,7 @@ class SubImageDisplayWidget(QDockWidget):
             request_id,
             self.data.display_source,
             frame_index,
-            FrameRenderParams(use_colormap=False, auto_range=True),
+            self.render_params_for_display(),
         )
 
     def on_frame_rendered(self, request_id, rendered):
@@ -1408,18 +1419,18 @@ class SubImageDisplayWidget(QDockWidget):
         return array
 
     def frame_for_display(self, idx=0):
-        if self.use_colormap:
-            if self.data.colormode == self.colormap:
-                return self._indexed_display_array(self.data.image_data, idx)
-            return self.raw_frame(idx)
         if getattr(self.data, 'display_source', None) is not None:
             frame_index = idx if self.data.is_temporary else 0
             rendered = self.frame_render_service.render_source(
                 self.data.display_source,
                 frame_index,
-                FrameRenderParams(use_colormap=False, auto_range=True),
+                self.render_params_for_display(),
             )
             return rendered.image
+        if self.use_colormap:
+            if self.data.colormode == self.colormap:
+                return self._indexed_display_array(self.data.image_data, idx)
+            return self.raw_frame(idx)
         return self._indexed_display_array(self.data.image_data, idx)
 
     def update_time_slice(self,idx=0):
@@ -1427,7 +1438,7 @@ class SubImageDisplayWidget(QDockWidget):
             raise ValueError('idx out of range(impossible Fault)')
         self.current_time_idx = idx
         self.time_label.setText(f"{self.current_time_idx}/{self.max_time_idx - 1}")
-        if (not self.use_colormap) and getattr(self.data, 'display_source', None) is not None:
+        if getattr(self.data, 'display_source', None) is not None:
             self.request_frame_render(idx)
         else:
             image_data = self.frame_for_display(idx)
@@ -1652,14 +1663,6 @@ class SubImageDisplayWidget(QDockWidget):
         self.scene.clear()
         self.current_time_idx = 0
         # 创建QImage并转换为QPixmap
-        if self.use_colormap and self.data.colormode != self.colormap:
-            # 应用伪彩色映射（预览处理）
-            image_data = self.color_map_manager.apply_colormap(
-                image_data,
-                self.colormap,
-                self.min_value,
-                self.max_value
-            )
         image_data, qimage, width, height = self.display_array_to_qimage(image_data)
         pixmap = QPixmap.fromImage(qimage)
         # 显示图像
@@ -1687,14 +1690,6 @@ class SubImageDisplayWidget(QDockWidget):
             x, y = self.anchor_pos
             # 获取并发射图像数据
             self.get_value(y,x)
-        if self.use_colormap and self.data.colormode != self.colormap:
-            # 应用伪彩色映射（预览处理）
-            image_data = self.color_map_manager.apply_colormap(
-                image_data,
-                self.colormap,
-                self.min_value,
-                self.max_value
-            )
         image_data, qimage, width, height = self.display_array_to_qimage(image_data)
         pixmap = QPixmap.fromImage(qimage)
         # 直接更新现有pixmap，避免重置场景，其它层保持不变

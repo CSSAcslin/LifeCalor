@@ -43,5 +43,20 @@ class FrameRendererTests(unittest.TestCase):
         self.assertEqual(rendered.image.shape, (1, 4))
 
 
+    def test_render_custom_rainbow_colormap_outputs_rgba(self):
+        frame = np.array([[0.0, 0.5, 1.0]], dtype=np.float32)
+        rendered = FrameRenderer.render(frame, FrameRenderParams(use_colormap=True, colormap="Rainbow*", min_value=0.0, max_value=1.0))
+
+        self.assertEqual(rendered.mode, "RGBA")
+        self.assertEqual(rendered.image.shape, (1, 3, 4))
+        self.assertFalse(np.array_equal(rendered.image[..., 0], rendered.image[..., 1]))
+
+    def test_unknown_colormap_falls_back_to_jet_rgba(self):
+        frame = np.array([[0.0, 1.0]], dtype=np.float32)
+        rendered = FrameRenderer.render(frame, FrameRenderParams(use_colormap=True, colormap="missing-cmap", min_value=0.0, max_value=1.0))
+
+        self.assertEqual(rendered.mode, "RGBA")
+        self.assertEqual(rendered.image.shape, (1, 2, 4))
+
 if __name__ == "__main__":
     unittest.main()

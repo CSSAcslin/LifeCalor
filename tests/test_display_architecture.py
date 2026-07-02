@@ -39,6 +39,14 @@ class DisplayArchitectureTests(unittest.TestCase):
         self.assertIn("def display_array_to_qimage", source)
         self.assertIn("np.ascontiguousarray", source)
 
+    def test_image_display_routes_colormap_rendering_through_frame_service(self):
+        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        self.assertIn("def render_params_for_display", source)
+        self.assertIn("use_colormap=self.use_colormap", source)
+        self.assertIn("colormap=self.colormap", source)
+        self.assertIn("min_value=self.min_value", source)
+        self.assertNotIn("color_map_manager.apply_colormap", source)
+
 
 if __name__ == "__main__":
     unittest.main()
