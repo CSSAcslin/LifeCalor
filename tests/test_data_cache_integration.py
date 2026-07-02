@@ -53,7 +53,7 @@ def _install_missing_dependency_stubs():
 
 _install_missing_dependency_stubs()
 from ArrayCache import ArrayCacheConfig, ArrayRef
-from DataManager import Data, ProcessedData, configure_array_cache, get_array_store
+from DataManager import Data, ProcessedData, configure_array_cache, get_array_store, materialize_cached_arrays
 
 
 class DataCacheIntegrationTests(unittest.TestCase):
@@ -130,6 +130,23 @@ class DataCacheIntegrationTests(unittest.TestCase):
 
         self.assertGreaterEqual(deleted, 1)
         self.assertEqual(list(self.cache_dir.glob("*.npy")), [])
+
+    def test_materialize_cached_arrays_replaces_refs_and_reports_progress(self):
+        events = []
+        source = np.arange(12, dtype=np.float32).reshape(3, 2, 2)
+        Data(source, np.arange(3), "test", source.mean(axis=0))
+        processed = ProcessedData(1.0, "processed", "ROI_stft", np.arange(3), source, out_processed={"large_extra": source.copy()})
+        history_item = ProcessedData.history[-1]
+        self.assertIsInstance(history_item._data_processed_storage, ArrayRef)
+        self.assertIsInstance(history_item.out_processed["large_extra"], ArrayRef)
+
+        materialize_cached_arrays(history_item, progress_callback=lambda current, total, message: events.append((current, total, message)))
+
+        self.assertIsInstance(history_item._data_processed_storage, np.ndarray)
+        self.assertIsInstance(history_item.out_processed["large_extra"], np.ndarray)
+        np.testing.assert_array_equal(history_item.data_processed, source)
+        np.testing.assert_array_equal(history_item.out_processed_array("large_extra"), source)
+        self.assertTrue(any("读取缓存" in event[2] for event in events))
 
 
 if __name__ == "__main__":

@@ -79,6 +79,50 @@ def cache_array_or_keep_memory(store: ArrayStore, array: np.ndarray, owner_id: s
         return array
 
 
+def materialize_cached_arrays(target, progress_callback=None):
+    """Load ArrayRef-backed arrays into memory, suitable for worker-thread execution."""
+    store = get_array_store(progress_callback=progress_callback)
+    if isinstance(target, Data):
+        storage = object.__getattribute__(target, "__dict__").get("_data_origin_storage")
+        if isinstance(storage, ArrayRef):
+            loaded = store.load_ref(storage, mmap_mode=None)
+            object.__setattr__(target, "_data_origin_storage", loaded)
+            object.__setattr__(target, "data_origin", loaded)
+        image_storage = object.__getattribute__(target, "__dict__").get("_image_import_storage")
+        if isinstance(image_storage, ArrayRef):
+            loaded = store.load_ref(image_storage, mmap_mode=None)
+            object.__setattr__(target, "_image_import_storage", loaded)
+            object.__setattr__(target, "image_import", loaded)
+    elif isinstance(target, ProcessedData):
+        storage = object.__getattribute__(target, "__dict__").get("_data_processed_storage")
+        if isinstance(storage, ArrayRef):
+            loaded = store.load_ref(storage, mmap_mode=None)
+            object.__setattr__(target, "_data_processed_storage", loaded)
+            object.__setattr__(target, "data_processed", loaded)
+        for key, value in list((target.out_processed or {}).items()):
+            if isinstance(value, ArrayRef):
+                target.out_processed[key] = store.load_ref(value, mmap_mode=None)
+    return target
+
+
+class ArrayLoadWorker(QObject):
+    progress_signal = pyqtSignal(object, object, str)
+    finished_signal = pyqtSignal(object)
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, target):
+        super().__init__()
+        self.target = target
+
+    def run(self):
+        try:
+            materialize_cached_arrays(self.target, progress_callback=self.progress_signal.emit)
+            self.finished_signal.emit(self.target)
+        except Exception as exc:
+            logging.exception("缓存读取线程失败")
+            self.error_signal.emit(str(exc))
+
+
 class DataManager(QObject):
     # save_request_back = pyqtSignal(dict)
     # read_request_back = pyqtSignal(dict)

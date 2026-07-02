@@ -17,7 +17,7 @@ class CacheSettingsArchitectureTests(unittest.TestCase):
         self.assertIn("clear_array_cache", source)
         self.assertIn("cache_cleanup_startup", source)
         self.assertIn("cache_progress_update", source)
-        self.assertIn("cache_progress_signal = pyqtSignal(int, int, str)", source)
+        self.assertIn("cache_progress_signal = pyqtSignal(object, object, str)", source)
         self.assertIn("self.cache_progress_signal.connect(self.cache_progress_update)", source)
         self.assertIn("set_array_cache_progress_callback(self.cache_progress_signal.emit)", source)
         self.assertNotIn("set_array_cache_progress_callback(self.cache_progress_update)", source)
@@ -33,6 +33,18 @@ class CacheSettingsArchitectureTests(unittest.TestCase):
         self.assertIn("clear_cache_requested", source)
         self.assertIn("QFileDialog.getExistingDirectory", source)
         self.assertIn("def apply_settings(self):", source)
+
+    def test_mainwindow_loads_cached_history_on_worker_thread(self):
+        source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
+        self.assertIn("cache_progress_signal = pyqtSignal(object, object, str)", source)
+        self.assertIn("load_cached_history_async", source)
+        self.assertIn("ArrayLoadWorker", source)
+        self.assertIn("cache_load_thread", source)
+        self.assertIn("normalize_progress", source)
+        self.assertIn("self.load_cached_history_async(selected_data, 'data')", source)
+        self.assertIn("self.load_cached_history_async(selected_data, 'processed_data')", source)
+        self.assertNotIn("self.data = self.data.find_history(selected_timestamp)", source)
+        self.assertNotIn("self.processed_data = self.processed_data.find_history(selected_timestamp)", source)
 
     def test_data_manager_accepts_progress_callback(self):
         source = (CORE / "DataManager.py").read_text(encoding="utf-8")

@@ -29,6 +29,7 @@ from ExportPolicy import can_export_em_data, prepare_dataframe_for_export
 from SelectionPolicy import select_data, rect_mask_from_canvas
 from ExportWorkflow import save_dataframe
 from TaskController import ensure_thread_running
+from ProgressPolicy import normalize_progress
 
 
 class MainWindow(QMainWindow):
@@ -60,7 +61,7 @@ class MainWindow(QMainWindow):
     basic_math_signal = pyqtSignal(object, str)
     easy_process = pyqtSignal(object, str, object)
     roi_processed_signal = pyqtSignal(object,np.ndarray,float,bool,bool,float)
-    cache_progress_signal = pyqtSignal(int, int, str)
+    cache_progress_signal = pyqtSignal(object, object, str)
 
     def __init__(self):
         super().__init__()
@@ -1788,57 +1789,45 @@ class MainWindow(QMainWindow):
 
     """状态响应与更新"""
     def update_progress(self, current, total=None):
-        """更新进度条（注意：统一0启动）"""
-        if total is not None:
-            self.progress_bar.setMaximum(total)
+        """更新进度条，并把超大 byte 计数缩放到 QProgressBar 安全范围。"""
+        if current == -1:
+            self.progress_bar.reset()
+            return
 
-        self.progress_bar.setValue(current)
-        # 计算当前进度
-        current_percent = current / self.progress_bar.maximum() * 100 if self.progress_bar.maximum() > 0 else 0
+        scaled_current, scaled_total, current_percent = normalize_progress(current, total)
+        if scaled_total is not None:
+            self.progress_bar.setMaximum(scaled_total)
+
+        if scaled_current == 0:
+            self.start_calculation()
+        self.progress_bar.setValue(scaled_current)
+
         elapsed_ms = self.elapsed_timer.elapsed()
         elapsed_sec = elapsed_ms / 1000.0
 
-        # 只有当进度变化超过1%时才更新剩余时间
         if int(current_percent) > self.last_percent:
-
-            # 计算剩余时间（仅当进度变化超过1%时）
-            if current > self.last_progress and elapsed_ms > self.last_time:
-                # 计算速度
-                progress_diff = current - self.last_progress
+            if scaled_current > self.last_progress and elapsed_ms > self.last_time:
+                progress_diff = scaled_current - self.last_progress
                 time_diff = (elapsed_ms - self.last_time) / 1000.0
                 speed = progress_diff / time_diff if time_diff > 0 else 0
-
-                # 更新记录点
-                self.last_progress = current
+                self.last_progress = scaled_current
                 self.last_time = elapsed_ms
-
-                # 计算并缓存剩余时间
-                if speed > 0 and total is not None:
-                    remaining_sec = (total - current) / speed
+                if speed > 0 and scaled_total is not None:
+                    remaining_sec = (scaled_total - scaled_current) / speed
                     self.cached_remaining = self.format_time(remaining_sec)
-
-            # 更新百分比记录
             self.last_percent = int(current_percent)
 
-        # 格式化时间显示
         elapsed_str = self.format_time(elapsed_sec)
-
-        # 更新进度条格式
+        maximum = self.progress_bar.maximum()
         self.progress_bar.setFormat(
-            f"进度: {current}/{self.progress_bar.maximum()} "
+            f"进度: {scaled_current}/{maximum} "
             f"({current_percent:.1f}%) | "
             f"已用: {elapsed_str} | 预计剩余: {self.cached_remaining}"
         )
 
-        # self.console_widget.update_progress(current, total)
-
-        if current == 0: # 我老是忘记到底是1启动还是0启动，干脆兼容吧， 还得是0
-            self.start_calculation() # 启动计时器
-        elif current >= self.progress_bar.maximum():
+        if scaled_total is not None and scaled_total > 0 and scaled_current >= scaled_total:
             logging.info(f"计算完成，总耗时{elapsed_str}")
-            self.update_status("进程任务完成,准备就绪",'idle')
-            self.progress_bar.reset()
-        elif current == -1:
+            self.update_status("进程任务完成,准备就绪", 'idle')
             self.progress_bar.reset()
 
     def _handle_result_tab(self, tab_type):
@@ -2733,30 +2722,65 @@ class MainWindow(QMainWindow):
             return
 
     def data_history_view(self):
-        """查看历史数据"""
-        if self.data is None :
-            logging.warning('请先导入数据')
+        """??????"""
+        if self.data is None:
+            logging.warning('??????')
             return
 
         dialog = DataViewAndSelectPop(datadict=self.get_data_all())
         if dialog.exec_():
-            selected_timestamp,_ = dialog.get_selected_timestamp()
-            self.data = self.data.find_history(selected_timestamp)
-            logging.info(f"当前数据焦点已更新至{self.data.name}")
+            selected_timestamp, _ = dialog.get_selected_timestamp()
+            selected_data = self.data.find_history(selected_timestamp)
+            self.load_cached_history_async(selected_data, 'data')
 
     def process_history_view(self):
-        """查看历史数据-处理"""
+        """??????-??"""
         if self.processed_data is None:
-            logging.warning('请先处理数据')
+            logging.warning('??????')
             return
-        # if self.image_display is []:  走不到这里
-        #     logging.warning("请先导入数据")
 
         dialog = DataViewAndSelectPop(processed_datadict=self.get_processed_data_all())
         if dialog.exec_():
-            selected_timestamp,_ = dialog.get_selected_timestamp()
-            self.processed_data = self.processed_data.find_history(selected_timestamp)
-            logging.info(f"当前数据焦点已更新至{self.processed_data.name}")
+            selected_timestamp, _ = dialog.get_selected_timestamp()
+            selected_data = self.processed_data.find_history(selected_timestamp)
+            self.load_cached_history_async(selected_data, 'processed_data')
+
+    def load_cached_history_async(self, target, attr_name):
+        """在线程中读取缓存数组，避免历史选择时阻塞 GUI。"""
+        if target is None:
+            logging.warning("未找到可读取的历史数据")
+            return
+        if not collect_array_refs(target):
+            setattr(self, attr_name, target)
+            logging.info(f"当前数据焦点已更新至{target.name}")
+            return
+
+        self.update_status("正在读取缓存数据", 'working')
+        self.update_progress(0, 1000)
+        self.cache_load_thread = QThread()
+        self.cache_load_worker = ArrayLoadWorker(target)
+        self.cache_load_worker.moveToThread(self.cache_load_thread)
+        self.cache_load_thread.started.connect(self.cache_load_worker.run)
+        self.cache_load_worker.progress_signal.connect(self.cache_progress_signal.emit)
+        self.cache_load_worker.finished_signal.connect(lambda loaded: self.finish_cached_history_load(loaded, attr_name))
+        self.cache_load_worker.error_signal.connect(self.cache_load_failed)
+        self.cache_load_worker.finished_signal.connect(self.cache_load_thread.quit)
+        self.cache_load_worker.error_signal.connect(self.cache_load_thread.quit)
+        self.cache_load_thread.finished.connect(self.cache_load_worker.deleteLater)
+        self.cache_load_thread.finished.connect(self.cache_load_thread.deleteLater)
+        self.cache_load_thread.start()
+
+    def finish_cached_history_load(self, loaded, attr_name):
+        setattr(self, attr_name, loaded)
+        logging.info(f"当前数据焦点已更新至{loaded.name}")
+        self.update_progress(1000, 1000)
+        self.update_status("缓存数据读取完成", 'idle')
+
+    def cache_load_failed(self, message):
+        logging.error(f"缓存数据读取失败: {message}")
+        QMessageBox.critical(self, "缓存读取失败", str(message))
+        self.update_progress(-1)
+        self.update_status("缓存读取失败", 'failed')
 
     def data_history_clear(self):
         """历史数据清除（所有）"""

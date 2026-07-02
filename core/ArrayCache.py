@@ -65,7 +65,7 @@ class ArrayStore:
             np.save(path, array)
         except Exception:
             logging.exception(
-                "缓存写入失败: field=%s shape=%s dtype=%s nbytes=%s path=%s",
+                "缓存读取失败: field=%s shape=%s dtype=%s nbytes=%s path=%s",
                 safe_field,
                 tuple(array.shape),
                 array.dtype,
@@ -94,6 +94,29 @@ class ArrayStore:
             created_at=time.time(),
             field_name=safe_field,
         )
+
+    def load_ref(self, ref: ArrayRef, mmap_mode=None):
+        if not isinstance(ref, ArrayRef):
+            return ref
+        if self.progress_callback:
+            self.progress_callback(0, ref.nbytes, f"正在读取缓存: {ref.field_name}")
+        try:
+            loaded = ref.load(mmap_mode=mmap_mode)
+            if mmap_mode is None:
+                loaded = np.array(loaded)
+        except Exception:
+            logging.exception(
+                "缓存读取失败: field=%s shape=%s dtype=%s nbytes=%s path=%s",
+                ref.field_name,
+                ref.shape,
+                ref.dtype,
+                ref.nbytes,
+                ref.path,
+            )
+            raise
+        if self.progress_callback:
+            self.progress_callback(ref.nbytes, ref.nbytes, f"读取缓存完成: {ref.field_name}")
+        return loaded
 
     def delete_ref(self, ref: ArrayRef) -> bool:
         if not isinstance(ref, ArrayRef):

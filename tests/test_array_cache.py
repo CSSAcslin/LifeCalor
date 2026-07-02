@@ -116,6 +116,23 @@ class ArrayCacheTests(unittest.TestCase):
         self.assertIn("complex64", message)
         self.assertIn("shape=(4,)", message)
 
+    def test_store_load_ref_reports_progress_and_materializes_array(self):
+        events = []
+        config = ArrayCacheConfig(cache_dir=Path(tempfile.mkdtemp()), threshold_bytes=1)
+        store = ArrayStore(config, progress_callback=lambda current, total, message: events.append((current, total, message)))
+        source = np.arange(12, dtype=np.float32).reshape(3, 4)
+        ref = store.put_array(source, owner_id="abc", field_name="data_origin")
+        events.clear()
+
+        loaded = store.load_ref(ref, mmap_mode=None)
+
+        self.assertIsInstance(loaded, np.ndarray)
+        self.assertFalse(isinstance(loaded, np.memmap))
+        np.testing.assert_array_equal(loaded, source)
+        self.assertEqual(events[0][0], 0)
+        self.assertEqual(events[-1][0], events[-1][1])
+        self.assertIn("读取缓存", events[0][2])
+
 
 if __name__ == "__main__":
     unittest.main()
