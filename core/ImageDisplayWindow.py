@@ -18,6 +18,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
 from PyQt5.QtCore import Qt, pyqtSignal, QRectF, QSize, QTimer, QDateTime, QLineF, QPointF, QPoint, pyqtSlot
 
 from DataManager import ImagingData, ColorMapManager, PublicEasyMethod
+from FrameRenderer import FrameRenderParams
+from FrameRenderService import FrameRenderService
 from ExtraDialog import ROIInfoDialog, ColorMapDialog, DataExportDialog, ParamsResetDialog
 from widget.AdvancedTimeline import AdvancedTimeline
 
@@ -626,6 +628,7 @@ class SubImageDisplayWidget(QDockWidget):
         self.colorbar_width = 3  # 颜色条宽度
         self.colorbar_padding = 5  # 颜色条边距
         self.color_map_manager = ColorMapManager()  # 伪彩色管理器
+        self.frame_render_service = FrameRenderService(cache_capacity=12)
         self.colormap = None
 
         # 工具响应
@@ -1366,7 +1369,16 @@ class SubImageDisplayWidget(QDockWidget):
             if self.data.colormode == self.colormap:
                 return self._indexed_display_array(self.data.image_data, idx)
             return self.raw_frame(idx)
+        if getattr(self.data, 'display_source', None) is not None:
+            frame_index = idx if self.data.is_temporary else 0
+            rendered = self.frame_render_service.render_source(
+                self.data.display_source,
+                frame_index,
+                FrameRenderParams(use_colormap=False, auto_range=True),
+            )
+            return rendered.image
         return self._indexed_display_array(self.data.image_data, idx)
+
     def update_time_slice(self,idx=0):
         if not 0 <= idx <= self.max_time_idx:
             raise ValueError('idx out of range(impossible Fault)')

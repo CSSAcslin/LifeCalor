@@ -20,6 +20,12 @@ class DisplayArchitectureTests(unittest.TestCase):
         self.assertNotIn("self.data.image_data[0]", source)
         self.assertNotIn("self.data.image_data[idx]", source)
 
+    def test_image_display_delegates_grayscale_frame_rendering_to_service(self):
+        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        self.assertIn("FrameRenderService", source)
+        self.assertIn("self.frame_render_service", source)
+        self.assertIn("render_source", source)
+
 
 if __name__ == "__main__":
     unittest.main()
