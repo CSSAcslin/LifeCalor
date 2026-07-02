@@ -27,6 +27,7 @@ from ArrayCache import (
     resolve_array,
     should_cache_array,
 )
+from DisplaySource import DisplaySourceFactory
 _ARRAY_CACHE_CONFIG = ArrayCacheConfig(cache_dir=Path.cwd() / ".lifecalor_cache", threshold_bytes=512 * 1024 * 1024)
 _ARRAY_CACHE_PROGRESS_CALLBACK = None
 
@@ -1285,17 +1286,24 @@ class ImagingData:
     timestamp: float = field(init=False, default_factory=time.time)
 
     def __post_init__(self):
-        self.image_data = self.to_uint8(self.image_backup)
-        self.imageshape = self.image_data.shape
-        self.ndim = self.image_data.ndim
+        self.imageshape = self.image_backup.shape
+        self.ndim = self.image_backup.ndim
         self.totalframes = self.imageshape[0] if self.ndim == 3 else 1
         self.framesize = (self.imageshape[1], self.imageshape[2]) if self.ndim == 3 else (self.imageshape[0],
                                                                                           self.imageshape[1])
         # 不考虑数据点只有一个的情况
         self.is_temporary = True if self.ndim == 3 else False
-        self.imagemin = self.image_backup.min()
-        self.imagemax = self.image_backup.max()
+        preview = self.display_source.get_frame(0) if getattr(self, "display_source", None) is not None else self.image_backup
+        preview_for_stats = np.abs(preview) if np.iscomplexobj(preview) else preview
+        finite_preview = preview_for_stats[np.isfinite(preview_for_stats)]
+        if finite_preview.size:
+            self.imagemin = finite_preview.min()
+            self.imagemax = finite_preview.max()
+        else:
+            self.imagemin = 0
+            self.imagemax = 0
         self.datatype = self.image_backup.dtype
+        self.image_data = self.to_uint8(preview)
         self.ROI_mask = None
         self.ROI_applied = False
 
@@ -1308,8 +1316,8 @@ class ImagingData:
         instance.parent_data = weakref.ref(data_obj)
         # 设置图像数据
         if isinstance(data_obj, Data):
-            # instance.image_data = data_obj.data_origin.copy()
-            instance.image_backup = data_obj.data_origin.copy()
+            instance.display_source = DisplaySourceFactory.from_data(data_obj)
+            instance.image_backup = instance.display_source.array
             instance.timestamp_inherited = data_obj.timestamp
             instance.source_type = "Data"
             instance.source_name = data_obj.name
@@ -1319,11 +1327,11 @@ class ImagingData:
             instance.image_type = 'from_data'
         elif isinstance(data_obj, ProcessedData):
             if arg:
-                # instance.image_data = data_obj.out_processed[arg].copy()
-                instance.image_backup = data_obj.out_processed[arg].copy()
+                instance.display_source = DisplaySourceFactory.from_data(data_obj, key=arg[0])
+                instance.image_backup = instance.display_source.array
             else:
-                # instance.image_data = data_obj.data_processed.copy()
-                instance.image_backup = data_obj.data_processed.copy()
+                instance.display_source = DisplaySourceFactory.from_data(data_obj)
+                instance.image_backup = instance.display_source.array
             instance.timestamp_inherited = data_obj.timestamp
             instance.source_type = "ProcessedData"
             instance.source_name = data_obj.name
@@ -1618,6 +1626,7 @@ class PublicEasyMethod:
         elif shape == 'custom':  # 留给绘制roi
             pass
         return mask
+
 
 
 
