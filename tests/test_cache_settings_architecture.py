@@ -35,16 +35,17 @@ class CacheSettingsArchitectureTests(unittest.TestCase):
         self.assertIn("def apply_settings(self):", source)
 
     def test_mainwindow_loads_cached_history_on_worker_thread(self):
-        source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
-        self.assertIn("cache_progress_signal = pyqtSignal(object, object, str)", source)
-        self.assertIn("load_cached_history_async", source)
-        self.assertIn("ArrayLoadWorker", source)
-        self.assertIn("cache_load_thread", source)
-        self.assertIn("normalize_progress", source)
-        self.assertIn("self.load_cached_history_async(selected_data, 'data')", source)
-        self.assertIn("self.load_cached_history_async(selected_data, 'processed_data')", source)
-        self.assertNotIn("self.data = self.data.find_history(selected_timestamp)", source)
-        self.assertNotIn("self.processed_data = self.processed_data.find_history(selected_timestamp)", source)
+        main_source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
+        history_source = (CORE / "history" / "controller.py").read_text(encoding="utf-8")
+        self.assertIn("cache_progress_signal = pyqtSignal(object, object, str)", main_source)
+        self.assertIn("self.history_controller.load_cached_history_async(target, attr_name)", main_source)
+        self.assertIn("ArrayLoadWorker", history_source)
+        self.assertIn("cache_load_thread", history_source)
+        self.assertIn("from progress import normalize_progress", main_source)
+        self.assertIn("self.load_cached_history_async(selected_data, 'data')", history_source)
+        self.assertIn("self.load_cached_history_async(selected_data, 'processed_data')", history_source)
+        self.assertNotIn("self.data = self.data.find_history(selected_timestamp)", main_source)
+        self.assertNotIn("self.processed_data = self.processed_data.find_history(selected_timestamp)", main_source)
 
     def test_data_manager_accepts_progress_callback(self):
         source = (CORE / "DataManager.py").read_text(encoding="utf-8")

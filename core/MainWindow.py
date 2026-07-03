@@ -22,14 +22,14 @@ from PlotGraphWidget import *
 from SpatialExtractor import SpatialExtractor
 from widget import TriStateSwitch
 from AppConfig import get_github_auth_header
-from ParameterStore import load_param_group
+from settings import load_param_group
 from TaskState import TaskState
 from ThreadController import is_thread_active as thread_is_active, stop_thread as stop_qthread
-from ExportPolicy import can_export_em_data, prepare_dataframe_for_export
+from exporting import ExportController
 from selection import SelectionController
-from ExportWorkflow import save_dataframe
+from history import HistoryController
 from TaskController import ensure_thread_running
-from ProgressPolicy import normalize_progress
+from progress import normalize_progress
 
 
 class MainWindow(QMainWindow):
@@ -87,6 +87,9 @@ class MainWindow(QMainWindow):
 
         # 界面加载
         self.init_ui()
+        self.selection_controller = SelectionController(self)
+        self.export_controller = ExportController(self)
+        self.history_controller = HistoryController(self)
         self.log_file = self.get_log_path()
         self.setup_menus()
         self.setup_logging()
@@ -2589,150 +2592,33 @@ class MainWindow(QMainWindow):
 
     def export_image(self):
         """导出热图为图片"""
-        current_index = self.result_display.currentIndex()
-        if current_index < 0:
-            QMessageBox.warning(self, "导出失败", "没有可导出的图像")
-            return
-
-        tab = self.result_display.widget(current_index)
-        canvas = tab.findChild(FigureCanvas)
-
-        if not canvas:
-            QMessageBox.warning(self, "导出失败", "未找到图像画布")
-            return
-
-        try:
-            path, _ = QFileDialog.getSaveFileName(
-                self, "保存图像", "", "PNG(*.png);;JPEG(*.jpg);;TIFF图像 (*.tif *.tiff);;所有文件(*.*)"
-            )
-
-            if path:
-                canvas.figure.savefig(path, dpi=300)
-                QMessageBox.information(self, "导出成功", f"图像已保存至:\n{path}")
-                logging.info(f"导出成功,图像已保存至:{path}")
-        except Exception as e:
-            logging.info(f"数据未保存: {e}")
-
-        # if hasattr(self.result_display, 'current_data'):
-        #     file_path, _ = QFileDialog.getSaveFileName(
-        #         self, "保存图像", "", "PNG图像 (*.png);;JPEG图像 (*.jpg *.jpeg);;TIFF图像 (*.tif *.tiff)")
-        #
-        #     if file_path:
-        #         # 从matplotlib保存图像
-        #         self.result_display.figure.savefig(file_path, dpi=300, bbox_inches='tight')
-        #     logging.info("图片已保存")
+        return self.export_controller.export_image()
 
     def export_data(self):
         """导出寿命数据"""
-        if self.result_display.current_dataframe is not None:
-            dialog = DataSavingPop(self)
-            file_path = None
-            self.update_status("数据导出ing", 'working')
-            if dialog.exec_():
-                isfiting = dialog.fitting_check.isChecked()
-                hasheader = dialog.index_check.isChecked()
-                file_path, _ = QFileDialog.getSaveFileName(
-                    self, "保存数据", "", "CSV文件 (*.csv);;文本文件 (*.txt)")
-        else:
-            logging.warning("没有数据可以导出")
-            self.update_status("准备就绪")
-            return
-
-        if file_path:
-            df = prepare_dataframe_for_export(
-                self.result_display.current_dataframe,
-                self.result_display.current_mode,
-                include_fitting=isfiting,
-            )
-            if save_dataframe(df, file_path, hasheader, self.task_states["export"]):
-                logging.info("数据已保存")
-            else:
-                logging.info(f"数据未保存: {self.task_states['export'].error}")
-            self.update_status("准备就绪", 'idle')
-        else:
-            logging.info("数据未保存")
-            self.update_status("准备就绪", 'idle')
-            return
+        return self.export_controller.export_data()
 
     def export_EM_data(self,result):
         """时频变换后目标频率下的结果导出"""
-        if self.processed_data is not None:
-            if can_export_em_data(self.processed_data.type_processed):
-                dialog = DataExportDialog(datatypes=['tif','avi','gif','png'])
-                if dialog.exec_():
-                    directory = dialog.directory
-                    prefix = dialog.text_edit.text().strip()
-                    filetype = dialog.type_combo.currentText()
-                    duration = dialog.duration_input.value()
-                    self.mass_export_signal.emit(self.processed_data.data_processed,directory,prefix,filetype,True,
-                                                 {'duration':duration})
-                return
-            else:
-                QMessageBox.warning(self,'提示','请先变换处理数据')
-        else:
-            logging.warning('请先加载并处理数据')
-            return
+        return self.export_controller.export_em_data(result)
 
     def data_history_view(self):
-        """??????"""
-        if self.data is None:
-            logging.warning('??????')
-            return
-
-        dialog = DataViewAndSelectPop(datadict=self.get_data_all())
-        if dialog.exec_():
-            selected_timestamp, _ = dialog.get_selected_timestamp()
-            selected_data = self.data.find_history(selected_timestamp)
-            self.load_cached_history_async(selected_data, 'data')
+        """导入数据历史查看。"""
+        return self.history_controller.data_history_view()
 
     def process_history_view(self):
-        """??????-??"""
-        if self.processed_data is None:
-            logging.warning('??????')
-            return
-
-        dialog = DataViewAndSelectPop(processed_datadict=self.get_processed_data_all())
-        if dialog.exec_():
-            selected_timestamp, _ = dialog.get_selected_timestamp()
-            selected_data = self.processed_data.find_history(selected_timestamp)
-            self.load_cached_history_async(selected_data, 'processed_data')
+        """处理数据历史查看。"""
+        return self.history_controller.process_history_view()
 
     def load_cached_history_async(self, target, attr_name):
         """在线程中读取缓存数组，避免历史选择时阻塞 GUI。"""
-        if target is None:
-            logging.warning("未找到可读取的历史数据")
-            return
-        if not collect_array_refs(target):
-            setattr(self, attr_name, target)
-            logging.info(f"当前数据焦点已更新至{target.name}")
-            return
-
-        self.update_status("正在读取缓存数据", 'working')
-        self.update_progress(0, 1000)
-        self.cache_load_thread = QThread()
-        self.cache_load_worker = ArrayLoadWorker(target)
-        self.cache_load_worker.moveToThread(self.cache_load_thread)
-        self.cache_load_thread.started.connect(self.cache_load_worker.run)
-        self.cache_load_worker.progress_signal.connect(self.cache_progress_signal.emit)
-        self.cache_load_worker.finished_signal.connect(lambda loaded: self.finish_cached_history_load(loaded, attr_name))
-        self.cache_load_worker.error_signal.connect(self.cache_load_failed)
-        self.cache_load_worker.finished_signal.connect(self.cache_load_thread.quit)
-        self.cache_load_worker.error_signal.connect(self.cache_load_thread.quit)
-        self.cache_load_thread.finished.connect(self.cache_load_worker.deleteLater)
-        self.cache_load_thread.finished.connect(self.cache_load_thread.deleteLater)
-        self.cache_load_thread.start()
+        return self.history_controller.load_cached_history_async(target, attr_name)
 
     def finish_cached_history_load(self, loaded, attr_name):
-        setattr(self, attr_name, loaded)
-        logging.info(f"当前数据焦点已更新至{loaded.name}")
-        self.update_progress(1000, 1000)
-        self.update_status("缓存数据读取完成", 'idle')
+        return self.history_controller.finish_cached_history_load(loaded, attr_name)
 
     def cache_load_failed(self, message):
-        logging.error(f"缓存数据读取失败: {message}")
-        QMessageBox.critical(self, "缓存读取失败", str(message))
-        self.update_progress(-1)
-        self.update_status("缓存读取失败", 'failed')
+        return self.history_controller.cache_load_failed(message)
 
     def data_history_clear(self):
         """历史数据清除（所有）"""
