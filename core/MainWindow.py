@@ -1403,6 +1403,7 @@ class MainWindow(QMainWindow):
         self.image_display.add_canvas_signal.connect(self.add_new_canvas)
         self.image_display.draw_result_signal.connect(self.draw_result)
         self.image_display.params_update_signal.connect(lambda params : self.tool_params.update(params))
+        self.image_display.render_status_signal.connect(self.handle_render_status)
         # 时间滑块
         # self.time_slider.valueChanged.connect(self.image_display.update_time_slice)
         self.time_slider_vertical.valueChanged.connect(self.update_result_display)
@@ -1416,10 +1417,22 @@ class MainWindow(QMainWindow):
         self.add_data_btn.clicked.connect(self.data_plot_add)
         self.reset_data_btn.clicked.connect(self.data_plot_clear)
 
+    def disconnect_canvas_signal(self, signal, slot):
+        try:
+            signal.disconnect(slot)
+        except (TypeError, RuntimeError):
+            pass
+
     def canvas_signal_connect(self):
         self.roi_pick.clear()
         for canvas in self.image_display.display_canvas:
-            canvas.disconnect()
+            self.disconnect_canvas_signal(canvas.mouse_position_signal, self._handle_hover)
+            self.disconnect_canvas_signal(canvas.mouse_clicked_signal, self._handle_click)
+            self.disconnect_canvas_signal(canvas.current_canvas_signal, self.image_display.set_cursor_id)
+            self.disconnect_canvas_signal(canvas.draw_result_signal, self.draw_result)
+            self.disconnect_canvas_signal(canvas.get_fast_selection, self.proc_thread.get_fast_selection)
+            self.disconnect_canvas_signal(canvas.sync_progress_signal, self.image_display.on_canvas_sync_progress)
+            self.disconnect_canvas_signal(canvas.sync_playback_signal, self.image_display.on_canvas_sync_playback)
             canvas.mouse_position_signal.connect(self._handle_hover)
             canvas.mouse_clicked_signal.connect(self._handle_click)
             canvas.current_canvas_signal.connect(self.image_display.set_cursor_id)
@@ -1868,6 +1881,16 @@ class MainWindow(QMainWindow):
                 reuse_current = reuse_current)
         else:
             logging.debug("结果垂直滚动条失去更新源，不可能错误")
+
+    def handle_render_status(self, status, message):
+        status_map = {
+            'idle': 'idle',
+            'rendering': 'working',
+            'completed': 'idle',
+            'failed': 'warning',
+        }
+        if message:
+            self.update_status(message, status_map.get(status, 'warning'))
 
     def update_status(self, status, working_status='idle'):
         """更新状态条的显示"""

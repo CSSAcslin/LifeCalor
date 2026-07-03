@@ -47,6 +47,34 @@ class DisplayArchitectureTests(unittest.TestCase):
         self.assertIn("min_value=self.min_value", source)
         self.assertNotIn("color_map_manager.apply_colormap", source)
 
+    def test_legacy_frame_path_applies_colormap_through_frame_renderer(self):
+        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        frame_for_display = source[source.index("def frame_for_display"):source.index("def update_time_slice")]
+        self.assertIn("FrameRenderer.render", frame_for_display)
+        self.assertIn("self.raw_frame(idx)", frame_for_display)
+
+    def test_image_display_schedules_initial_frame_without_mouse_movement(self):
+        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        self.assertIn("def schedule_initial_display", source)
+        self.assertIn("QTimer.singleShot(0, self._show_initial_frame)", source)
+        mouse_move = source[source.index("def mouse_move_event"):source.index("def mouse_release_event")]
+        self.assertNotIn("display_image()", mouse_move)
+
+    def test_canvas_signal_connect_does_not_disconnect_internal_render_worker(self):
+        source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
+        marker = chr(39) * 3
+        connect_block = source[source.index("def canvas_signal_connect"):source.index(marker, source.index("def canvas_signal_connect"))]
+        self.assertNotIn("canvas.disconnect()", connect_block)
+        self.assertIn("disconnect_canvas_signal", connect_block)
+
+    def test_render_status_is_forwarded_to_main_status_bar(self):
+        display_source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        main_source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
+        self.assertIn("render_status_signal = pyqtSignal(str, str)", display_source)
+        self.assertIn("def set_render_status", display_source)
+        self.assertIn("render_status_signal.connect(self.handle_render_status)", main_source)
+        self.assertIn("def handle_render_status", main_source)
+
 
 if __name__ == "__main__":
     unittest.main()

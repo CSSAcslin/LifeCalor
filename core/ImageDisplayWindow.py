@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
 from PyQt5.QtCore import Qt, pyqtSignal, QRectF, QSize, QTimer, QDateTime, QLineF, QPointF, QPoint, pyqtSlot, QThread
 
 from DataManager import ImagingData, ColorMapManager, PublicEasyMethod
-from FrameRenderer import FrameRenderParams
+from FrameRenderer import FrameRenderParams, FrameRenderer
 from FrameRenderService import FrameRenderService
 from FrameRenderWorker import FrameRenderWorker
 from ExtraDialog import ROIInfoDialog, ColorMapDialog, DataExportDialog, ParamsResetDialog
@@ -33,6 +33,7 @@ class ImageDisplayWindow(QMainWindow):
     params_update_signal = pyqtSignal(dict)
     image_style_change_signal = pyqtSignal(object,dict)
     image_export_signal = pyqtSignal(object, str, str, str, bool, dict)
+    render_status_signal = pyqtSignal(str, str)
     def __init__(self, params,parent=None):
         super().__init__(parent)
         self.display_canvas = []
@@ -299,6 +300,7 @@ class ImageDisplayWindow(QMainWindow):
         # self.display_data.append(data)
         data.canvas_num = canvas_id
         new_canvas = SubImageDisplayWidget(name=f'{canvas_id}-{data.source_name}',canvas_id=canvas_id,data=data,args_dict=self.tool_parameters,parent=self)
+        new_canvas.render_status_signal.connect(self.render_status_signal.emit)
         self.display_canvas.append(new_canvas)
         self.add_dock(self.display_canvas[-1])
         if self.tool_parameters['use_colormap']:
@@ -601,6 +603,7 @@ class SubImageDisplayWidget(QDockWidget):
     sync_progress_signal = pyqtSignal(float, int)  # 参数: 进度比例(0.0~1.0), 画布ID
     sync_playback_signal = pyqtSignal(str, int)  # 参数: 动作指令('play'/'pause'/'reset'), 画布ID
     frame_render_requested = pyqtSignal(int, object, int, object)
+    render_status_signal = pyqtSignal(str, str)
 
     def __init__(self, parent=None,canvas_id = None,name = None, data :ImagingData = None, args_dict :dict = None):
         super().__init__(name, parent)
@@ -633,6 +636,8 @@ class SubImageDisplayWidget(QDockWidget):
         self.frame_render_service = FrameRenderService(cache_capacity=12)
         self._frame_render_request_id = 0
         self._latest_frame_render_request_id = 0
+        self.render_status = 'idle'
+        self._initial_display_scheduled = False
         self._start_frame_render_worker()
         self.colormap = None
 
@@ -668,6 +673,7 @@ class SubImageDisplayWidget(QDockWidget):
 
         self.init_ui()
         self.map_view = False
+        self.schedule_initial_display()
 
     def init_ui(self):
         widget = QWidget(self)
@@ -764,6 +770,28 @@ class SubImageDisplayWidget(QDockWidget):
         if hasattr(self, 'overlay_label') and self.overlay_label:
             self.overlay_label.deleteLater()
             self.overlay_label = None
+
+    def schedule_initial_display(self):
+        """Schedule the first frame after the dock widget has a viewport."""
+        if self._initial_display_scheduled:
+            return
+        self._initial_display_scheduled = True
+        QTimer.singleShot(0, self._show_initial_frame)
+
+    def _show_initial_frame(self):
+        if self.map_view:
+            return
+        try:
+            self.display_image()
+            self.remove_overlay_label()
+        except Exception as exc:
+            message = f'首帧渲染失败: {exc}'
+            logging.exception(message)
+            self.set_render_status('failed', message)
+
+    def set_render_status(self, status, message=''):
+        self.render_status = status
+        self.render_status_signal.emit(status, message or '')
 
     def set_drawing_tool(self, tool):
         """设置当前绘图工具"""
@@ -870,8 +898,7 @@ class SubImageDisplayWidget(QDockWidget):
     def wheel_event(self, event: QWheelEvent):
         """滚轮缩放实现"""
         if not self.map_view:
-            self.display_image()
-            self.remove_overlay_label()
+            return
         if not hasattr(self, 'current_image'):
             return
 
@@ -1024,8 +1051,7 @@ class SubImageDisplayWidget(QDockWidget):
     def mouse_move_event(self, event):
         """鼠标移动事件处理"""
         if not self.map_view:
-            self.display_image()
-            self.remove_overlay_label()
+            return
         if not hasattr(self, 'current_image'):
             return
 
@@ -1305,6 +1331,7 @@ class SubImageDisplayWidget(QDockWidget):
         return FrameRenderParams(use_colormap=False, auto_range=True)
 
     def request_frame_render(self, idx):
+        self.set_render_status('rendering', f'画布 {self.id} 渲染第 {idx + 1} 帧')
         self._frame_render_request_id += 1
         request_id = self._frame_render_request_id
         self._latest_frame_render_request_id = request_id
@@ -1320,11 +1347,13 @@ class SubImageDisplayWidget(QDockWidget):
         if request_id != self._latest_frame_render_request_id:
             return
         self.update_display(rendered.image)
+        self.set_render_status('completed', f'画布 {self.id} 渲染完成')
 
     def on_frame_render_failed(self, request_id, message):
         if request_id != self._latest_frame_render_request_id:
             return
         logging.error(f'Frame render failed on canvas {self.id}: {message}')
+        self.set_render_status('failed', f'画布 {self.id} 渲染失败: {message}')
 
     def closeEvent(self, event):
         """重写关闭事件"""
@@ -1428,9 +1457,10 @@ class SubImageDisplayWidget(QDockWidget):
             )
             return rendered.image
         if self.use_colormap:
-            if self.data.colormode == self.colormap:
-                return self._indexed_display_array(self.data.image_data, idx)
-            return self.raw_frame(idx)
+            return FrameRenderer.render(
+                self.raw_frame(idx),
+                self.render_params_for_display(),
+            ).image
         return self._indexed_display_array(self.data.image_data, idx)
 
     def update_time_slice(self,idx=0):
@@ -1654,9 +1684,11 @@ class SubImageDisplayWidget(QDockWidget):
     def display_image(self):
         """显示图像数据 (使用QPixmap)并记录当前时间索引
         ROI_applied 暂时放弃"""
+        self.set_render_status('rendering', f'画布 {self.id} 渲染首帧')
         try:
             image_data = self.frame_for_display(0)
         except Exception as e:
+            self.set_render_status('failed', f'画布 {self.id} 首帧渲染失败: {e}')
             raise  ValueError(f'nodata(impossible Fault):{e}')
 
         self.graphics_view.resize(self.width(), self.height())
@@ -1681,6 +1713,7 @@ class SubImageDisplayWidget(QDockWidget):
         self.draw_layer.setZValue(1)  # 确保绘图层在数据层之上
 
         self.add_colorbar()
+        self.set_render_status('completed', f'画布 {self.id} 首帧渲染完成')
 
     def update_display(self, image_data):
         """仅更新图像数据，不改变视图状态"""
