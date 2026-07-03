@@ -1883,14 +1883,8 @@ class MainWindow(QMainWindow):
             logging.debug("结果垂直滚动条失去更新源，不可能错误")
 
     def handle_render_status(self, status, message):
-        status_map = {
-            'idle': 'idle',
-            'rendering': 'working',
-            'completed': 'idle',
-            'failed': 'warning',
-        }
-        if message:
-            self.update_status(message, status_map.get(status, 'warning'))
+        if status == 'failed' and message:
+            self.update_status(message, 'warning')
 
     def update_status(self, status, working_status='idle'):
         """更新状态条的显示"""

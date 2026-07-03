@@ -1681,23 +1681,12 @@ class SubImageDisplayWidget(QDockWidget):
             return image_data, qimage, width, height
         raise ValueError(f'unsupported display image shape: {image_data.shape}')
 
-    def display_image(self):
-        """显示图像数据 (使用QPixmap)并记录当前时间索引
-        ROI_applied 暂时放弃"""
-        self.set_render_status('rendering', f'画布 {self.id} 渲染首帧')
-        try:
-            image_data = self.frame_for_display(0)
-        except Exception as e:
-            self.set_render_status('failed', f'画布 {self.id} 首帧渲染失败: {e}')
-            raise  ValueError(f'nodata(impossible Fault):{e}')
-
+    def initialize_display_scene(self, image_data):
         self.graphics_view.resize(self.width(), self.height())
         self.scene.clear()
         self.current_time_idx = 0
-        # 创建QImage并转换为QPixmap
         image_data, qimage, width, height = self.display_array_to_qimage(image_data)
         pixmap = QPixmap.fromImage(qimage)
-        # 显示图像
         self.current_image = image_data
         self.data_layer = self.scene.addPixmap(pixmap)
         self.graphics_view.resetTransform()
@@ -1705,27 +1694,38 @@ class SubImageDisplayWidget(QDockWidget):
         self.last_scale = self.graphics_view.transform().m11()
         self.initial_scale = self.graphics_view.transform().m11()
         self.map_view = True
-        # 绘制层
         self.top_pixmap = QPixmap(width, height)
         self.top_pixmap.fill(Qt.transparent)
         self.draw_layer = self.scene.addPixmap(self.top_pixmap)
         self.draw_layer.setOpacity(self.draw_layer_opacity)
-        self.draw_layer.setZValue(1)  # 确保绘图层在数据层之上
-
+        self.draw_layer.setZValue(1)
         self.add_colorbar()
-        self.set_render_status('completed', f'画布 {self.id} 首帧渲染完成')
+
+    def display_image(self):
+        """显示图像数据 (使用QPixmap)，记录当前时间点数据
+        ROI_applied 暂时放弃"""
+        if getattr(self.data, 'display_source', None) is not None:
+            self.request_frame_render(0)
+            return
+        try:
+            image_data = self.frame_for_display(0)
+        except Exception as e:
+            self.set_render_status('failed', f'画布 {self.id} 首帧渲染失败: {e}')
+            raise  ValueError(f'nodata(impossible Fault):{e}')
+        self.initialize_display_scene(image_data)
 
     def update_display(self, image_data):
         """仅更新图像数据，不改变视图状态"""
+        if not self.map_view or self.data_layer is None:
+            self.initialize_display_scene(image_data)
+            return
         self.current_image = image_data
 
         if self.anchor_pos:
             x, y = self.anchor_pos
-            # 获取并发射图像数据
             self.get_value(y,x)
         image_data, qimage, width, height = self.display_array_to_qimage(image_data)
         pixmap = QPixmap.fromImage(qimage)
-        # 直接更新现有pixmap，避免重置场景，其它层保持不变
         self.data_layer.setPixmap(pixmap)
 
     def add_colorbar(self):

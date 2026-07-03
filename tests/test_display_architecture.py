@@ -60,6 +60,23 @@ class DisplayArchitectureTests(unittest.TestCase):
         mouse_move = source[source.index("def mouse_move_event"):source.index("def mouse_release_event")]
         self.assertNotIn("display_image()", mouse_move)
 
+    def test_display_source_initial_frame_is_rendered_asynchronously(self):
+        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        display_image = source[source.index("def display_image"):source.index("def update_display")]
+        self.assertIn("self.request_frame_render(0)", display_image)
+        self.assertIn("return", display_image)
+        self.assertNotIn("self.frame_for_display(0)", display_image.split("self.request_frame_render(0)")[0])
+        self.assertIn("def initialize_display_scene", source)
+        update_display = source[source.index("def update_display"):source.index("def add_colorbar")]
+        self.assertIn("self.initialize_display_scene(image_data)", update_display)
+
+    def test_render_status_bar_only_reports_render_failures(self):
+        source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
+        handler = source[source.index("def handle_render_status"):source.index("def update_status")]
+        self.assertIn("status == 'failed'", handler)
+        self.assertNotIn("'rendering': 'working'", handler)
+        self.assertNotIn("'completed': 'idle'", handler)
+
     def test_canvas_signal_connect_does_not_disconnect_internal_render_worker(self):
         source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
         marker = chr(39) * 3
