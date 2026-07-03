@@ -313,6 +313,8 @@ class ImageDisplayWindow(QMainWindow):
         # 从布局中移除并删除DockWidget
         for dock in self.findChildren(QDockWidget):
             if hasattr(dock, 'id') and dock.id == canvas_id:
+                if hasattr(dock, 'prepare_for_removal'):
+                    dock.prepare_for_removal()
                 self.removeDockWidget(dock)
                 dock.deleteLater()
                 break
@@ -638,6 +640,9 @@ class SubImageDisplayWidget(QDockWidget):
         self._latest_frame_render_request_id = 0
         self.render_status = 'idle'
         self._initial_display_scheduled = False
+        self._render_in_flight = False
+        self._pending_frame_index = None
+        self._is_closing = False
         self._start_frame_render_worker()
         self.colormap = None
 
@@ -1304,6 +1309,15 @@ class SubImageDisplayWidget(QDockWidget):
             pixels.append((x, y + 1))
             pixels.append((x, y - 1))
 
+    def _safe_disconnect(self, signal, slot=None):
+        try:
+            if slot is None:
+                signal.disconnect()
+            else:
+                signal.disconnect(slot)
+        except (TypeError, RuntimeError):
+            pass
+
     def _start_frame_render_worker(self):
         self.frame_render_thread = QThread(self)
         self.frame_render_worker = FrameRenderWorker(cache_capacity=12)
@@ -1314,10 +1328,23 @@ class SubImageDisplayWidget(QDockWidget):
         self.frame_render_thread.finished.connect(self.frame_render_worker.deleteLater)
         self.frame_render_thread.start()
 
-    def stop_frame_render_worker(self):
+    def stop_frame_render_worker(self, wait_ms=5000):
+        self._pending_frame_index = None
+        self._render_in_flight = False
+        if hasattr(self, 'frame_render_requested') and hasattr(self, 'frame_render_worker'):
+            self._safe_disconnect(self.frame_render_requested, self.frame_render_worker.render)
+            self._safe_disconnect(self.frame_render_worker.rendered, self.on_frame_rendered)
+            self._safe_disconnect(self.frame_render_worker.failed, self.on_frame_render_failed)
         if hasattr(self, 'frame_render_thread') and self.frame_render_thread.isRunning():
             self.frame_render_thread.quit()
-            self.frame_render_thread.wait(1000)
+            if not self.frame_render_thread.wait(wait_ms):
+                logging.warning(f'Frame render thread did not stop within {wait_ms} ms on canvas {self.id}')
+
+    def prepare_for_removal(self):
+        if self._is_closing:
+            return
+        self._is_closing = True
+        self.stop_frame_render_worker()
 
     def render_params_for_display(self):
         if self.use_colormap:
@@ -1331,11 +1358,24 @@ class SubImageDisplayWidget(QDockWidget):
         return FrameRenderParams(use_colormap=False, auto_range=True)
 
     def request_frame_render(self, idx):
+        if self._is_closing:
+            return
+        if self._render_in_flight:
+            self._pending_frame_index = idx
+            logging.debug(f'Coalesced frame render request on canvas {self.id}: pending frame {idx}')
+            return
+        self._start_frame_render(idx)
+
+    def _start_frame_render(self, idx):
+        if self._is_closing:
+            return
+        self._render_in_flight = True
         self.set_render_status('rendering', f'画布 {self.id} 渲染第 {idx + 1} 帧')
         self._frame_render_request_id += 1
         request_id = self._frame_render_request_id
         self._latest_frame_render_request_id = request_id
         frame_index = idx if self.data.is_temporary else 0
+        logging.debug(f'Start frame render canvas={self.id} request={request_id} frame={frame_index}')
         self.frame_render_requested.emit(
             request_id,
             self.data.display_source,
@@ -1343,22 +1383,45 @@ class SubImageDisplayWidget(QDockWidget):
             self.render_params_for_display(),
         )
 
+    def _start_pending_frame_render(self):
+        if self._is_closing:
+            self._pending_frame_index = None
+            return
+        if self._pending_frame_index is None:
+            return
+        pending_idx = self._pending_frame_index
+        self._pending_frame_index = None
+        self._start_frame_render(pending_idx)
+
     def on_frame_rendered(self, request_id, rendered):
+        if self._is_closing:
+            return
+        self._render_in_flight = False
         if request_id != self._latest_frame_render_request_id:
+            logging.debug(f'Discard stale rendered frame canvas={self.id} request={request_id}')
+            self._start_pending_frame_render()
             return
         self.update_display(rendered.image)
         self.set_render_status('completed', f'画布 {self.id} 渲染完成')
+        self._start_pending_frame_render()
 
     def on_frame_render_failed(self, request_id, message):
+        if self._is_closing:
+            return
+        self._render_in_flight = False
         if request_id != self._latest_frame_render_request_id:
+            logging.debug(f'Discard stale render failure canvas={self.id} request={request_id}: {message}')
+            self._start_pending_frame_render()
             return
         logging.error(f'Frame render failed on canvas {self.id}: {message}')
         self.set_render_status('failed', f'画布 {self.id} 渲染失败: {message}')
+        self._start_pending_frame_render()
 
     def closeEvent(self, event):
         """重写关闭事件"""
-        self.stop_frame_render_worker()
-        self.parent_window.del_canvas(self.id)
+        if not self._is_closing:
+            self.prepare_for_removal()
+            self.parent_window.del_canvas(self.id)
         super().closeEvent(event)
 
     """下面是播放和图像更新的设置"""
@@ -1674,11 +1737,11 @@ class SubImageDisplayWidget(QDockWidget):
         if image_data.ndim == 3:
             height, width, _ = image_data.shape
             qimage = QImage(image_data.data, width, height, image_data.strides[0], QImage.Format_RGBA8888)
-            return image_data, qimage, width, height
+            return image_data, qimage.copy(), width, height
         if image_data.ndim == 2:
             height, width = image_data.shape
             qimage = QImage(image_data.data, width, height, image_data.strides[0], QImage.Format_Grayscale8)
-            return image_data, qimage, width, height
+            return image_data, qimage.copy(), width, height
         raise ValueError(f'unsupported display image shape: {image_data.shape}')
 
     def initialize_display_scene(self, image_data):

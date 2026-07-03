@@ -92,6 +92,35 @@ class DisplayArchitectureTests(unittest.TestCase):
         self.assertIn("render_status_signal.connect(self.handle_render_status)", main_source)
         self.assertIn("def handle_render_status", main_source)
 
+    def test_canvas_removal_stops_render_worker_before_delete_later(self):
+        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        remove_block = source[source.index("def _remove_single_canvas"):source.index("def del_canvas")]
+        self.assertIn("prepare_for_removal", remove_block)
+        self.assertLess(remove_block.index("prepare_for_removal"), remove_block.index("deleteLater"))
+
+    def test_frame_render_requests_are_coalesced_to_latest_frame(self):
+        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        self.assertIn("_render_in_flight", source)
+        self.assertIn("_pending_frame_index", source)
+        start = source.index("def request_frame_render")
+        request_block = source[start:source.index("def _start_frame_render", start)]
+        self.assertIn("self._pending_frame_index = idx", request_block)
+        self.assertIn("return", request_block)
+        self.assertIn("def _start_pending_frame_render", source)
+
+    def test_render_callbacks_ignore_closing_canvas(self):
+        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        rendered_block = source[source.index("def on_frame_rendered"):source.index("def on_frame_render_failed")]
+        failed_block = source[source.index("def on_frame_render_failed"):source.index("def closeEvent")]
+        self.assertIn("self._is_closing", rendered_block)
+        self.assertIn("self._is_closing", failed_block)
+        self.assertIn("def prepare_for_removal", source)
+
+    def test_display_qimage_owns_its_buffer(self):
+        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        qimage_block = source[source.index("def display_array_to_qimage"):source.index("def initialize_display_scene")]
+        self.assertIn("qimage.copy()", qimage_block)
+
 
 if __name__ == "__main__":
     unittest.main()
