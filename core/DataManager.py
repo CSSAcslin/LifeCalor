@@ -27,7 +27,7 @@ from ArrayCache import (
     resolve_array,
     should_cache_array,
 )
-from DisplaySource import DisplaySourceFactory
+from display.source import DisplaySourceFactory
 _ARRAY_CACHE_CONFIG = ArrayCacheConfig(cache_dir=Path.cwd() / ".lifecalor_cache", threshold_bytes=512 * 1024 * 1024)
 _ARRAY_CACHE_PROGRESS_CALLBACK = None
 

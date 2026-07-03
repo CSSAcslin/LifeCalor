@@ -9,8 +9,8 @@ CORE = ROOT / "core"
 if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))
 
-from FrameCache import FrameCache, frame_cache_key
-from FrameRenderer import FrameRenderParams, RenderedFrame
+from display.cache import FrameCache, frame_cache_key
+from display.renderer import FrameRenderParams, RenderedFrame
 
 
 class FrameCacheTests(unittest.TestCase):

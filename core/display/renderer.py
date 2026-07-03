@@ -72,15 +72,38 @@ class FrameRenderer:
             alpha = np.full(gray.shape, 255, dtype=np.uint8)
             return np.stack((gray, gray, gray, alpha), axis=-1)
 
-        import matplotlib.cm as cm
-
         if colormap == "Rainbow*":
             cmap = FrameRenderer._rainbow_colormap()
-        elif hasattr(cm, colormap):
-            cmap = getattr(cm, colormap)
         else:
-            cmap = cm.jet
+            cmap = FrameRenderer._matplotlib_colormap(colormap)
         return (cmap(gray.astype(np.float32) / 255.0) * 255).astype(np.uint8)
+
+    @staticmethod
+    def _matplotlib_colormap(colormap: str):
+        try:
+            from matplotlib import colormaps
+            try:
+                return colormaps.get_cmap(colormap)
+            except ValueError:
+                return colormaps.get_cmap("jet")
+        except Exception:
+            pass
+
+        try:
+            import matplotlib.cm as cm
+            get_cmap = getattr(cm, "get_cmap", None)
+            if callable(get_cmap):
+                try:
+                    return get_cmap(colormap)
+                except Exception:
+                    return get_cmap("jet")
+            jet = getattr(cm, "jet", None)
+            if jet is not None:
+                return jet
+        except Exception:
+            pass
+
+        return FrameRenderer._rainbow_colormap()
 
     @staticmethod
     def _rainbow_colormap():

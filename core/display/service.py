@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
-from FrameCache import FrameCache, frame_cache_key
-from FrameRenderer import FrameRenderParams, FrameRenderer, RenderedFrame
+from .cache import FrameCache, frame_cache_key
+from .renderer import FrameRenderParams, FrameRenderer, RenderedFrame
 
 
 class FrameRenderService:

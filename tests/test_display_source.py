@@ -37,7 +37,7 @@ def _install_missing_dependency_stubs():
 
 _install_missing_dependency_stubs()
 from DataManager import Data, ProcessedData
-from DisplaySource import DisplaySourceFactory
+from display.source import DisplaySourceFactory
 
 
 class DisplaySourceTests(unittest.TestCase):

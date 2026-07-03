@@ -121,6 +121,15 @@ class DisplayArchitectureTests(unittest.TestCase):
         qimage_block = source[source.index("def display_array_to_qimage"):source.index("def initialize_display_scene")]
         self.assertIn("qimage.copy()", qimage_block)
 
+    def test_display_modules_live_in_display_package(self):
+        display_dir = CORE / "display"
+        self.assertTrue((display_dir / "__init__.py").exists())
+        self.assertTrue((display_dir / "source.py").exists())
+        self.assertTrue((display_dir / "renderer.py").exists())
+        self.assertTrue((display_dir / "cache.py").exists())
+        self.assertTrue((display_dir / "service.py").exists())
+        self.assertTrue((display_dir / "worker.py").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

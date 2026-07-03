@@ -9,7 +9,7 @@ CORE = ROOT / "core"
 if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))
 
-from FrameRenderer import FrameRenderParams, FrameRenderer
+from display.renderer import FrameRenderParams, FrameRenderer
 
 
 class FrameRendererTests(unittest.TestCase):

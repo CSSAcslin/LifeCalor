@@ -18,9 +18,9 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
 from PyQt5.QtCore import Qt, pyqtSignal, QRectF, QSize, QTimer, QDateTime, QLineF, QPointF, QPoint, pyqtSlot, QThread
 
 from DataManager import ImagingData, ColorMapManager, PublicEasyMethod
-from FrameRenderer import FrameRenderParams, FrameRenderer
-from FrameRenderService import FrameRenderService
-from FrameRenderWorker import FrameRenderWorker
+from display.renderer import FrameRenderParams, FrameRenderer
+from display.service import FrameRenderService
+from display.worker import FrameRenderWorker
 from ExtraDialog import ROIInfoDialog, ColorMapDialog, DataExportDialog, ParamsResetDialog
 from widget.AdvancedTimeline import AdvancedTimeline
 

@@ -26,7 +26,7 @@ from ParameterStore import load_param_group
 from TaskState import TaskState
 from ThreadController import is_thread_active as thread_is_active, stop_thread as stop_qthread
 from ExportPolicy import can_export_em_data, prepare_dataframe_for_export
-from SelectionPolicy import select_data, rect_mask_from_canvas
+from selection import SelectionController
 from ExportWorkflow import save_dataframe
 from TaskController import ensure_thread_running
 from ProgressPolicy import normalize_progress
@@ -2342,80 +2342,15 @@ class MainWindow(QMainWindow):
 
     def data_selection(self, aim_type:str | list = 'all'):
         """数据选择代码（模式流程）"""
-        aim_data = select_data(
-            mode=self.mode,
-            raw_data=self.data,
-            processed_data=self.processed_data,
-            aim_type=aim_type,
-            picker=self.data_pick,
-        )
-        if self.data is None and self.processed_data is None:
-            logging.warning("无数据可处理，请先加载数据")
-        elif aim_data is None:
-            logging.warning("未找到可处理的目标数据")
-        return aim_data
+        return self.selection_controller.select_data(aim_type)
 
     def roi_selection(self, select = False):
         """ROI选择"""
-        mask = None
-        match self.mode:
-            case 2:
-                mask = self.image_display.get_draw_roi()[1]
-                if mask is None:
-                    logging.warning("选中画布没有绘制有效的ROI")
-                    return None
-            case 0:
-                dialog = ROIInfoDialog(self.image_display.get_all_canvas_info(), self)
-                if dialog.exec_():
-                    aim_id = dialog.canvas_id
-                    if dialog.roi_type == 'pixel_roi':
-                        mask = self.image_display.get_draw_roi(aim_id)[1]
-                    elif dialog.roi_type == 'v_line':
-                        QMessageBox.warning(self,"警告","不支持该类型")
-                        return None
-                    elif dialog.roi_type == 'v_rect':
-                        mask = rect_mask_from_canvas(self.image_display.display_canvas[aim_id])
-                        if mask is None:
-                            return None
-                    elif dialog.roi_type == 'anchor':
-                        mask = self.image_display.display_canvas[aim_id].anchor_mask
-                    else:
-                        return None
-            case 1:
-                if select:
-                    mask = self.image_display.get_draw_roi()[1]
-                    if mask is None:
-                        logging.warning("选中画布没有绘制有效的ROI")
-                        return None
-                else:
-                    return None
-        return mask
+        return self.selection_controller.select_roi(select)
 
     def data_pick(self, need_all=True):
         """数据选择"""
-        dialog = DataViewAndSelectPop(datadict=self.get_data_all(),
-                                      processed_datadict=self.get_processed_data_all(),
-                                      add_canvas=False, parent=self)
-        aim_data = None
-        if dialog.exec_():
-            selected_timestamp, selected_table = dialog.get_selected_timestamp()
-            if selected_table == 'data':
-                for data in self.data.history:
-                    if data.timestamp == selected_timestamp:
-                        aim_data = data
-                        logging.info(f"数据选择成功（初始导入）：{data.name}")
-                        break
-            else:
-                for data in self.processed_data.history:
-                    if data.timestamp == selected_timestamp:
-                        aim_data = data
-                        logging.info(f"数据选择成功（处理过）：{data.name}")
-                        break
-            if aim_data is None:
-                QMessageBox.warning(self, "数据错误", "没有选取数据")
-                return None
-            return aim_data
-        return None
+        return self.selection_controller.pick_data(need_all)
 
     """结果处理"""
     def processed_result(self, data):

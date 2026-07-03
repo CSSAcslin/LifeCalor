@@ -2,8 +2,8 @@
 
 from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
 
-from FrameRenderService import FrameRenderService
-from FrameRenderer import FrameRenderParams
+from .service import FrameRenderService
+from .renderer import FrameRenderParams
 
 
 class _SimpleSignal:

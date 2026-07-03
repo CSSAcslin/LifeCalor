@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import Hashable
 
-from FrameRenderer import FrameRenderParams, RenderedFrame
+from .renderer import FrameRenderParams, RenderedFrame
 
 
 def frame_cache_key(source_id: str, frame_index: int, params: FrameRenderParams) -> tuple[Hashable, ...]:

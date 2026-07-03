@@ -40,12 +40,19 @@ class MainWindowArchitectureTests(unittest.TestCase):
     def test_mainwindow_delegates_selection_export_workflow_and_task_start(self):
         source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
 
-        self.assertIn("from SelectionPolicy import select_data, rect_mask_from_canvas", source)
+        self.assertIn("from selection import SelectionController", source)
         self.assertIn("from ExportWorkflow import save_dataframe", source)
         self.assertIn("from TaskController import ensure_thread_running", source)
-        self.assertIn("select_data(", source)
-        self.assertIn("rect_mask_from_canvas(", source)
+        self.assertIn("self.selection_controller.select_data(", source)
+        self.assertIn("self.selection_controller.select_roi(", source)
         self.assertIn("save_dataframe(", source)
         self.assertIn("ensure_task_thread_running(", source)
+
+    def test_selection_modules_live_in_selection_package(self):
+        self.assertTrue((CORE / "selection" / "__init__.py").exists())
+        self.assertTrue((CORE / "selection" / "policy.py").exists())
+        self.assertTrue((CORE / "selection" / "roi.py").exists())
+        self.assertTrue((CORE / "selection" / "controller.py").exists())
+
 if __name__ == "__main__":
     unittest.main()
