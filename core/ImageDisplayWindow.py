@@ -15,12 +15,12 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QGraphicsPathItem, QMenu, QInputDialog, QColorDialog, QToolButton, QDialogButtonBox,
                              QDialog, QMessageBox, QGraphicsTextItem, QSizePolicy, QCheckBox, QGraphicsObject
                              )
-from PyQt5.QtCore import Qt, pyqtSignal, QRectF, QSize, QTimer, QDateTime, QLineF, QPointF, QPoint, pyqtSlot, QThread
+from PyQt5.QtCore import Qt, pyqtSignal, QRectF, QSize, QTimer, QDateTime, QLineF, QPointF, QPoint, pyqtSlot
 
 from DataManager import ImagingData, ColorMapManager, PublicEasyMethod
 from display.renderer import FrameRenderParams, FrameRenderer
 from display.service import FrameRenderService
-from display.worker import FrameRenderWorker
+from display.render_controller import RenderController
 from ExtraDialog import ROIInfoDialog, ColorMapDialog, DataExportDialog, ParamsResetDialog
 from widget.AdvancedTimeline import AdvancedTimeline
 
@@ -636,12 +636,9 @@ class SubImageDisplayWidget(QDockWidget):
         self.colorbar_padding = 5  # 颜色条边距
         self.color_map_manager = ColorMapManager()  # 伪彩色管理器
         self.frame_render_service = FrameRenderService(cache_capacity=12)
-        self._frame_render_request_id = 0
-        self._latest_frame_render_request_id = 0
+        self.render_controller = RenderController(self)
         self.render_status = 'idle'
         self._initial_display_scheduled = False
-        self._render_in_flight = False
-        self._pending_frame_index = None
         self._is_closing = False
         self._start_frame_render_worker()
         self.colormap = None
@@ -1319,26 +1316,10 @@ class SubImageDisplayWidget(QDockWidget):
             pass
 
     def _start_frame_render_worker(self):
-        self.frame_render_thread = QThread(self)
-        self.frame_render_worker = FrameRenderWorker(cache_capacity=12)
-        self.frame_render_worker.moveToThread(self.frame_render_thread)
-        self.frame_render_requested.connect(self.frame_render_worker.render)
-        self.frame_render_worker.rendered.connect(self.on_frame_rendered)
-        self.frame_render_worker.failed.connect(self.on_frame_render_failed)
-        self.frame_render_thread.finished.connect(self.frame_render_worker.deleteLater)
-        self.frame_render_thread.start()
+        return self.render_controller.start_worker()
 
     def stop_frame_render_worker(self, wait_ms=5000):
-        self._pending_frame_index = None
-        self._render_in_flight = False
-        if hasattr(self, 'frame_render_requested') and hasattr(self, 'frame_render_worker'):
-            self._safe_disconnect(self.frame_render_requested, self.frame_render_worker.render)
-            self._safe_disconnect(self.frame_render_worker.rendered, self.on_frame_rendered)
-            self._safe_disconnect(self.frame_render_worker.failed, self.on_frame_render_failed)
-        if hasattr(self, 'frame_render_thread') and self.frame_render_thread.isRunning():
-            self.frame_render_thread.quit()
-            if not self.frame_render_thread.wait(wait_ms):
-                logging.warning(f'Frame render thread did not stop within {wait_ms} ms on canvas {self.id}')
+        return self.render_controller.stop_worker(wait_ms)
 
     def prepare_for_removal(self):
         if self._is_closing:
@@ -1358,64 +1339,19 @@ class SubImageDisplayWidget(QDockWidget):
         return FrameRenderParams(use_colormap=False, auto_range=True)
 
     def request_frame_render(self, idx):
-        if self._is_closing:
-            return
-        if self._render_in_flight:
-            self._pending_frame_index = idx
-            logging.debug(f'Coalesced frame render request on canvas {self.id}: pending frame {idx}')
-            return
-        self._start_frame_render(idx)
+        return self.render_controller.request_frame_render(idx)
 
     def _start_frame_render(self, idx):
-        if self._is_closing:
-            return
-        self._render_in_flight = True
-        self.set_render_status('rendering', f'画布 {self.id} 渲染第 {idx + 1} 帧')
-        self._frame_render_request_id += 1
-        request_id = self._frame_render_request_id
-        self._latest_frame_render_request_id = request_id
-        frame_index = idx if self.data.is_temporary else 0
-        logging.debug(f'Start frame render canvas={self.id} request={request_id} frame={frame_index}')
-        self.frame_render_requested.emit(
-            request_id,
-            self.data.display_source,
-            frame_index,
-            self.render_params_for_display(),
-        )
+        return self.render_controller._start_frame_render(idx)
 
     def _start_pending_frame_render(self):
-        if self._is_closing:
-            self._pending_frame_index = None
-            return
-        if self._pending_frame_index is None:
-            return
-        pending_idx = self._pending_frame_index
-        self._pending_frame_index = None
-        self._start_frame_render(pending_idx)
+        return self.render_controller.start_pending_frame_render()
 
     def on_frame_rendered(self, request_id, rendered):
-        if self._is_closing:
-            return
-        self._render_in_flight = False
-        if request_id != self._latest_frame_render_request_id:
-            logging.debug(f'Discard stale rendered frame canvas={self.id} request={request_id}')
-            self._start_pending_frame_render()
-            return
-        self.update_display(rendered.image)
-        self.set_render_status('completed', f'画布 {self.id} 渲染完成')
-        self._start_pending_frame_render()
+        return self.render_controller.on_rendered(request_id, rendered)
 
     def on_frame_render_failed(self, request_id, message):
-        if self._is_closing:
-            return
-        self._render_in_flight = False
-        if request_id != self._latest_frame_render_request_id:
-            logging.debug(f'Discard stale render failure canvas={self.id} request={request_id}: {message}')
-            self._start_pending_frame_render()
-            return
-        logging.error(f'Frame render failed on canvas {self.id}: {message}')
-        self.set_render_status('failed', f'画布 {self.id} 渲染失败: {message}')
-        self._start_pending_frame_render()
+        return self.render_controller.on_failed(request_id, message)
 
     def closeEvent(self, event):
         """重写关闭事件"""

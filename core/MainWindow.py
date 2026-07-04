@@ -30,6 +30,9 @@ from selection import SelectionController
 from history import HistoryController
 from TaskController import ensure_thread_running
 from progress import normalize_progress
+from display.status import render_status_update
+from display.canvas_signals import CanvasSignalBinder, disconnect_canvas_signal as disconnect_display_canvas_signal
+from display.canvas_controller import DisplayCanvasController
 
 
 class MainWindow(QMainWindow):
@@ -66,7 +69,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "0.13.7"  # 当前程序版本
+        self.current_version = "1.0.0"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = get_github_auth_header()
@@ -90,6 +93,8 @@ class MainWindow(QMainWindow):
         self.selection_controller = SelectionController(self)
         self.export_controller = ExportController(self)
         self.history_controller = HistoryController(self)
+        self.canvas_signal_binder = CanvasSignalBinder(self)
+        self.display_canvas_controller = DisplayCanvasController(self)
         self.log_file = self.get_log_path()
         self.setup_menus()
         self.setup_logging()
@@ -1421,29 +1426,10 @@ class MainWindow(QMainWindow):
         self.reset_data_btn.clicked.connect(self.data_plot_clear)
 
     def disconnect_canvas_signal(self, signal, slot):
-        try:
-            signal.disconnect(slot)
-        except (TypeError, RuntimeError):
-            pass
+        return disconnect_display_canvas_signal(signal, slot)
 
     def canvas_signal_connect(self):
-        self.roi_pick.clear()
-        for canvas in self.image_display.display_canvas:
-            self.disconnect_canvas_signal(canvas.mouse_position_signal, self._handle_hover)
-            self.disconnect_canvas_signal(canvas.mouse_clicked_signal, self._handle_click)
-            self.disconnect_canvas_signal(canvas.current_canvas_signal, self.image_display.set_cursor_id)
-            self.disconnect_canvas_signal(canvas.draw_result_signal, self.draw_result)
-            self.disconnect_canvas_signal(canvas.get_fast_selection, self.proc_thread.get_fast_selection)
-            self.disconnect_canvas_signal(canvas.sync_progress_signal, self.image_display.on_canvas_sync_progress)
-            self.disconnect_canvas_signal(canvas.sync_playback_signal, self.image_display.on_canvas_sync_playback)
-            canvas.mouse_position_signal.connect(self._handle_hover)
-            canvas.mouse_clicked_signal.connect(self._handle_click)
-            canvas.current_canvas_signal.connect(self.image_display.set_cursor_id)
-            canvas.draw_result_signal.connect(self.draw_result)
-            canvas.get_fast_selection.connect(self.proc_thread.get_fast_selection)
-            canvas.sync_progress_signal.connect(self.image_display.on_canvas_sync_progress)
-            canvas.sync_playback_signal.connect(self.image_display.on_canvas_sync_playback)
-            self.roi_pick.addItem(canvas.windowTitle())
+        return self.canvas_signal_binder.rebind_all()
 
     '''上面是初始化预设，下面是功能响应'''
     """数据导入相关"""
@@ -1584,92 +1570,12 @@ class MainWindow(QMainWindow):
 
     """画布设置相关"""
     def add_new_canvas(self, assign_data=None):
-        """新建图像显示画布"""
-        if self.data is None and self.processed_data is None:
-            logging.warning('请先导入或处理数据')
-            return
-        self.update_progress(-1)
-        data_display = None
-        if assign_data is not None:
-            data_display = ImagingData.create_image(assign_data)
-            data_display.colormode = self.tool_params['colormap'] if self.tool_params['use_colormap'] else None
-            logging.info("数据选择成功（原初）") if isinstance(assign_data, Data) else logging.info("数据选择成功（处理）""")
-        else:
-            dialog = DataViewAndSelectPop(datadict=self.get_data_all(),
-                                          processed_datadict=self.get_processed_data_all(), add_canvas=True)
-            if dialog.exec_():
-                selected_timestamp, selected_table = dialog.get_selected_timestamp()
-                if selected_table == 'data':
-                    for data in self.data.history:
-                        if data.timestamp == selected_timestamp:
-                            data_display = ImagingData.create_image(data)
-                            data_display.colormode = self.tool_params['colormap'] if self.tool_params[
-                                'use_colormap'] else None
-                            logging.info("数据选择成功（原初）")
-                            break
-                else:
-                    for data in self.processed_data.history:
-                        if data.timestamp == selected_timestamp:
-                            data_display = ImagingData.create_image(data)
-                            data_display.colormode = self.tool_params['colormap'] if self.tool_params[
-                                'use_colormap'] else None
-                            logging.info("数据选择成功（处理）")
-                            break
-        if data_display is not None:
-            self.image_display.add_canvas(data_display)
-            self.focus_canvas = self.image_display.cursor_id
-        # else:
-        #     QMessageBox.warning(self,"数据错误","数据已经遗失（不可能错误）")
-        #     return
-        self.canvas_signal_connect()
-        # self.image_display.update_time_slice(0, True)
-
-        self.update_status("准备就绪", 'idle')
+        """新建图像显示画布。"""
+        return self.display_canvas_controller.add_new_canvas(assign_data)
 
     def load_image(self, data_type='original', other_params: str = None, origin_data=None):
-        """图像加载，后面会进一步修改"""
-        if len(self.image_display.display_canvas) == 0:  # 初次创建
-            # self.add_new_canvas()
-            if data_type == 'original':
-                self.imaging_main = ImagingData.create_image(self.data)
-            self.image_display.add_canvas(self.imaging_main)
-            totalframes = self.imaging_main.totalframes
-            # self.time_slider.setMaximum(totalframes - 1)
-            # self.time_label.setText(f"时间点: 0/{totalframes - 1}")
-            self.canvas_signal_connect()
-        else:
-            if data_type == 'original':
-                # imports_done = self.other_imports
-                msg_box = QMessageBox()
-                msg_box.setWindowTitle("画布操作")
-                msg_box.setText("请选择是否要覆盖当前画布或新建画布")
-
-                # 添加标准按钮
-                overwrite_btn = msg_box.addButton("覆盖", QMessageBox.ActionRole)
-                new_btn = msg_box.addButton("新建", QMessageBox.ActionRole)
-                hide_btn = msg_box.addButton("隐藏", QMessageBox.ActionRole)
-                msg_box.exec_()
-
-                # 返回结果
-                if msg_box.clickedButton() == overwrite_btn:
-                    self.image_display.del_canvas(-1)
-                    self.imaging_main = ImagingData.create_image(self.data)
-                    totalframes = self.imaging_main.totalframes
-                    # self.time_slider.setMaximum(totalframes - 1)
-                    # self.time_label.setText(f"时间点: 0/{totalframes - 1}")
-                    self.add_new_canvas(origin_data)
-                elif msg_box.clickedButton() == new_btn:
-                    self.add_new_canvas(origin_data)
-                elif msg_box.clickedButton() == hide_btn:
-                    return False
-
-        # 显示第一张图像
-        # self.image_display.update_time_slice(0, True)
-        # self.time_slider.setValue(0)
-
-        # 根据图像大小调节region范围
-        self.region_x_input.setMaximum(self.data.datashape[1])
-        self.region_y_input.setMaximum(self.data.datashape[2])
+        """加载图像显示画布。"""
+        return self.display_canvas_controller.load_image(data_type, other_params, origin_data)
 
     def other_imports(self): # 没用
         msg_box = QMessageBox()
@@ -1886,8 +1792,11 @@ class MainWindow(QMainWindow):
             logging.debug("结果垂直滚动条失去更新源，不可能错误")
 
     def handle_render_status(self, status, message):
-        if status == 'failed' and message:
-            self.update_status(message, 'warning')
+        update = render_status_update(status, message)
+        if update is None:
+            return
+        text, state = update
+        self.update_status(text, state)
 
     def update_status(self, status, working_status='idle'):
         """更新状态条的显示"""
@@ -2533,14 +2442,8 @@ class MainWindow(QMainWindow):
         self.graph_plot.clear_all()
 
     def upgrade_and_imaging(self, data:ProcessedData, key:str):
-        """从树结构选择器中来，出新成像"""
-        processed_data = data.upgrade_processed(key)
-        if processed_data is not None:
-            self.processed_data = processed_data
-            self.add_new_canvas(self.processed_data)
-            return None
-        else:
-            return logging.error("导入成像失败")
+        """从树结构选择器中来，出新成像。"""
+        return self.display_canvas_controller.upgrade_and_imaging(data, key)
 
     '''其他功能'''
     def is_thread_active(self, thread_name: str) -> bool:

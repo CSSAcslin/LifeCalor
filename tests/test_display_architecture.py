@@ -27,12 +27,14 @@ class DisplayArchitectureTests(unittest.TestCase):
         self.assertIn("render_source", source)
 
     def test_image_display_uses_worker_and_stale_request_guard_for_async_frames(self):
-        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        widget_source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        source = (CORE / "display" / "render_controller.py").read_text(encoding="utf-8")
         self.assertIn("FrameRenderWorker", source)
         self.assertIn("frame_render_requested", source)
-        self.assertIn("_latest_frame_render_request_id", source)
-        self.assertIn("def on_frame_rendered", source)
-        self.assertIn("request_id != self._latest_frame_render_request_id", source)
+        self.assertIn("latest_frame_render_request_id", source)
+        self.assertIn("def on_rendered", source)
+        self.assertIn("self.state.is_stale(request_id)", source)
+        self.assertIn("def on_frame_rendered", widget_source)
 
     def test_image_display_centralizes_qimage_creation(self):
         source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
@@ -72,17 +74,20 @@ class DisplayArchitectureTests(unittest.TestCase):
 
     def test_render_status_bar_only_reports_render_failures(self):
         source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
+        status_source = (CORE / "display" / "status.py").read_text(encoding="utf-8")
         handler = source[source.index("def handle_render_status"):source.index("def update_status")]
-        self.assertIn("status == 'failed'", handler)
+        self.assertIn("render_status_update(status, message)", handler)
+        self.assertIn('status == "failed"', status_source)
         self.assertNotIn("'rendering': 'working'", handler)
         self.assertNotIn("'completed': 'idle'", handler)
 
     def test_canvas_signal_connect_does_not_disconnect_internal_render_worker(self):
         source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
-        marker = chr(39) * 3
-        connect_block = source[source.index("def canvas_signal_connect"):source.index(marker, source.index("def canvas_signal_connect"))]
+        binder_source = (CORE / "display" / "canvas_signals.py").read_text(encoding="utf-8")
+        connect_block = source[source.index("def canvas_signal_connect"):source.index("def get_data_all")]
         self.assertNotIn("canvas.disconnect()", connect_block)
-        self.assertIn("disconnect_canvas_signal", connect_block)
+        self.assertIn("self.canvas_signal_binder.rebind_all()", connect_block)
+        self.assertIn("disconnect_canvas_signal(signal, slot)", binder_source)
 
     def test_render_status_is_forwarded_to_main_status_bar(self):
         display_source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
@@ -99,22 +104,24 @@ class DisplayArchitectureTests(unittest.TestCase):
         self.assertLess(remove_block.index("prepare_for_removal"), remove_block.index("deleteLater"))
 
     def test_frame_render_requests_are_coalesced_to_latest_frame(self):
-        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
-        self.assertIn("_render_in_flight", source)
-        self.assertIn("_pending_frame_index", source)
+        source = (CORE / "display" / "render_controller.py").read_text(encoding="utf-8")
+        self.assertIn("render_in_flight", source)
+        self.assertIn("pending_frame_index", source)
         start = source.index("def request_frame_render")
         request_block = source[start:source.index("def _start_frame_render", start)]
-        self.assertIn("self._pending_frame_index = idx", request_block)
+        self.assertIn("state.start_or_queue(idx)", request_block)
         self.assertIn("return", request_block)
-        self.assertIn("def _start_pending_frame_render", source)
+        self.assertIn("def start_pending_frame_render", source)
 
     def test_render_callbacks_ignore_closing_canvas(self):
-        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
-        rendered_block = source[source.index("def on_frame_rendered"):source.index("def on_frame_render_failed")]
-        failed_block = source[source.index("def on_frame_render_failed"):source.index("def closeEvent")]
-        self.assertIn("self._is_closing", rendered_block)
-        self.assertIn("self._is_closing", failed_block)
-        self.assertIn("def prepare_for_removal", source)
+        widget_source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        source = (CORE / "display" / "render_controller.py").read_text(encoding="utf-8")
+        rendered_block = source[source.index("def on_rendered"):source.index("def on_failed")]
+        failed_start = source.index("def on_failed")
+        failed_block = source[failed_start:]
+        self.assertIn("_is_closing", rendered_block)
+        self.assertIn("_is_closing", failed_block)
+        self.assertIn("def prepare_for_removal", widget_source)
 
     def test_display_qimage_owns_its_buffer(self):
         source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
@@ -129,6 +136,54 @@ class DisplayArchitectureTests(unittest.TestCase):
         self.assertTrue((display_dir / "cache.py").exists())
         self.assertTrue((display_dir / "service.py").exists())
         self.assertTrue((display_dir / "worker.py").exists())
+
+    def test_mainwindow_delegates_render_status_policy(self):
+        source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
+        self.assertIn("from display.status import render_status_update", source)
+        handler = source[source.index("def handle_render_status"):source.index("def update_status")]
+        self.assertIn("render_status_update(status, message)", handler)
+        self.assertNotIn("status == 'failed'", handler)
+
+    def test_mainwindow_delegates_canvas_signal_wiring(self):
+        source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
+        self.assertIn("from display.canvas_signals import CanvasSignalBinder", source)
+        self.assertIn("self.canvas_signal_binder = CanvasSignalBinder(self)", source)
+        block = source[source.index("def canvas_signal_connect"):source.index("def get_data_all")]
+        self.assertIn("self.canvas_signal_binder.rebind_all()", block)
+        self.assertNotIn("canvas.mouse_position_signal.connect", block)
+
+    def test_mainwindow_delegates_canvas_creation_controller(self):
+        source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
+        self.assertIn("from display.canvas_controller import DisplayCanvasController", source)
+        self.assertIn("self.display_canvas_controller = DisplayCanvasController(self)", source)
+        add_block = source[source.index("def add_new_canvas"):source.index("def other_imports")]
+        self.assertIn("self.display_canvas_controller.add_new_canvas(assign_data)", add_block)
+        self.assertIn("self.display_canvas_controller.load_image(data_type, other_params, origin_data)", add_block)
+        self.assertNotIn("DataViewAndSelectPop", add_block)
+        self.assertNotIn("ImagingData.create_image", add_block)
+        upgrade_block = source[source.index("def upgrade_and_imaging"):source.index("'''其他功能'''")]
+        self.assertIn("self.display_canvas_controller.upgrade_and_imaging", upgrade_block)
+
+    def test_subimage_widget_delegates_render_lifecycle(self):
+        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        self.assertIn("from display.render_controller import RenderController", source)
+        self.assertIn("self.render_controller = RenderController(self)", source)
+        self.assertIn("self.render_controller.request_frame_render(idx)", source)
+        self.assertIn("self.render_controller.start_worker()", source)
+
+    def test_mainwindow_display_methods_remain_thin(self):
+        source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
+        add_block = source[source.index("def add_new_canvas"):source.index("def other_imports")]
+        self.assertLess(len(add_block.splitlines()), 12)
+        self.assertNotIn("DataViewAndSelectPop", add_block)
+        self.assertNotIn("ImagingData.create_image", add_block)
+
+    def test_image_display_render_methods_remain_wrappers(self):
+        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        start = source.index("def request_frame_render")
+        request_block = source[start:source.index("def _start_frame_render", start)]
+        self.assertIn("self.render_controller.request_frame_render(idx)", request_block)
+        self.assertLess(len(request_block.splitlines()), 8)
 
 
 if __name__ == "__main__":
