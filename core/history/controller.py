@@ -17,7 +17,7 @@ class HistoryController:
 
     def data_history_view(self):
         if self.window.data is None:
-            logging.warning('??????')
+            logging.warning('暂无导入数据历史')
             return
         dialog = DataViewAndSelectPop(datadict=self.window.get_data_all())
         if dialog.exec_():
@@ -27,7 +27,7 @@ class HistoryController:
 
     def process_history_view(self):
         if self.window.processed_data is None:
-            logging.warning('??????')
+            logging.warning('暂无处理数据历史')
             return
         dialog = DataViewAndSelectPop(processed_datadict=self.window.get_processed_data_all())
         if dialog.exec_():

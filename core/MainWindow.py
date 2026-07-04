@@ -5,7 +5,7 @@ import resources_rc # 重要不能删
 from logging.handlers import RotatingFileHandler
 from PyQt5 import sip
 from PyQt5.QtGui import QFontDatabase, QDesktopServices
-from PyQt5.QtWidgets import (QStackedWidget, QStatusBar, QFrame, QSplitter, QDesktopWidget
+from PyQt5.QtWidgets import (QStackedWidget, QStatusBar, QFrame, QSplitter, QDesktopWidget, QSizePolicy
                              )
 from PyQt5.QtCore import QElapsedTimer, QSettings, QCoreApplication, QUrl, QStandardPaths
 
@@ -33,6 +33,7 @@ from progress import normalize_progress
 from display.status import render_status_update
 from display.canvas_signals import CanvasSignalBinder, disconnect_canvas_signal as disconnect_display_canvas_signal
 from display.canvas_controller import DisplayCanvasController
+from display.hover import format_hover_value
 
 
 class MainWindow(QMainWindow):
@@ -69,7 +70,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "1.0.0"  # 当前程序版本
+        self.current_version = "1.0.1"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = get_github_auth_header()
@@ -1095,25 +1096,26 @@ class MainWindow(QMainWindow):
 
         # 状态文本
         self.status_label = QLabel("准备就绪")
-        self.status_label.setMinimumWidth(80)
-        self.status_label.setSizeIncrement(16,0)
-        self.status_bar.addWidget(self.status_label)
+        self.status_label.setMinimumWidth(120)
+        self.status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.status_bar.addWidget(self.status_label, 2)
         # 鼠标悬停显示
-        self.mouse_pos_label = QLabel("光标位置: x= -, y= -, t= -; 值: -")
-        self.mouse_pos_label.setMinimumWidth(80)
-        self.mouse_pos_label.setSizeIncrement(16,0)
-        self.status_bar.addWidget(self.mouse_pos_label)
+        self.mouse_pos_label = QLabel("光标位置: x= -, y= -, t= -; 图像值: -, 实际值: -")
+        self.mouse_pos_label.setMinimumWidth(260)
+        self.mouse_pos_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.status_bar.addWidget(self.mouse_pos_label, 3)
         self._handle_hover = self.make_hover_handler()
         # 进度条
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setTextVisible(True)
-        self.progress_bar.setMinimumWidth(120)
-        self.progress_bar.setSizeIncrement(24, 0)
-        self.status_bar.addWidget(self.progress_bar)
+        self.progress_bar.setMinimumWidth(160)
+        self.progress_bar.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.status_bar.addWidget(self.progress_bar, 4)
 
         # 状态指示灯 (红绿灯)
         self.status_light = QLabel()
+        self.status_light.setFixedWidth(24)
         self.status_light.setPixmap(QPixmap(":/icons/green_light.png").scaled(16, 16))
         self.status_bar.addPermanentWidget(self.status_light)
 
@@ -1615,8 +1617,11 @@ class MainWindow(QMainWindow):
             if origin is not None: args['origin'] = origin
 
             # 更新显示
-            self.mouse_pos_label.setText(
-                f"光标位置: x={args['x']}, y={args['y']}, t={args['t']}; 图像值: {args['value']}, 实际值：{args['origin']:.3f}")
+            value_text = format_hover_value(args['value'])
+            origin_text = format_hover_value(args['origin'])
+            text = f"光标位置: x={args['x']}, y={args['y']}, t={args['t']}; 图像值: {value_text}, 实际值: {origin_text}"
+            self.mouse_pos_label.setText(text)
+            self.mouse_pos_label.setToolTip(text)
 
         return _handle_hover
 

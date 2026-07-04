@@ -185,6 +185,32 @@ class DisplayArchitectureTests(unittest.TestCase):
         self.assertIn("self.render_controller.request_frame_render(idx)", request_block)
         self.assertLess(len(request_block.splitlines()), 8)
 
+    def test_video_playback_refreshes_hover_value_for_current_cursor(self):
+        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        self.assertIn("def refresh_hover_value", source)
+        update_block = source[source.index("def update_time_slice"):source.index("def on_timeline_right_click")]
+        self.assertIn("self.refresh_hover_value()", update_block)
+
+    def test_tool_context_menu_preserves_canvas_colormap_state(self):
+        source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
+        context_block = source[source.index("def show_tool_context_menu"):source.index("def set_pen_size")]
+        self.assertIn("set_toolset(self.tool_parameters, update_display_style=False)", context_block)
+        self.assertIn("def set_toolset(self,args_dict:dict, update_display_style=True)", source)
+
+    def test_status_bar_uses_fixed_stretch_layout(self):
+        source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
+        block = source[source.index("def setup_status_bar"):source.index("def get_log_path")]
+        self.assertIn("self.status_bar.addWidget(self.status_label, 2)", block)
+        self.assertIn("self.status_bar.addWidget(self.mouse_pos_label, 3)", block)
+        self.assertIn("self.status_bar.addWidget(self.progress_bar, 4)", block)
+        self.assertIn("setSizePolicy(QSizePolicy.Ignored", block)
+
+    def test_history_controller_has_readable_chinese_warnings(self):
+        source = (CORE / "history" / "controller.py").read_text(encoding="utf-8")
+        self.assertNotIn(chr(63) * 4, source)
+        self.assertIn("暂无导入数据历史", source)
+        self.assertIn("暂无处理数据历史", source)
+
 
 if __name__ == "__main__":
     unittest.main()

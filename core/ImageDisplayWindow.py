@@ -202,7 +202,7 @@ class ImageDisplayWindow(QMainWindow):
         if not self.display_canvas:
             return None
         for canvas in self.display_canvas:
-            canvas.set_toolset(self.tool_parameters)
+            canvas.set_toolset(self.tool_parameters, update_display_style=False)
         return True
 
     def set_pen_size(self):
@@ -812,7 +812,7 @@ class SubImageDisplayWidget(QDockWidget):
             elif tool == "V-line":
                 self.clear_vector_line()
 
-    def set_toolset(self,args_dict:dict):
+    def set_toolset(self,args_dict:dict, update_display_style=True):
         """初始化和更新参数"""
         self.pen_size = args_dict["pen_size"]
         self.pen_color = args_dict["pen_color"]
@@ -821,14 +821,15 @@ class SubImageDisplayWidget(QDockWidget):
         self.vector_color = args_dict["vector_color"]
         self.angle_step = args_dict["angle_step"]
         self.vector_width = args_dict["vector_width"]
-        self.colormap = args_dict["colormap"]  # 默认伪彩色方案
-        self.use_colormap = args_dict["use_colormap"]  # 是否使用伪彩色
-        self.min_value = args_dict["min_value"]  # 伪彩色最小值
-        self.max_value = args_dict["max_value"]  # 伪彩色最大值
-        self.auto_boundary_set = args_dict["auto_boundary_set"]
-        if self.auto_boundary_set:
-            self.auto_colormap_range()
-        self.update_after_set()
+        if update_display_style:
+            self.colormap = args_dict["colormap"]  # 默认伪彩色方案
+            self.use_colormap = args_dict["use_colormap"]  # 是否使用伪彩色
+            self.min_value = args_dict["min_value"]  # 伪彩色最小值
+            self.max_value = args_dict["max_value"]  # 伪彩色最大值
+            self.auto_boundary_set = args_dict["auto_boundary_set"]
+            if self.auto_boundary_set:
+                self.auto_colormap_range()
+            self.update_after_set()
 
     def update_after_set(self):
         """更新设置后的更新"""
@@ -1473,10 +1474,25 @@ class SubImageDisplayWidget(QDockWidget):
             image_data = self.frame_for_display(idx)
             self.update_display(image_data)
 
+        self.refresh_hover_value()
+
         if not self._is_syncing and self.is_sync_enabled and not self.is_playing:
             # 计算当前进度比例 (0.0 到 1.0)
             ratio = 0.0 if self.max_time_idx <= 1 else idx / (self.max_time_idx - 1)
             self.sync_progress_signal.emit(ratio, self.id)
+
+    def refresh_hover_value(self):
+        if not hasattr(self, 'x_img') or not hasattr(self, 'y_img'):
+            return
+        if self.x_img is None or self.y_img is None:
+            return
+        try:
+            frame = self.raw_frame(self.current_time_idx)
+            height, width = frame.shape[:2]
+            if 0 <= self.x_img < width and 0 <= self.y_img < height:
+                self.get_value(self.y_img, self.x_img)
+        except Exception as exc:
+            logging.debug(f'刷新光标像素值失败: {exc}')
 
     def on_timeline_right_click(self, frame, in_selection, global_pos):
         """处理时间轴右键点击"""

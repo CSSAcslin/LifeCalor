@@ -72,6 +72,59 @@ def clear_array_cache(active_refs=None) -> int:
     return store.cleanup_orphans(active_refs)
 
 
+def video_fps_for_duration(num_frames, duration) -> int:
+    try:
+        duration_value = float(duration)
+    except (TypeError, ValueError):
+        duration_value = 1.0
+    if duration_value <= 0:
+        duration_value = 1.0
+    return max(1, int(round(max(1, int(num_frames)) / duration_value)))
+
+
+def prepare_video_frames(data):
+    frames = np.asarray(data)
+    if frames.ndim == 2:
+        return frames[np.newaxis, ...], False
+    if frames.ndim == 3:
+        return frames, False
+    if frames.ndim == 4 and frames.shape[-1] in (3, 4):
+        if frames.shape[-1] == 4:
+            frames = frames[..., :3]
+        return frames, True
+    raise ValueError(f"当前数据不是可导出的视频图像序列，shape={frames.shape}")
+
+
+def prepare_still_frame(frame):
+    image = np.asarray(frame)
+    if image.ndim == 2:
+        return image, 'minisblack'
+    if image.ndim == 3 and image.shape[-1] == 1:
+        return image[..., 0], 'minisblack'
+    if image.ndim == 3 and image.shape[-1] == 4:
+        return image, 'rgb'
+    if image.ndim == 3 and image.shape[-1] == 3:
+        return image, 'rgb'
+    raise ValueError(f"当前帧不是可导出的图像，shape={image.shape}")
+
+
+def image_mode_for_pillow(frame):
+    image, photometric = prepare_still_frame(frame)
+    if photometric == 'minisblack':
+        return image, 'L'
+    if image.ndim == 3 and image.shape[-1] == 4:
+        return image, 'RGBA'
+    return image, 'RGB'
+
+
+def _export_array_from_data(data, format_type):
+    if isinstance(data, np.ndarray):
+        return data.copy()
+    if format_type in {'avi', 'gif'} and hasattr(data, 'image_backup'):
+        return data.image_backup
+    return data.image_data
+
+
 def cache_array_or_keep_memory(store: ArrayStore, array: np.ndarray, owner_id: str, field_name: str):
     try:
         return store.put_array(array, owner_id, field_name)
@@ -215,10 +268,7 @@ class DataManager(QObject):
         min_bound = arg_dict.get('min_bound', 0)
         title = arg_dict.get('title', '')
         colorbar_label = arg_dict.get('colorbar_label', '')
-        if isinstance(data, np.ndarray):
-            result = data.copy()
-        else:
-            result = data.image_data
+        result = _export_array_from_data(data, format_type)
 
         # 根据格式类型调用不同的导出函数
         if format_type == 'tif':
@@ -266,7 +316,7 @@ class DataManager(QObject):
                 output_path = os.path.join(output_dir, frame_name)
 
                 frame = result[frame_idx]
-                photometric = 'minisblack' if frame.ndim == 2 else 'rgb'
+                frame, photometric = prepare_still_frame(frame)
                 tiff.imwrite(output_path, frame, photometric=photometric)
 
                 created_files.append(output_path)
@@ -275,8 +325,8 @@ class DataManager(QObject):
             num_frames = 1
             frame_name = f"{prefix}.tif"
             output_path = os.path.join(output_dir, frame_name)
-            photometric = 'minisblack' if result.ndim == 2 else 'rgb'
-            tiff.imwrite(output_path, result, photometric=photometric)
+            frame, photometric = prepare_still_frame(result)
+            tiff.imwrite(output_path, frame, photometric=photometric)
             created_files.append(output_path)
             self.data_progress_signal.emit(num_frames + 1, num_frames)
 
@@ -285,34 +335,25 @@ class DataManager(QObject):
 
     def export_as_avi(self, result, output_dir, prefix, duration=60):
         """支持彩色视频导出"""
-        num_frames = result.shape[0]
-        self.data_progress_signal.emit(0, num_frames)
         os.makedirs(output_dir, exist_ok=True)
 
-        # 归一化处理
         normalized = self._normalize_data(result)
+        normalized, is_color = prepare_video_frames(normalized)
+        num_frames = normalized.shape[0]
+        self.data_progress_signal.emit(0, num_frames)
 
-        # 确定视频参数
         height, width = normalized.shape[1:3]
-        is_color = normalized.ndim == 4 and normalized.shape[3] in (3, 4)
 
-        # 处理彩色数据 (RGB→BGR转换)
         if is_color:
-            # 去除Alpha通道（如果需要）
-            if normalized.shape[3] == 4:
-                normalized = normalized[..., :3]
-            # RGB转BGR
             normalized = normalized[..., ::-1]
 
-        # 创建视频
         output_path = os.path.join(output_dir, f"{prefix}.avi")
-        fps = num_frames // duration
+        fps = video_fps_for_duration(num_frames, duration)
         fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height), isColor=is_color)
 
         for frame_idx in range(num_frames):
             frame = normalized[frame_idx]
-            # 灰度视频需要单通道格式
             if not is_color and frame.ndim == 3:
                 frame = frame.squeeze()
             out.write(frame)
@@ -337,13 +378,8 @@ class DataManager(QObject):
                 output_path = os.path.join(output_dir, frame_name)
 
                 frame = normalized[frame_idx]
-                # 自动检测图像模式
-                if frame.ndim == 2:
-                    img = Image.fromarray(frame, 'L')
-                elif frame.shape[2] == 4:
-                    img = Image.fromarray(frame, 'RGBA')
-                else:
-                    img = Image.fromarray(frame, 'RGB')
+                frame, mode = image_mode_for_pillow(frame)
+                img = Image.fromarray(frame, mode)
 
                 img.save(output_path)
                 created_files.append(output_path)
@@ -353,10 +389,8 @@ class DataManager(QObject):
             num_frames = 1
             frame_name = f"{prefix}.png"
             output_path = os.path.join(output_dir, frame_name)
-            if normalized.ndim == 2:
-                img = Image.fromarray(normalized, 'L')
-            elif normalized.shape[2] == 4:
-                img = Image.fromarray(normalized, 'RGBA')
+            frame, mode = image_mode_for_pillow(normalized)
+            img = Image.fromarray(frame, mode)
             img.save(output_path)
             created_files.append(output_path)
             self.data_progress_signal.emit(num_frames + 1, num_frames)
@@ -366,31 +400,23 @@ class DataManager(QObject):
 
     def export_as_gif(self, result, output_dir, prefix, duration=60):
         """彩色GIF导出"""
-        num_frames = result.shape[0]
-        self.data_progress_signal.emit(0, num_frames)
-
-        # 归一化处理
         normalized = self._normalize_data(result)
+        normalized, is_color = prepare_video_frames(normalized)
+        num_frames = normalized.shape[0]
+        self.data_progress_signal.emit(0, num_frames)
         images = []
         palette_img = None
 
         for frame_idx in range(num_frames):
             frame = normalized[frame_idx]
 
-            # 处理彩色帧
-            if normalized.ndim == 4:
-                # 去除Alpha通道
-                if frame.shape[2] == 4:
-                    frame = frame[..., :3]
+            if is_color:
                 img = Image.fromarray(frame, 'RGB')
-
-                # 使用全局调色板
                 if palette_img is None:
                     palette_img = img.convert('P', palette=Image.ADAPTIVE, colors=256)
                     images.append(palette_img)
                 else:
                     images.append(img.quantize(palette=palette_img))
-            # 处理灰度帧
             else:
                 images.append(Image.fromarray(frame, 'L'))
 
@@ -399,7 +425,7 @@ class DataManager(QObject):
             output_path,
             save_all=True,
             append_images=images[1:],
-            duration=duration,
+            duration=max(1, int(duration or 1)),
             loop=0,
             optimize=True
         )
