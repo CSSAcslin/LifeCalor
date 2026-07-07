@@ -28,6 +28,7 @@ from ThreadController import is_thread_active as thread_is_active, stop_thread a
 from exporting import ExportController
 from selection import SelectionController
 from history import HistoryController
+from history.manifest import HistoryManifestStore, array_refs_for_manifest
 from TaskController import ensure_thread_running
 from progress import normalize_progress
 from display.status import render_status_update
@@ -70,7 +71,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "1.0.2"  # 当前程序版本
+        self.current_version = "1.0.3"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = get_github_auth_header()
@@ -1023,7 +1024,7 @@ class MainWindow(QMainWindow):
         history_cache_manager = data_menu.addAction('历史与缓存管理')
         history_cache_manager.triggered.connect(self.history_cache_manager)
         # 清除历史
-        data_history_clear = data_menu.addAction('历史清除')
+        data_history_clear = data_menu.addAction('本次历史清除')
         data_history_clear.triggered.connect(self.data_history_clear)
         # 数据导入历史查看
         data_history_view = data_menu.addAction('历史导入查看')
@@ -1472,18 +1473,25 @@ class MainWindow(QMainWindow):
         return ProcessedData_list
 
     def _find_parent_name(self, timestamp: float) -> Optional[str]:
-        """通过时间戳查找父数据名称"""
-        # 首先在原始数据中查找
-        for data in list(self.data.history):
-            if data.timestamp == timestamp:
-                return data.name
+        """通过时间戳查找父数据名称。"""
+        # Prefer class-level history because restored items may not be focused yet.
+        data_history = getattr(Data, 'history', None)
+        if data_history is None and self.data is not None:
+            data_history = getattr(self.data, 'history', None)
+        if data_history is not None:
+            for data in list(data_history):
+                if data.timestamp == timestamp:
+                    return data.name
 
-        # 然后在处理数据中查找
-        for processed in list(self.processed_data.history):
-            if processed.timestamp == timestamp:
-                return processed.name
+        processed_history = getattr(ProcessedData, 'history', None)
+        if processed_history is None and self.processed_data is not None:
+            processed_history = getattr(self.processed_data, 'history', None)
+        if processed_history is not None:
+            for processed in list(processed_history):
+                if processed.timestamp == timestamp:
+                    return processed.name
 
-        return None
+        return '已恢复历史'
 
     def load_tiff_folder(self):
         """加载TIFF文件夹(FS-iSCAT)"""
@@ -1683,20 +1691,28 @@ class MainWindow(QMainWindow):
         return self.history_cache_manager()
 
     def cleanup_array_cache_orphans(self):
-        """清理当前历史记录未引用的缓存文件。"""
+        """清理当前历史和可恢复索引都未引用的临时缓存文件。"""
+        cache_dir = self.tool_params.get('cache_directory') or self.default_cache_directory()
+        store = HistoryManifestStore(Path(cache_dir))
         active_refs = collect_array_refs(Data.history) + collect_array_refs(ProcessedData.history)
+        active_refs += array_refs_for_manifest(store.load())
         deleted = clear_array_cache(active_refs)
+        removed_manifest_items = store.remove_missing_items()
         if deleted:
             logging.info(f"已自动清理孤立缓存文件 {deleted} 个")
+        if removed_manifest_items:
+            logging.info(f"已移除失效可恢复历史索引 {removed_manifest_items} 条")
         return deleted
 
     def clear_array_cache_files(self):
-        """手动清除缓存文件，并同步清空依赖缓存的历史记录。"""
+        """手动清除全部缓存文件，并同步清空可恢复历史索引。"""
         Data.clear_history(remove_cache=True)
         ProcessedData.clear_history(remove_cache=True)
         deleted = clear_array_cache()
-        logging.info(f"已清除缓存文件 {deleted} 个")
-        self.update_status("缓存已清理", 'idle')
+        cache_dir = self.tool_params.get('cache_directory') or self.default_cache_directory()
+        removed_manifest_items = HistoryManifestStore(Path(cache_dir)).clear_items()
+        logging.info(f"已清除缓存文件 {deleted} 个，移除可恢复索引 {removed_manifest_items} 条")
+        self.update_status("缓存已清除", 'idle')
         return deleted
 
     def start_calculation(self):
@@ -2526,15 +2542,15 @@ class MainWindow(QMainWindow):
         return self.history_controller.cache_load_failed(message)
 
     def data_history_clear(self):
-        """历史数据清除（所有）"""
+        """本次历史清除：只清空内存历史，不删除已落盘缓存。"""
         if Data is not None:
-            Data.clear_history()
-            logging.info('导入数据已清除')
+            Data.clear_history(remove_cache=False)
+            logging.info('本次导入数据历史已清除，已落盘缓存保留')
         else:
             logging.warning('没有数据可清除')
         if ProcessedData is not None:
-            ProcessedData.clear_history()
-            logging.info('处理数据已清除')
+            ProcessedData.clear_history(remove_cache=False)
+            logging.info('本次处理数据历史已清除，已落盘缓存保留')
 
     '''以下控制台命令更新'''
     def stop_calculation(self):

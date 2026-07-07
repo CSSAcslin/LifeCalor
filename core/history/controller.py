@@ -6,10 +6,10 @@ from pathlib import Path
 from PyQt5.QtCore import QThread
 from PyQt5.QtWidgets import QMessageBox
 
-from DataManager import ArrayLoadWorker, Data, ProcessedData, collect_array_refs, force_cache_arrays
+from DataManager import ArrayLoadWorker, Data, ProcessedData, clear_array_cache, collect_array_refs, force_cache_arrays
 from ExtraDialog import DataViewAndSelectPop
 from .dialog import HistoryCacheManagerDialog
-from .manifest import HistoryManifestStore, build_manifest_item, cache_status_for_history_item
+from .manifest import HistoryManifestStore, array_refs_for_manifest, build_manifest_item, cache_status_for_history_item, restore_history_item
 
 
 class HistoryController:
@@ -78,17 +78,10 @@ class HistoryController:
         self.window.update_status("缓存读取失败", 'failed')
 
     def history_cache_manager(self):
-        store = self.manifest_store()
-        manifest_items = []
-        for item in store.load().get("items", []):
-            item = dict(item)
-            item["file_status"] = store.validate_item_files(item)
-            manifest_items.append(item)
-
         dialog = HistoryCacheManagerDialog(
             params=self.window.tool_params,
             current_items=self.current_history_items(),
-            manifest_items=manifest_items,
+            manifest_items=self.manifest_items(),
             cache_summary=self.cache_summary(),
             parent=self.window,
         )
@@ -96,7 +89,9 @@ class HistoryController:
         dialog.select_history_requested.connect(self.select_history_item)
         dialog.force_cache_requested.connect(self.force_cache_history_item)
         dialog.cleanup_orphans_requested.connect(self.cleanup_orphans)
-        dialog.clear_cache_requested.connect(self.window.clear_array_cache_files)
+        dialog.clear_cache_requested.connect(self.clear_all_cache)
+        dialog.recover_manifest_requested.connect(self.restore_manifest_item)
+        dialog.refresh_requested.connect(self.refresh_cache_dialog)
         self.window.update_status("历史与缓存管理", 'working')
         if dialog.exec_():
             params = dialog.get_params()
@@ -110,6 +105,22 @@ class HistoryController:
     def manifest_store(self) -> HistoryManifestStore:
         cache_dir = self.window.tool_params.get("cache_directory") or self.window.default_cache_directory()
         return HistoryManifestStore(Path(cache_dir))
+
+    def manifest_items(self):
+        store = self.manifest_store()
+        store.remove_missing_items()
+        items = []
+        for item in store.load().get("items", []):
+            item = dict(item)
+            item["file_status"] = store.validate_item_files(item)
+            items.append(item)
+        return items
+
+    def refresh_cache_dialog(self):
+        if self.history_cache_dialog is None:
+            return
+        self.history_cache_dialog.refresh_current_items(self.current_history_items())
+        self.history_cache_dialog.refresh_manifest_items(self.manifest_items())
 
     def cache_summary(self):
         cache_dir = Path(self.window.tool_params.get("cache_directory") or self.window.default_cache_directory())
@@ -172,13 +183,7 @@ class HistoryController:
             QMessageBox.information(self.window, "缓存落盘", "历史数据已保存为可恢复缓存")
             if self.history_cache_dialog is not None:
                 self.history_cache_dialog.refresh_current_items(self.current_history_items())
-                store = self.manifest_store()
-                items = []
-                for item in store.load().get("items", []):
-                    item = dict(item)
-                    item["file_status"] = store.validate_item_files(item)
-                    items.append(item)
-                self.history_cache_dialog.refresh_manifest_items(items)
+                self.refresh_cache_dialog()
         except Exception as exc:
             logging.exception("强制缓存历史数据失败")
             QMessageBox.critical(self.window, "缓存落盘失败", str(exc))
@@ -186,6 +191,62 @@ class HistoryController:
             self.window.update_status("准备就绪", 'idle')
 
     def cleanup_orphans(self):
-        deleted = self.window.cleanup_array_cache_orphans()
-        removed_manifest_items = self.manifest_store().remove_missing_items()
-        QMessageBox.information(self.window, "缓存清理", f"已清理缓存文件 {deleted} 个，移除失效索引 {removed_manifest_items} 条")
+        store = self.manifest_store()
+        manifest = store.load()
+        active_refs = collect_array_refs(Data.history) + collect_array_refs(ProcessedData.history)
+        active_refs += array_refs_for_manifest(manifest)
+        deleted = clear_array_cache(active_refs)
+        removed_manifest_items = store.remove_missing_items()
+        self.refresh_cache_dialog()
+        QMessageBox.information(self.window, "缓存清理", f"已清理临时缓存文件 {deleted} 个，移除失效索引 {removed_manifest_items} 条")
+
+    def clear_all_cache(self):
+        Data.clear_history(remove_cache=True)
+        ProcessedData.clear_history(remove_cache=True)
+        deleted = clear_array_cache()
+        removed_manifest_items = self.manifest_store().clear_items()
+        self.refresh_cache_dialog()
+        self.window.update_status("缓存已清除", 'idle')
+        QMessageBox.information(self.window, "缓存清理", f"已清除缓存文件 {deleted} 个，移除可恢复索引 {removed_manifest_items} 条")
+        return deleted
+
+    def restore_manifest_item(self, item_id):
+        store = self.manifest_store()
+        manifest = store.load()
+        item = next((entry for entry in manifest.get("items", []) if entry.get("id") == item_id), None)
+        if item is None:
+            QMessageBox.warning(self.window, "恢复历史", "未找到可恢复历史索引")
+            return None
+        status = store.validate_item_files(item)
+        if not status["ok"]:
+            QMessageBox.warning(self.window, "恢复历史", "缓存文件缺失，无法恢复该历史项")
+            return None
+        try:
+            restored = restore_history_item(item)
+            if item.get("kind") == "Data":
+                self._append_unique_history(Data.history, restored)
+                attr_name = "data"
+            elif item.get("kind") == "ProcessedData":
+                self._append_unique_history(ProcessedData.history, restored)
+                attr_name = "processed_data"
+            else:
+                raise ValueError(f"不支持恢复的历史类型: {item.get('kind')}")
+            logging.info("已恢复历史缓存: %s", getattr(restored, "name", ""))
+            self.refresh_cache_dialog()
+            self.load_cached_history_async(restored, attr_name)
+            QMessageBox.information(self.window, "恢复历史", "历史数据已恢复，并正在设为当前数据")
+            return restored
+        except Exception as exc:
+            logging.exception("恢复历史缓存失败")
+            QMessageBox.critical(self.window, "恢复历史失败", str(exc))
+            return None
+
+    @staticmethod
+    def _append_unique_history(history, item):
+        timestamp = getattr(item, "timestamp", None)
+        serial_number = getattr(item, "serial_number", None)
+        for existing in list(history):
+            if getattr(existing, "timestamp", None) == timestamp or getattr(existing, "serial_number", None) == serial_number:
+                history.remove(existing)
+                break
+        history.append(item)

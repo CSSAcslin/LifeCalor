@@ -46,6 +46,109 @@ def array_ref_to_dict(ref: ArrayRef) -> dict:
     }
 
 
+def array_ref_from_dict(info: dict) -> ArrayRef:
+    return ArrayRef(
+        path=Path(info["path"]),
+        shape=tuple(info.get("shape", ())),
+        dtype=str(info.get("dtype", "")),
+        nbytes=int(info.get("nbytes", 0)),
+        created_at=float(info.get("created_at", time.time())),
+        field_name=str(info.get("field_name", "")),
+    )
+
+
+def _restore_common_fields(instance, item: dict):
+    object.__setattr__(instance, "name", item.get("name", ""))
+    object.__setattr__(instance, "timestamp", item.get("timestamp"))
+    object.__setattr__(instance, "serial_number", item.get("serial_number"))
+    object.__setattr__(instance, "datashape", tuple(item.get("shape", ())))
+    dtype = item.get("dtype") or "float64"
+    try:
+        dtype_value = np.dtype(dtype)
+    except TypeError:
+        dtype_value = dtype
+    object.__setattr__(instance, "datatype", dtype_value)
+    object.__setattr__(instance, "ndim", item.get("ndim"))
+    object.__setattr__(instance, "datamin", item.get("datamin"))
+    object.__setattr__(instance, "datamax", item.get("datamax"))
+    shape = tuple(item.get("shape", ()))
+    if len(shape) == 3:
+        object.__setattr__(instance, "timelength", shape[0])
+        object.__setattr__(instance, "framesize", (shape[1], shape[2]))
+    elif len(shape) == 2:
+        object.__setattr__(instance, "timelength", 1)
+        object.__setattr__(instance, "framesize", (shape[0], shape[1]))
+    elif len(shape) == 1:
+        object.__setattr__(instance, "timelength", shape[0])
+        object.__setattr__(instance, "framesize", shape[0])
+
+
+def restore_history_item(item: dict):
+    kind = item.get("kind")
+    arrays = item.get("arrays") or {}
+    metadata = item.get("metadata") or {}
+
+    if kind == "Data":
+        instance = Data.__new__(Data)
+        _restore_common_fields(instance, item)
+        object.__setattr__(instance, "format_import", item.get("format_import", ""))
+        object.__setattr__(instance, "parameters", metadata.get("parameters") or {})
+        object.__setattr__(instance, "time_point", None)
+        object.__setattr__(instance, "out_processed", {})
+        object.__setattr__(instance, "ROI_applied", False)
+        if "data_origin" in arrays:
+            ref = array_ref_from_dict(arrays["data_origin"])
+            object.__setattr__(instance, "_data_origin_storage", ref)
+            object.__setattr__(instance, "data_origin", ref)
+        if "image_import" in arrays:
+            ref = array_ref_from_dict(arrays["image_import"])
+            object.__setattr__(instance, "_image_import_storage", ref)
+            object.__setattr__(instance, "image_import", ref)
+        else:
+            object.__setattr__(instance, "_image_import_storage", None)
+            object.__setattr__(instance, "image_import", None)
+        return instance
+
+    if kind == "ProcessedData":
+        instance = ProcessedData.__new__(ProcessedData)
+        _restore_common_fields(instance, item)
+        object.__setattr__(instance, "timestamp_inherited", item.get("timestamp_inherited"))
+        object.__setattr__(instance, "type_processed", item.get("type_processed", ""))
+        object.__setattr__(instance, "time_point", None)
+        object.__setattr__(instance, "ROI_applied", False)
+        object.__setattr__(instance, "ROI_mask", None)
+        out_processed = dict(metadata.get("out_processed_metadata") or {})
+        for field_name, array_info in arrays.items():
+            if field_name == "data_processed":
+                ref = array_ref_from_dict(array_info)
+                object.__setattr__(instance, "_data_processed_storage", ref)
+                object.__setattr__(instance, "data_processed", ref)
+            elif field_name.startswith("out_processed."):
+                key = field_name.split(".", 1)[1]
+                out_processed[key] = array_ref_from_dict(array_info)
+        object.__setattr__(instance, "out_processed", out_processed)
+        return instance
+
+    raise ValueError(f"不支持恢复的历史类型: {kind}")
+
+
+
+def array_refs_for_item(item: dict) -> list[ArrayRef]:
+    refs: list[ArrayRef] = []
+    for array_info in (item.get("arrays") or {}).values():
+        try:
+            refs.append(array_ref_from_dict(array_info))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return refs
+
+
+def array_refs_for_manifest(manifest: dict) -> list[ArrayRef]:
+    refs: list[ArrayRef] = []
+    for item in manifest.get("items", []) or []:
+        refs.extend(array_refs_for_item(item))
+    return refs
+
 def array_refs_by_field(item) -> dict[str, ArrayRef]:
     refs: dict[str, ArrayRef] = {}
     values = getattr(item, "__dict__", {})
@@ -172,3 +275,10 @@ class HistoryManifestStore:
         manifest["items"] = new_items
         self.save(manifest)
         return len(old_items) - len(new_items)
+
+    def clear_items(self) -> int:
+        manifest = self.load()
+        old_items = manifest.get("items", [])
+        manifest["items"] = []
+        self.save(manifest)
+        return len(old_items)

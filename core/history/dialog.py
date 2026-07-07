@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QUrl, pyqtSignal
+from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -37,6 +38,8 @@ class HistoryCacheManagerDialog(QDialog):
     force_cache_requested = pyqtSignal(str, float)
     cleanup_orphans_requested = pyqtSignal()
     clear_cache_requested = pyqtSignal()
+    recover_manifest_requested = pyqtSignal(str)
+    refresh_requested = pyqtSignal()
 
     def __init__(self, params, current_items=None, manifest_items=None, cache_summary=None, parent=None):
         super().__init__(parent)
@@ -93,6 +96,17 @@ class HistoryCacheManagerDialog(QDialog):
         self.manifest_tree.setHeaderLabels(["类型", "名称", "形状", "dtype", "缓存文件", "缓存体积", "状态"])
         self.manifest_tree.setRootIsDecorated(False)
         layout.addWidget(self.manifest_tree)
+
+        buttons = QHBoxLayout()
+        self.recover_btn = QPushButton("恢复选中项")
+        self.refresh_manifest_btn = QPushButton("刷新")
+        self.recover_btn.clicked.connect(self._recover_manifest_item)
+        self.refresh_manifest_btn.clicked.connect(self.refresh_requested.emit)
+        buttons.addWidget(self.recover_btn)
+        buttons.addWidget(self.refresh_manifest_btn)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+
         self.refresh_manifest_items(self.manifest_items)
         return tab
 
@@ -115,9 +129,12 @@ class HistoryCacheManagerDialog(QDialog):
         self.cache_directory_edit = QLineEdit(str(self.params.get("cache_directory", "")))
         self.cache_directory_edit.setReadOnly(True)
         self.browse_btn = QPushButton("浏览")
+        self.open_cache_dir_btn = QPushButton("打开目录")
         self.browse_btn.clicked.connect(self.browse_cache_directory)
+        self.open_cache_dir_btn.clicked.connect(self.open_cache_directory)
         directory_layout.addWidget(self.cache_directory_edit)
         directory_layout.addWidget(self.browse_btn)
+        directory_layout.addWidget(self.open_cache_dir_btn)
 
         self.cache_threshold_spin = QSpinBox()
         self.cache_threshold_spin.setRange(1, 1024 * 1024)
@@ -191,6 +208,7 @@ class HistoryCacheManagerDialog(QDialog):
                 format_bytes(sum(int(array.get("nbytes", 0)) for array in arrays.values())),
                 "可用" if status.get("ok", True) else "缺失",
             ])
+            tree_item.setData(0, Qt.UserRole, item.get("id", ""))
             self.manifest_tree.addTopLevelItem(tree_item)
         self.manifest_tree.resizeColumnToContents(0)
         self.manifest_tree.resizeColumnToContents(1)
@@ -215,3 +233,15 @@ class HistoryCacheManagerDialog(QDialog):
         identity = self._selected_current_identity()
         if identity:
             self.force_cache_requested.emit(identity[0], identity[1])
+    def open_cache_directory(self):
+        directory = Path(self.cache_directory_edit.text().strip())
+        directory.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
+
+    def _recover_manifest_item(self):
+        item = self.manifest_tree.currentItem()
+        if item is None:
+            return
+        item_id = item.data(0, Qt.UserRole)
+        if item_id:
+            self.recover_manifest_requested.emit(str(item_id))
