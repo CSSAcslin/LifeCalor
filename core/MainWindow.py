@@ -70,7 +70,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "1.0.1"  # 当前程序版本
+        self.current_version = "1.0.2"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = get_github_auth_header()
@@ -1020,6 +1020,8 @@ class MainWindow(QMainWindow):
 
         # 历史数据管理
         data_menu = self.menu.addMenu('历史数据')
+        history_cache_manager = data_menu.addAction('历史与缓存管理')
+        history_cache_manager.triggered.connect(self.history_cache_manager)
         # 清除历史
         data_history_clear = data_menu.addAction('历史清除')
         data_history_clear.triggered.connect(self.data_history_clear)
@@ -1677,17 +1679,8 @@ class MainWindow(QMainWindow):
         self.update_status("准备就绪", 'idle')
 
     def cache_settings_edit_dialog(self):
-        """缓存设置。"""
-        dialog = CacheSettingsDialog(params=self.tool_params, parent=self)
-        dialog.clear_cache_requested.connect(self.clear_array_cache_files)
-        self.update_status("缓存设置ing", 'working')
-        if dialog.exec_():
-            self.update_param('tool', 'cache_directory', dialog.params['cache_directory'])
-            self.update_param('tool', 'cache_threshold_mb', dialog.params['cache_threshold_mb'])
-            self.update_param('tool', 'cache_cleanup_startup', dialog.params['cache_cleanup_startup'])
-            self.apply_cache_settings()
-            logging.info("缓存设置已更新")
-        self.update_status("准备就绪", 'idle')
+        """缓存设置。Legacy CacheSettingsDialog 入口转到统一历史与缓存管理。"""
+        return self.history_cache_manager()
 
     def cleanup_array_cache_orphans(self):
         """清理当前历史记录未引用的缓存文件。"""
@@ -2509,6 +2502,10 @@ class MainWindow(QMainWindow):
     def export_EM_data(self,result):
         """时频变换后目标频率下的结果导出"""
         return self.export_controller.export_em_data(result)
+
+    def history_cache_manager(self):
+        """统一历史与缓存管理。"""
+        return self.history_controller.history_cache_manager()
 
     def data_history_view(self):
         """导入数据历史查看。"""

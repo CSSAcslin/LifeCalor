@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import os
 import time
 import copy
@@ -117,13 +117,39 @@ def image_mode_for_pillow(frame):
     return image, 'RGB'
 
 
-def _export_array_from_data(data, format_type):
+def _is_aligned_temporal_array(candidate, source):
+    if candidate is None or source is None:
+        return False
+    candidate_array = np.asarray(candidate)
+    source_array = np.asarray(source)
+    if source_array.ndim < 3 or candidate_array.ndim < 3:
+        return False
+    return candidate_array.shape[0] == source_array.shape[0]
+
+
+def export_array_from_data(data, format_type, is_temporal):
     if isinstance(data, np.ndarray):
         return data.copy()
-    if format_type in {'avi', 'gif'} and hasattr(data, 'image_backup'):
-        return data.image_backup
-    return data.image_data
 
+    source = getattr(data, "image_backup", None)
+    display = getattr(data, "image_data", None)
+
+    if is_temporal:
+        if _is_aligned_temporal_array(display, source):
+            return display
+        if source is not None:
+            return source
+
+    if display is not None:
+        return display
+    if source is not None:
+        return source
+    raise ValueError("当前数据对象不包含可导出的图像数组")
+
+
+def export_as_temporal_images(result, is_temporal):
+    image = np.asarray(result)
+    return bool(is_temporal and image.ndim in (3, 4))
 
 def cache_array_or_keep_memory(store: ArrayStore, array: np.ndarray, owner_id: str, field_name: str):
     try:
@@ -131,6 +157,43 @@ def cache_array_or_keep_memory(store: ArrayStore, array: np.ndarray, owner_id: s
     except Exception:
         logging.error("缓存写入失败，保留内存数组: field=%s shape=%s dtype=%s", field_name, getattr(array, "shape", None), getattr(array, "dtype", None))
         return array
+
+
+def force_cache_arrays(target, include_image_import: bool = False) -> list[ArrayRef]:
+    """Persist a history object's array payloads to npy refs, regardless of threshold."""
+    store = get_array_store()
+    refs: list[ArrayRef] = []
+    owner_id = f"{target.__class__.__name__}_{getattr(target, 'serial_number', 'unknown')}_{getattr(target, 'timestamp', '')}"
+
+    def cache_storage(storage_attr: str, public_attr: str, field_name: str):
+        storage = object.__getattribute__(target, "__dict__").get(storage_attr)
+        if isinstance(storage, ArrayRef):
+            refs.append(storage)
+            return
+        if isinstance(storage, np.ndarray):
+            ref = cache_array_or_keep_memory(store, storage, owner_id, field_name)
+            if isinstance(ref, ArrayRef):
+                object.__setattr__(target, storage_attr, ref)
+                object.__setattr__(target, public_attr, ref)
+                refs.append(ref)
+
+    if isinstance(target, Data):
+        cache_storage("_data_origin_storage", "data_origin", "data_origin")
+        if include_image_import:
+            cache_storage("_image_import_storage", "image_import", "image_import")
+    elif isinstance(target, ProcessedData):
+        cache_storage("_data_processed_storage", "data_processed", "data_processed")
+        for key, value in list((target.out_processed or {}).items()):
+            if isinstance(value, ArrayRef):
+                refs.append(value)
+            elif isinstance(value, np.ndarray):
+                ref = cache_array_or_keep_memory(store, value, owner_id, f"out_processed_{key}")
+                if isinstance(ref, ArrayRef):
+                    target.out_processed[key] = ref
+                    refs.append(ref)
+    else:
+        raise TypeError(f"不支持强制缓存的数据类型: {type(target).__name__}")
+    return refs
 
 
 def materialize_cached_arrays(target, progress_callback=None):
@@ -268,7 +331,7 @@ class DataManager(QObject):
         min_bound = arg_dict.get('min_bound', 0)
         title = arg_dict.get('title', '')
         colorbar_label = arg_dict.get('colorbar_label', '')
-        result = _export_array_from_data(data, format_type)
+        result = export_array_from_data(data, format_type, is_temporal)
 
         # 根据格式类型调用不同的导出函数
         if format_type == 'tif':
@@ -306,7 +369,7 @@ class DataManager(QObject):
     def export_as_tif(self, result, output_dir, prefix, is_temporal=True):
         """支持彩色TIFF导出"""
         created_files = []
-        if is_temporal:
+        if export_as_temporal_images(result, is_temporal):
             num_frames = result.shape[0]
             num_digits = len(str(num_frames))
             self.data_progress_signal.emit(0, num_frames)
@@ -369,7 +432,7 @@ class DataManager(QObject):
         # 归一化处理
         normalized = self._normalize_data(result)
 
-        if is_temporal:
+        if export_as_temporal_images(result, is_temporal):
             num_frames = result.shape[0]
             num_digits = len(str(num_frames))
             self.data_progress_signal.emit(0, num_frames)
@@ -1652,10 +1715,3 @@ class PublicEasyMethod:
         elif shape == 'custom':  # 留给绘制roi
             pass
         return mask
-
-
-
-
-
-
-
