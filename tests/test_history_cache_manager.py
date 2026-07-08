@@ -240,6 +240,57 @@ class HistoryCacheManagerTests(unittest.TestCase):
         self.assertEqual(removed, 1)
         self.assertEqual(store.load()["items"], [])
 
+    def test_delete_manifest_item_removes_only_exclusive_cache_files(self):
+        shared_file = self.cache_dir / "shared.npy"
+        unique_file = self.cache_dir / "unique.npy"
+        np.save(shared_file, np.zeros((2, 3), dtype=np.float32))
+        np.save(unique_file, np.ones((2, 3), dtype=np.float32))
+        shared_ref = ArrayRef(shared_file, (2, 3), "float32", 24, 1.0, "shared")
+        unique_ref = ArrayRef(unique_file, (2, 3), "float32", 24, 1.0, "unique")
+        store = HistoryManifestStore(self.cache_dir)
+        store.upsert({
+            "id": "ProcessedData:1:10.0",
+            "kind": "ProcessedData",
+            "name": "with-unique",
+            "arrays": {
+                "data_processed": array_ref_to_dict(shared_ref),
+                "out_processed.unique": array_ref_to_dict(unique_ref),
+            },
+        })
+        store.upsert({
+            "id": "ProcessedData:2:20.0",
+            "kind": "ProcessedData",
+            "name": "shares-file",
+            "arrays": {"data_processed": array_ref_to_dict(shared_ref)},
+        })
+
+        result = store.delete_item("ProcessedData:1:10.0", delete_cache_files=True)
+
+        self.assertTrue(result["removed"])
+        self.assertEqual(result["deleted_files"], 1)
+        self.assertTrue(shared_file.exists())
+        self.assertFalse(unique_file.exists())
+        self.assertEqual([item["id"] for item in store.load()["items"]], ["ProcessedData:2:20.0"])
+
+    def test_delete_manifest_item_can_keep_cache_files(self):
+        cache_file = self.cache_dir / "kept.npy"
+        np.save(cache_file, np.zeros((2, 3), dtype=np.float32))
+        ref = ArrayRef(cache_file, (2, 3), "float32", 24, 1.0, "data_origin")
+        store = HistoryManifestStore(self.cache_dir)
+        store.upsert({
+            "id": "Data:1:10.0",
+            "kind": "Data",
+            "name": "kept",
+            "arrays": {"data_origin": array_ref_to_dict(ref)},
+        })
+
+        result = store.delete_item("Data:1:10.0", delete_cache_files=False)
+
+        self.assertTrue(result["removed"])
+        self.assertEqual(result["deleted_files"], 0)
+        self.assertTrue(cache_file.exists())
+        self.assertEqual(store.load()["items"], [])
+
     def test_manifest_file_is_json_and_uses_schema_version(self):
         store = HistoryManifestStore(self.cache_dir)
         store.save({"schema_version": 1, "items": []})
@@ -269,6 +320,21 @@ class HistoryCacheArchitectureTests(unittest.TestCase):
         self.assertIn("refresh_cache_dialog", history_source)
         self.assertIn("refresh_requested", dialog_source)
         self.assertIn("load_cached_history_async(restored", history_source)
+        self.assertIn("cancel_cached_history_load", history_source)
+        self.assertIn("delete_current_history_item", history_source)
+        self.assertIn("delete_manifest_item", history_source)
+        self.assertIn("handle_cache_directory_change", history_source)
+        self.assertIn("delete_item", (CORE / "history" / "manifest.py").read_text(encoding="utf-8"))
+        self.assertIn("SortableTreeWidgetItem", dialog_source)
+        self.assertIn("setSortingEnabled(True)", dialog_source)
+        self.assertIn("cancel_load_requested", dialog_source)
+        self.assertIn("delete_history_requested", dialog_source)
+        self.assertIn("delete_manifest_requested", dialog_source)
+
+    def test_history_package_user_visible_text_has_no_replacement_characters(self):
+        for relative in ["history/dialog.py", "history/controller.py", "history/manifest.py"]:
+            text = (CORE / relative).read_text(encoding="utf-8")
+            self.assertNotIn("�", text, relative)
 
 
 if __name__ == "__main__":

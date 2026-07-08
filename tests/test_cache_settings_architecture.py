@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +53,22 @@ class CacheSettingsArchitectureTests(unittest.TestCase):
         self.assertIn("progress_callback", source)
         self.assertIn("clear_array_cache", source)
         self.assertIn("collect_array_refs", source)
+
+    def test_cache_restore_can_be_cancelled(self):
+        history_source = (CORE / "history" / "controller.py").read_text(encoding="utf-8")
+        data_source = (CORE / "DataManager.py").read_text(encoding="utf-8")
+        dialog_source = (CORE / "history" / "dialog.py").read_text(encoding="utf-8")
+        self.assertIn("cancel_cached_history_load", history_source)
+        self.assertIn("cancelled_signal", data_source)
+        self.assertIn("CacheLoadCancelled", data_source)
+        self.assertIn("cancel_load_requested", dialog_source)
+
+    def test_cache_directory_switch_is_explicitly_handled(self):
+        history_source = (CORE / "history" / "controller.py").read_text(encoding="utf-8")
+        dialog_source = (CORE / "history" / "dialog.py").read_text(encoding="utf-8")
+        self.assertIn("handle_cache_directory_change", history_source)
+        self.assertIn("旧缓存", history_source)
+        self.assertIn("当前目录", dialog_source)
 
 
 if __name__ == "__main__":

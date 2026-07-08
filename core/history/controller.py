@@ -21,7 +21,7 @@ class HistoryController:
 
     def data_history_view(self):
         if self.window.data is None:
-            logging.warning('暂无导入数据历史')
+            logging.warning("暂无导入数据历史")
             return
         dialog = DataViewAndSelectPop(datadict=self.window.get_data_all())
         if dialog.exec_():
@@ -31,7 +31,7 @@ class HistoryController:
 
     def process_history_view(self):
         if self.window.processed_data is None:
-            logging.warning('暂无处理数据历史')
+            logging.warning("暂无处理数据历史")
             return
         dialog = DataViewAndSelectPop(processed_datadict=self.window.get_processed_data_all())
         if dialog.exec_():
@@ -45,10 +45,10 @@ class HistoryController:
             return
         if not collect_array_refs(target):
             setattr(self.window, attr_name, target)
-            logging.info(f"当前数据焦点已更新至{target.name}")
+            logging.info("当前数据焦点已更新至%s", getattr(target, "name", ""))
             return
 
-        self.window.update_status("正在读取缓存数据", 'working')
+        self.window.update_status("正在读取缓存数据", "working")
         self.window.update_progress(0, 1000)
         self.cache_load_thread = QThread()
         self.cache_load_worker = ArrayLoadWorker(target)
@@ -59,23 +59,45 @@ class HistoryController:
         self.cache_load_worker.progress_signal.connect(self.window.cache_progress_signal.emit)
         self.cache_load_worker.finished_signal.connect(lambda loaded, attr=attr_name: self.finish_cached_history_load(loaded, attr))
         self.cache_load_worker.error_signal.connect(self.cache_load_failed)
+        self.cache_load_worker.cancelled_signal.connect(self.cache_load_cancelled)
         self.cache_load_worker.finished_signal.connect(self.cache_load_thread.quit)
         self.cache_load_worker.error_signal.connect(self.cache_load_thread.quit)
+        self.cache_load_worker.cancelled_signal.connect(self.cache_load_thread.quit)
         self.cache_load_thread.finished.connect(self.cache_load_worker.deleteLater)
         self.cache_load_thread.finished.connect(self.cache_load_thread.deleteLater)
+        self.cache_load_thread.finished.connect(self._clear_cache_load_handles)
         self.cache_load_thread.start()
+
+    def _clear_cache_load_handles(self):
+        self.cache_load_thread = None
+        self.cache_load_worker = None
+        self.window.cache_load_thread = None
+        self.window.cache_load_worker = None
+
+    def cancel_cached_history_load(self):
+        if self.cache_load_worker is None:
+            logging.info("没有正在读取的缓存任务")
+            return False
+        self.cache_load_worker.cancel()
+        self.window.update_status("正在取消缓存读取", "working")
+        return True
 
     def finish_cached_history_load(self, loaded, attr_name):
         setattr(self.window, attr_name, loaded)
-        logging.info(f"当前数据焦点已更新至{loaded.name}")
+        logging.info("当前数据焦点已更新至%s", getattr(loaded, "name", ""))
         self.window.update_progress(1000, 1000)
-        self.window.update_status("缓存数据读取完成", 'idle')
+        self.window.update_status("缓存数据读取完成", "idle")
+
+    def cache_load_cancelled(self):
+        logging.info("缓存数据读取已取消")
+        self.window.update_progress(-1)
+        self.window.update_status("缓存读取已取消", "idle")
 
     def cache_load_failed(self, message):
-        logging.error(f"缓存数据读取失败: {message}")
+        logging.error("缓存数据读取失败: %s", message)
         QMessageBox.critical(self.window, "缓存读取失败", str(message))
         self.window.update_progress(-1)
-        self.window.update_status("缓存读取失败", 'failed')
+        self.window.update_status("缓存读取失败", "failed")
 
     def history_cache_manager(self):
         dialog = HistoryCacheManagerDialog(
@@ -88,19 +110,35 @@ class HistoryController:
         self.history_cache_dialog = dialog
         dialog.select_history_requested.connect(self.select_history_item)
         dialog.force_cache_requested.connect(self.force_cache_history_item)
+        dialog.delete_history_requested.connect(self.delete_current_history_item)
         dialog.cleanup_orphans_requested.connect(self.cleanup_orphans)
         dialog.clear_cache_requested.connect(self.clear_all_cache)
         dialog.recover_manifest_requested.connect(self.restore_manifest_item)
+        dialog.delete_manifest_requested.connect(self.delete_manifest_item)
         dialog.refresh_requested.connect(self.refresh_cache_dialog)
-        self.window.update_status("历史与缓存管理", 'working')
+        dialog.cancel_load_requested.connect(self.cancel_cached_history_load)
+        self.window.update_status("历史与缓存管理", "working")
         if dialog.exec_():
             params = dialog.get_params()
-            self.window.update_param('tool', 'cache_directory', params['cache_directory'])
-            self.window.update_param('tool', 'cache_threshold_mb', params['cache_threshold_mb'])
-            self.window.update_param('tool', 'cache_cleanup_startup', params['cache_cleanup_startup'])
+            old_directory = self.window.tool_params.get("cache_directory") or self.window.default_cache_directory()
+            new_directory = params["cache_directory"] or self.window.default_cache_directory()
+            self.window.update_param("tool", "cache_directory", new_directory)
+            self.window.update_param("tool", "cache_threshold_mb", params["cache_threshold_mb"])
+            self.window.update_param("tool", "cache_cleanup_startup", params["cache_cleanup_startup"])
             self.window.apply_cache_settings()
+            if Path(old_directory) != Path(new_directory):
+                self.handle_cache_directory_change(old_directory, new_directory)
             logging.info("历史与缓存设置已更新")
-        self.window.update_status("准备就绪", 'idle')
+        self.window.update_status("准备就绪", "idle")
+
+    def handle_cache_directory_change(self, old_directory, new_directory):
+        message = (
+            f"缓存目录已切换到当前目录:\n{new_directory}\n\n"
+            f"旧缓存仍保留在旧缓存目录:\n{old_directory}\n"
+            "如需恢复旧缓存，可切回旧目录查看可恢复历史。"
+        )
+        logging.info("缓存目录切换: old=%s new=%s。旧缓存保留。", old_directory, new_directory)
+        QMessageBox.information(self.window, "缓存目录已切换", message)
 
     def manifest_store(self) -> HistoryManifestStore:
         cache_dir = self.window.tool_params.get("cache_directory") or self.window.default_cache_directory()
@@ -169,26 +207,46 @@ class HistoryController:
         target, attr_name = self.find_history_item(kind, timestamp)
         self.load_cached_history_async(target, attr_name)
 
+    def delete_current_history_item(self, kind, timestamp):
+        target, attr_name = self.find_history_item(kind, timestamp)
+        if target is None:
+            QMessageBox.warning(self.window, "删除历史", "未找到选中的当前历史")
+            return False
+        answer = QMessageBox.question(
+            self.window,
+            "删除当前历史",
+            "仅从本次历史列表中移除该项，不会删除已落盘的可恢复缓存。是否继续？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return False
+        history = Data.history if kind == "Data" else ProcessedData.history
+        self._remove_unique_history(history, target)
+        if getattr(self.window, attr_name, None) is target:
+            setattr(self.window, attr_name, None)
+        self.refresh_cache_dialog()
+        logging.info("已删除当前历史: %s", getattr(target, "name", ""))
+        return True
+
     def force_cache_history_item(self, kind, timestamp):
         target, _ = self.find_history_item(kind, timestamp)
         if target is None:
             QMessageBox.warning(self.window, "缓存落盘", "未找到选中的历史数据")
             return
-        self.window.update_status("正在强制缓存历史数据", 'working')
+        self.window.update_status("正在强制缓存历史数据", "working")
         try:
             force_cache_arrays(target)
             manifest_item = build_manifest_item(target, kind)
             self.manifest_store().upsert(manifest_item)
             logging.info("历史数据已强制缓存: %s", getattr(target, "name", ""))
             QMessageBox.information(self.window, "缓存落盘", "历史数据已保存为可恢复缓存")
-            if self.history_cache_dialog is not None:
-                self.history_cache_dialog.refresh_current_items(self.current_history_items())
-                self.refresh_cache_dialog()
+            self.refresh_cache_dialog()
         except Exception as exc:
             logging.exception("强制缓存历史数据失败")
             QMessageBox.critical(self.window, "缓存落盘失败", str(exc))
         finally:
-            self.window.update_status("准备就绪", 'idle')
+            self.window.update_status("准备就绪", "idle")
 
     def cleanup_orphans(self):
         store = self.manifest_store()
@@ -206,7 +264,7 @@ class HistoryController:
         deleted = clear_array_cache()
         removed_manifest_items = self.manifest_store().clear_items()
         self.refresh_cache_dialog()
-        self.window.update_status("缓存已清除", 'idle')
+        self.window.update_status("缓存已清除", "idle")
         QMessageBox.information(self.window, "缓存清理", f"已清除缓存文件 {deleted} 个，移除可恢复索引 {removed_manifest_items} 条")
         return deleted
 
@@ -241,6 +299,24 @@ class HistoryController:
             QMessageBox.critical(self.window, "恢复历史失败", str(exc))
             return None
 
+    def delete_manifest_item(self, item_id):
+        answer = QMessageBox.question(
+            self.window,
+            "删除可恢复历史",
+            "是否同时删除该索引独占的缓存文件？\n选择 No 将只删除索引，保留缓存文件。",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.No,
+        )
+        if answer == QMessageBox.Cancel:
+            return None
+        result = self.manifest_store().delete_item(item_id, delete_cache_files=(answer == QMessageBox.Yes))
+        self.refresh_cache_dialog()
+        if result["removed"]:
+            QMessageBox.information(self.window, "删除可恢复历史", f"已删除索引，删除独占缓存文件 {result['deleted_files']} 个")
+        else:
+            QMessageBox.warning(self.window, "删除可恢复历史", "未找到选中的可恢复历史索引")
+        return result
+
     @staticmethod
     def _append_unique_history(history, item):
         timestamp = getattr(item, "timestamp", None)
@@ -250,3 +326,13 @@ class HistoryController:
                 history.remove(existing)
                 break
         history.append(item)
+
+    @staticmethod
+    def _remove_unique_history(history, item):
+        timestamp = getattr(item, "timestamp", None)
+        serial_number = getattr(item, "serial_number", None)
+        for existing in list(history):
+            if existing is item or getattr(existing, "timestamp", None) == timestamp or getattr(existing, "serial_number", None) == serial_number:
+                history.remove(existing)
+                return True
+        return False

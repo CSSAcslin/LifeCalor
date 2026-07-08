@@ -151,6 +151,10 @@ def export_as_temporal_images(result, is_temporal):
     image = np.asarray(result)
     return bool(is_temporal and image.ndim in (3, 4))
 
+class CacheLoadCancelled(Exception):
+    """Raised when a cache restore task is cancelled by the user."""
+
+
 def cache_array_or_keep_memory(store: ArrayStore, array: np.ndarray, owner_id: str, field_name: str):
     try:
         return store.put_array(array, owner_id, field_name)
@@ -196,29 +200,42 @@ def force_cache_arrays(target, include_image_import: bool = False) -> list[Array
     return refs
 
 
-def materialize_cached_arrays(target, progress_callback=None):
+def materialize_cached_arrays(target, progress_callback=None, cancel_check=None):
     """Load ArrayRef-backed arrays into memory, suitable for worker-thread execution."""
     store = get_array_store(progress_callback=progress_callback)
+
+    def check_cancelled():
+        if cancel_check is not None and cancel_check():
+            raise CacheLoadCancelled("缓存读取已取消")
+
     if isinstance(target, Data):
+        check_cancelled()
         storage = object.__getattribute__(target, "__dict__").get("_data_origin_storage")
         if isinstance(storage, ArrayRef):
             loaded = store.load_ref(storage, mmap_mode=None)
+            check_cancelled()
             object.__setattr__(target, "_data_origin_storage", loaded)
             object.__setattr__(target, "data_origin", loaded)
+        check_cancelled()
         image_storage = object.__getattribute__(target, "__dict__").get("_image_import_storage")
         if isinstance(image_storage, ArrayRef):
             loaded = store.load_ref(image_storage, mmap_mode=None)
+            check_cancelled()
             object.__setattr__(target, "_image_import_storage", loaded)
             object.__setattr__(target, "image_import", loaded)
     elif isinstance(target, ProcessedData):
+        check_cancelled()
         storage = object.__getattribute__(target, "__dict__").get("_data_processed_storage")
         if isinstance(storage, ArrayRef):
             loaded = store.load_ref(storage, mmap_mode=None)
+            check_cancelled()
             object.__setattr__(target, "_data_processed_storage", loaded)
             object.__setattr__(target, "data_processed", loaded)
         for key, value in list((target.out_processed or {}).items()):
+            check_cancelled()
             if isinstance(value, ArrayRef):
                 target.out_processed[key] = store.load_ref(value, mmap_mode=None)
+    check_cancelled()
     return target
 
 
@@ -226,15 +243,33 @@ class ArrayLoadWorker(QObject):
     progress_signal = pyqtSignal(object, object, str)
     finished_signal = pyqtSignal(object)
     error_signal = pyqtSignal(str)
+    cancelled_signal = pyqtSignal()
 
     def __init__(self, target):
         super().__init__()
         self.target = target
+        self._cancel_requested = False
+
+    def cancel(self):
+        self._cancel_requested = True
+
+    def is_cancel_requested(self):
+        return self._cancel_requested
 
     def run(self):
         try:
-            materialize_cached_arrays(self.target, progress_callback=self.progress_signal.emit)
-            self.finished_signal.emit(self.target)
+            materialize_cached_arrays(
+                self.target,
+                progress_callback=self.progress_signal.emit,
+                cancel_check=self.is_cancel_requested,
+            )
+            if self._cancel_requested:
+                self.cancelled_signal.emit()
+            else:
+                self.finished_signal.emit(self.target)
+        except CacheLoadCancelled:
+            logging.info("缓存读取已取消")
+            self.cancelled_signal.emit()
         except Exception as exc:
             logging.exception("缓存读取线程失败")
             self.error_signal.emit(str(exc))

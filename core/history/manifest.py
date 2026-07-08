@@ -149,6 +149,20 @@ def array_refs_for_manifest(manifest: dict) -> list[ArrayRef]:
         refs.extend(array_refs_for_item(item))
     return refs
 
+
+def _ref_path_key(ref: ArrayRef) -> str:
+    return str(Path(ref.path).resolve())
+
+
+def manifest_path_keys(manifest: dict, exclude_item_id: str | None = None) -> set[str]:
+    keys: set[str] = set()
+    for item in manifest.get("items", []) or []:
+        if exclude_item_id is not None and item.get("id") == exclude_item_id:
+            continue
+        for ref in array_refs_for_item(item):
+            keys.add(_ref_path_key(ref))
+    return keys
+
 def array_refs_by_field(item) -> dict[str, ArrayRef]:
     refs: dict[str, ArrayRef] = {}
     values = getattr(item, "__dict__", {})
@@ -282,3 +296,29 @@ class HistoryManifestStore:
         manifest["items"] = []
         self.save(manifest)
         return len(old_items)
+
+    def delete_item(self, item_id: str, delete_cache_files: bool = False) -> dict:
+        manifest = self.load()
+        old_items = list(manifest.get("items", []))
+        target = next((item for item in old_items if item.get("id") == item_id), None)
+        if target is None:
+            return {"removed": False, "deleted_files": 0}
+
+        remaining_items = [item for item in old_items if item.get("id") != item_id]
+        deleted_files = 0
+        if delete_cache_files:
+            remaining_paths = manifest_path_keys({"items": remaining_items})
+            seen_paths: set[str] = set()
+            for ref in array_refs_for_item(target):
+                key = _ref_path_key(ref)
+                if key in remaining_paths or key in seen_paths:
+                    continue
+                seen_paths.add(key)
+                path = Path(ref.path)
+                if path.exists() and path.is_file():
+                    path.unlink()
+                    deleted_files += 1
+
+        manifest["items"] = remaining_items
+        self.save(manifest)
+        return {"removed": True, "deleted_files": deleted_files}

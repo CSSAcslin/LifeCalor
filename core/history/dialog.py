@@ -23,6 +23,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+SORT_ROLE = Qt.UserRole + 1
+
 
 def format_bytes(num_bytes: int) -> str:
     value = float(num_bytes or 0)
@@ -33,18 +35,31 @@ def format_bytes(num_bytes: int) -> str:
     return f"{value:.1f} TB"
 
 
+class SortableTreeWidgetItem(QTreeWidgetItem):
+    def __lt__(self, other):
+        column = self.treeWidget().sortColumn()
+        left = self.data(column, SORT_ROLE)
+        right = other.data(column, SORT_ROLE)
+        if left is not None and right is not None:
+            return left < right
+        return super().__lt__(other)
+
+
 class HistoryCacheManagerDialog(QDialog):
     select_history_requested = pyqtSignal(str, float)
     force_cache_requested = pyqtSignal(str, float)
+    delete_history_requested = pyqtSignal(str, float)
     cleanup_orphans_requested = pyqtSignal()
     clear_cache_requested = pyqtSignal()
     recover_manifest_requested = pyqtSignal(str)
+    delete_manifest_requested = pyqtSignal(str)
     refresh_requested = pyqtSignal()
+    cancel_load_requested = pyqtSignal()
 
     def __init__(self, params, current_items=None, manifest_items=None, cache_summary=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("历史与缓存管理")
-        self.setMinimumSize(820, 560)
+        self.setMinimumSize(900, 600)
         self.params = dict(params or {})
         self.current_items = list(current_items or [])
         self.manifest_items = list(manifest_items or [])
@@ -60,6 +75,9 @@ class HistoryCacheManagerDialog(QDialog):
         layout.addWidget(self.tabs)
 
         button_layout = QHBoxLayout()
+        self.cancel_load_btn = QPushButton("取消读取")
+        self.cancel_load_btn.clicked.connect(self.cancel_load_requested.emit)
+        button_layout.addWidget(self.cancel_load_btn)
         button_layout.addStretch()
         self.close_btn = QPushButton("关闭")
         self.close_btn.clicked.connect(self.accept)
@@ -70,19 +88,23 @@ class HistoryCacheManagerDialog(QDialog):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         self.current_tree = QTreeWidget()
-        self.current_tree.setHeaderLabels(["类型", "名称", "形状", "类型", "缓存", "缓存体积", "内存体积", "时间戳"])
+        self.current_tree.setHeaderLabels(["类型", "名称", "形状", "dtype", "缓存", "缓存体积", "内存体积", "时间戳"])
         self.current_tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.current_tree.setRootIsDecorated(False)
+        self.current_tree.setSortingEnabled(True)
         self.current_tree.itemDoubleClicked.connect(self._select_current_item)
         layout.addWidget(self.current_tree)
 
         buttons = QHBoxLayout()
         self.select_btn = QPushButton("设为当前数据")
         self.force_cache_btn = QPushButton("强制缓存落盘")
+        self.delete_history_btn = QPushButton("删除当前历史")
         self.select_btn.clicked.connect(self._select_current_item)
         self.force_cache_btn.clicked.connect(self._force_cache_current_item)
+        self.delete_history_btn.clicked.connect(self._delete_current_item)
         buttons.addWidget(self.select_btn)
         buttons.addWidget(self.force_cache_btn)
+        buttons.addWidget(self.delete_history_btn)
         buttons.addStretch()
         layout.addLayout(buttons)
 
@@ -93,16 +115,20 @@ class HistoryCacheManagerDialog(QDialog):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         self.manifest_tree = QTreeWidget()
-        self.manifest_tree.setHeaderLabels(["类型", "名称", "形状", "dtype", "缓存文件", "缓存体积", "状态"])
+        self.manifest_tree.setHeaderLabels(["类型", "名称", "形状", "dtype", "缓存文件", "缓存体积", "状态", "保存时间"])
         self.manifest_tree.setRootIsDecorated(False)
+        self.manifest_tree.setSortingEnabled(True)
         layout.addWidget(self.manifest_tree)
 
         buttons = QHBoxLayout()
         self.recover_btn = QPushButton("恢复选中项")
+        self.delete_manifest_btn = QPushButton("删除选中索引")
         self.refresh_manifest_btn = QPushButton("刷新")
         self.recover_btn.clicked.connect(self._recover_manifest_item)
+        self.delete_manifest_btn.clicked.connect(self._delete_manifest_item)
         self.refresh_manifest_btn.clicked.connect(self.refresh_requested.emit)
         buttons.addWidget(self.recover_btn)
+        buttons.addWidget(self.delete_manifest_btn)
         buttons.addWidget(self.refresh_manifest_btn)
         buttons.addStretch()
         layout.addLayout(buttons)
@@ -116,7 +142,8 @@ class HistoryCacheManagerDialog(QDialog):
 
         summary_group = QGroupBox("缓存概览")
         summary_layout = QFormLayout()
-        summary_layout.addRow(QLabel("缓存目录:"), QLabel(str(self.params.get("cache_directory", ""))))
+        self.current_directory_label = QLabel(str(self.params.get("cache_directory", "")))
+        summary_layout.addRow(QLabel("当前目录:"), self.current_directory_label)
         summary_layout.addRow(QLabel("缓存文件:"), QLabel(str(self.cache_summary.get("file_count", 0))))
         summary_layout.addRow(QLabel("缓存体积:"), QLabel(format_bytes(self.cache_summary.get("total_bytes", 0))))
         summary_group.setLayout(summary_layout)
@@ -151,7 +178,7 @@ class HistoryCacheManagerDialog(QDialog):
         layout.addWidget(settings_group)
 
         buttons = QHBoxLayout()
-        self.cleanup_btn = QPushButton("清理孤立缓存")
+        self.cleanup_btn = QPushButton("清除孤立缓存")
         self.clear_cache_btn = QPushButton("清除全部缓存")
         self.cleanup_btn.clicked.connect(self.cleanup_orphans_requested.emit)
         self.clear_cache_btn.clicked.connect(self.clear_cache_requested.emit)
@@ -176,9 +203,10 @@ class HistoryCacheManagerDialog(QDialog):
 
     def refresh_current_items(self, items):
         self.current_items = list(items or [])
+        self.current_tree.setSortingEnabled(False)
         self.current_tree.clear()
         for item in self.current_items:
-            tree_item = QTreeWidgetItem([
+            tree_item = SortableTreeWidgetItem([
                 item.get("kind", ""),
                 item.get("name", ""),
                 str(item.get("shape", "")),
@@ -189,27 +217,37 @@ class HistoryCacheManagerDialog(QDialog):
                 str(item.get("timestamp", "")),
             ])
             tree_item.setData(0, Qt.UserRole, (item.get("kind"), item.get("timestamp")))
+            for column, value in {5: item.get("cached_bytes", 0), 6: item.get("memory_bytes", 0), 7: float(item.get("timestamp") or 0)}.items():
+                tree_item.setData(column, SORT_ROLE, value)
             self.current_tree.addTopLevelItem(tree_item)
+        self.current_tree.setSortingEnabled(True)
         self.current_tree.resizeColumnToContents(0)
         self.current_tree.resizeColumnToContents(1)
 
     def refresh_manifest_items(self, items):
         self.manifest_items = list(items or [])
+        self.manifest_tree.setSortingEnabled(False)
         self.manifest_tree.clear()
         for item in self.manifest_items:
             arrays = item.get("arrays") or {}
             status = item.get("file_status", {})
-            tree_item = QTreeWidgetItem([
+            cache_bytes = sum(int(array.get("nbytes", 0)) for array in arrays.values())
+            saved_at = float(item.get("saved_at") or 0)
+            tree_item = SortableTreeWidgetItem([
                 item.get("kind", ""),
                 item.get("name", ""),
                 str(item.get("shape", "")),
                 str(item.get("dtype", "")),
                 str(len(arrays)),
-                format_bytes(sum(int(array.get("nbytes", 0)) for array in arrays.values())),
+                format_bytes(cache_bytes),
                 "可用" if status.get("ok", True) else "缺失",
+                f"{saved_at:.3f}" if saved_at else "",
             ])
             tree_item.setData(0, Qt.UserRole, item.get("id", ""))
+            for column, value in {4: len(arrays), 5: cache_bytes, 6: 0 if status.get("ok", True) else 1, 7: saved_at}.items():
+                tree_item.setData(column, SORT_ROLE, value)
             self.manifest_tree.addTopLevelItem(tree_item)
+        self.manifest_tree.setSortingEnabled(True)
         self.manifest_tree.resizeColumnToContents(0)
         self.manifest_tree.resizeColumnToContents(1)
 
@@ -224,6 +262,13 @@ class HistoryCacheManagerDialog(QDialog):
             return None
         return kind, timestamp
 
+    def _selected_manifest_id(self):
+        item = self.manifest_tree.currentItem()
+        if item is None:
+            return None
+        item_id = item.data(0, Qt.UserRole)
+        return str(item_id) if item_id else None
+
     def _select_current_item(self):
         identity = self._selected_current_identity()
         if identity:
@@ -233,15 +278,23 @@ class HistoryCacheManagerDialog(QDialog):
         identity = self._selected_current_identity()
         if identity:
             self.force_cache_requested.emit(identity[0], identity[1])
+
+    def _delete_current_item(self):
+        identity = self._selected_current_identity()
+        if identity:
+            self.delete_history_requested.emit(identity[0], identity[1])
+
     def open_cache_directory(self):
         directory = Path(self.cache_directory_edit.text().strip())
         directory.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
 
     def _recover_manifest_item(self):
-        item = self.manifest_tree.currentItem()
-        if item is None:
-            return
-        item_id = item.data(0, Qt.UserRole)
+        item_id = self._selected_manifest_id()
         if item_id:
-            self.recover_manifest_requested.emit(str(item_id))
+            self.recover_manifest_requested.emit(item_id)
+
+    def _delete_manifest_item(self):
+        item_id = self._selected_manifest_id()
+        if item_id:
+            self.delete_manifest_requested.emit(item_id)
