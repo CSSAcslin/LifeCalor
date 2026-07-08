@@ -38,6 +38,7 @@ class PlotGraphWidget(QWidget):
         self.base_unit = None  # 用于存储第一个添加的数据的单位
         self.data_items = []
         self.data_cache = {}
+        self.precomputed_histogram_items = set()
 
         # 悬浮取值标签 (替代原来的十字光标)
         self.hover_label = QLabel(self)
@@ -204,6 +205,11 @@ class PlotGraphWidget(QWidget):
         symbol = kwargs.get('symbol', 'o')
         symbol_size = kwargs.get('symbol_size', 8)
         time_unit = kwargs.get('time_unit', None)
+        analysis_mode = kwargs.get('analysis_mode', None)
+        precomputed_hist = analysis_mode in ('hist_precomputed', 'histogram_distribution')
+
+        if array.ndim != 2 or array.shape[1] < 2:
+            raise ValueError(f"PlotGraph 需要二维两列数据，实际 shape={array.shape}")
 
         x_data = array[:, 0].copy()  # 复制一份X轴数据，避免修改原数组
         y_data = array[:, 1]
@@ -236,9 +242,16 @@ class PlotGraphWidget(QWidget):
         self.data_items.append(item)
         # 加入缓存
         self.data_cache[item] = (x_data, y_data)
+        if precomputed_hist:
+            self.precomputed_histogram_items.add(item)
+        else:
+            self.precomputed_histogram_items.discard(item)
 
         # 根据当前选中的模式立即进行转换
-        if self.action_psd.isChecked():
+        if precomputed_hist:
+            self.action_hist.setChecked(True)
+            self._apply_precomputed_histogram(item)
+        elif self.action_psd.isChecked():
             self._apply_psd(item)
         elif self.action_hist.isChecked():
             self._apply_histogram(item)
@@ -394,10 +407,27 @@ class PlotGraphWidget(QWidget):
             self.plot_widget.setLabel('left', "Count (频数)")
             self.plot_widget.setLogMode(x=False, y=False)  # 直方图不看对数
             for item in self.data_items:
-                self._apply_histogram(item)
+                if item in self.precomputed_histogram_items:
+                    self._apply_precomputed_histogram(item)
+                else:
+                    self._apply_histogram(item)
 
         # 刷新坐标轴范围
         self.plot_widget.autoRange()
+
+    def _apply_precomputed_histogram(self, item):
+        """显示已经由算法计算好的频数分布，避免二次 histogram。"""
+        if item not in self.data_cache:
+            return
+        x_values, counts = self.data_cache[item]
+        self.plot_widget.setLabel('bottom', "Value (实际值)")
+        self.plot_widget.setLabel('left', "Count (频数)")
+        self.plot_widget.setLogMode(x=False, y=False)
+        item.setData(x_values, counts)
+        item.setFillLevel(0)
+        pen = item.opts.get('pen')
+        color = pen.color().name() if pen is not None else '#4CAF50'
+        item.setBrush(pg.mkBrush(color + '80'))
 
     def _apply_psd(self, item):
         """计算并应用 PSD 到单个 Item"""

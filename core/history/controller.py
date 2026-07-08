@@ -10,6 +10,7 @@ from DataManager import ArrayLoadWorker, Data, ProcessedData, clear_array_cache,
 from ExtraDialog import DataViewAndSelectPop
 from .dialog import HistoryCacheManagerDialog
 from .manifest import HistoryManifestStore, array_refs_for_manifest, build_manifest_item, cache_status_for_history_item, restore_history_item
+from diagnostics import AppError, report_exception, show_app_error
 
 
 class HistoryController:
@@ -94,8 +95,7 @@ class HistoryController:
         self.window.update_status("缓存读取已取消", "idle")
 
     def cache_load_failed(self, message):
-        logging.error("缓存数据读取失败: %s", message)
-        QMessageBox.critical(self.window, "缓存读取失败", str(message))
+        show_app_error(self.window, AppError("缓存读取失败", str(message), stage="缓存读取"))
         self.window.update_progress(-1)
         self.window.update_status("缓存读取失败", "failed")
 
@@ -243,8 +243,7 @@ class HistoryController:
             QMessageBox.information(self.window, "缓存落盘", "历史数据已保存为可恢复缓存")
             self.refresh_cache_dialog()
         except Exception as exc:
-            logging.exception("强制缓存历史数据失败")
-            QMessageBox.critical(self.window, "缓存落盘失败", str(exc))
+            report_exception(self.window, "缓存落盘失败", str(exc), exc, stage="强制缓存历史数据", data=target)
         finally:
             self.window.update_status("准备就绪", "idle")
 
@@ -295,8 +294,7 @@ class HistoryController:
             QMessageBox.information(self.window, "恢复历史", "历史数据已恢复，并正在设为当前数据")
             return restored
         except Exception as exc:
-            logging.exception("恢复历史缓存失败")
-            QMessageBox.critical(self.window, "恢复历史失败", str(exc))
+            report_exception(self.window, "恢复历史失败", str(exc), exc, stage="恢复历史缓存")
             return None
 
     def delete_manifest_item(self, item_id):

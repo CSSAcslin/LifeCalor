@@ -26,6 +26,7 @@ class CanvasSignalBinder:
             (canvas.current_canvas_signal, image_display.set_cursor_id),
             (canvas.draw_result_signal, window.draw_result),
             (canvas.get_fast_selection, proc_thread.get_fast_selection),
+            (canvas.get_value_distribution, proc_thread.get_value_distribution),
             (canvas.sync_progress_signal, image_display.on_canvas_sync_progress),
             (canvas.sync_playback_signal, image_display.on_canvas_sync_playback),
         ]

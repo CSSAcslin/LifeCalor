@@ -23,6 +23,7 @@ from display.service import FrameRenderService
 from display.render_controller import RenderController
 from ExtraDialog import ROIInfoDialog, ColorMapDialog, DataExportDialog, ParamsResetDialog
 from widget.AdvancedTimeline import AdvancedTimeline
+from diagnostics import report_exception
 
 import matplotlib.cm as cm
 
@@ -602,6 +603,7 @@ class SubImageDisplayWidget(QDockWidget):
     current_canvas_signal = pyqtSignal(int)
     draw_result_signal = pyqtSignal(str,int,object,dict)
     get_fast_selection = pyqtSignal(object, np.ndarray, str, str)
+    get_value_distribution = pyqtSignal(object, np.ndarray, int, str)
     sync_progress_signal = pyqtSignal(float, int)  # 参数: 进度比例(0.0~1.0), 画布ID
     sync_playback_signal = pyqtSignal(str, int)  # 参数: 动作指令('play'/'pause'/'reset'), 画布ID
     frame_render_requested = pyqtSignal(int, object, int, object)
@@ -1037,8 +1039,13 @@ class SubImageDisplayWidget(QDockWidget):
                                                                                 center = (y_int,x_int))
                         self.add_fast_selection(x_int,y_int,self.anchor_mask)
                         method = self.args_dict['anchor_method']
-                        self.get_fast_selection.emit(self.data,self.anchor_mask, method , f'canvas{self.id}-({x_int},{y_int}){method}')
-                        logging.info(f'取{x, y}的{self.args_dict['anchor_method']}绘图')
+                        if method == 'value_distribution':
+                            name = f'canvas{self.id}-({x_int},{y_int})值分布'
+                            self.get_value_distribution.emit(self.data, self.anchor_mask, self.current_time_idx, name)
+                        else:
+                            name = f'canvas{self.id}-({x_int},{y_int}){method}'
+                            self.get_fast_selection.emit(self.data,self.anchor_mask, method , name)
+                        logging.info(f"取{(x, y)}的{method}绘图")
                     return
 
             else: # 无工具选中的纯单机模式
@@ -1603,7 +1610,7 @@ class SubImageDisplayWidget(QDockWidget):
                 QMessageBox.information(self, "成功", "数据裁剪完成。")
 
             except Exception as e:
-                QMessageBox.critical(self, "错误", f"裁剪失败: {str(e)}")
+                report_exception(self, "裁剪失败", str(e), e, stage="裁剪显示数据", data=self.data)
 
     def crop_data(self):
         """裁剪母数据"""
@@ -1652,7 +1659,7 @@ class SubImageDisplayWidget(QDockWidget):
                     QMessageBox.information(self, "成功", "数据裁剪完成。")
 
                 except Exception as e:
-                    QMessageBox.critical(self, "错误", f"裁剪失败: {str(e)}")
+                    report_exception(self, "裁剪失败", str(e), e, stage="裁剪源数据", data=self.data)
 
     def reset_params(self):
         """重置核心参数"""
@@ -2357,7 +2364,7 @@ class AnchorSelectDialog(QDialog):
         self.param = param
         self.parent = parent
         self.shape_items = ['square','circle']
-        self.method_items = ['mean', 'max', 'min', 'median', 'quantile_075', 'std', 'sum', 'var']
+        self.method_items = ['mean', 'max', 'min', 'median', 'quantile_075', 'std', 'sum', 'var', 'value_distribution']
         self.init_ui()
 
     def init_ui(self):
@@ -2386,7 +2393,7 @@ class AnchorSelectDialog(QDialog):
         method_layout = QHBoxLayout()
         method_layout.addWidget(QLabel("提取方法"))
         self.method_combo = QComboBox()
-        self.method_combo.addItems(['平均值', '最大值', '最小值', '中位值', '0.75分位数', '标准差', '求和', '方差'])
+        self.method_combo.addItems(['平均值', '最大值', '最小值', '中位值', '0.75分位数', '标准差', '求和', '方差', '值分布统计'])
         self.method_combo.setCurrentIndex(self.method_items.index(self.param["anchor_method"]))
         method_layout.addWidget(self.method_combo)
 

@@ -35,6 +35,7 @@ from display.status import render_status_update
 from display.canvas_signals import CanvasSignalBinder, disconnect_canvas_signal as disconnect_display_canvas_signal
 from display.canvas_controller import DisplayCanvasController
 from display.hover import format_hover_value
+from diagnostics import AppError, show_app_error
 
 
 class MainWindow(QMainWindow):
@@ -71,7 +72,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "1.0.4"  # 当前程序版本
+        self.current_version = "1.0.5"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = get_github_auth_header()
@@ -1331,6 +1332,7 @@ class MainWindow(QMainWindow):
         self.fix_bad_frames_signal.connect(self.proc_thread.fix_bad_frames)
         self.proc_thread.plot_singal.connect(self.graph_plot.handle_plot_signal)
         self.proc_thread.plot_series_signal.connect(self.graph_plot.handle_from_image)
+        self.proc_thread.processing_error_signal.connect(lambda error: show_app_error(self, error))
 
     def cal_thread_open(self):
         """计算线程相关 以及信号槽连接都放在这里了"""
@@ -2290,8 +2292,15 @@ class MainWindow(QMainWindow):
             self.cwt_process_btn.setEnabled(True)
             self.tDgf_btn.setEnabled(True)
             self.sscs_btn.setEnabled(True)
-            QMessageBox.warning(self,"运算错误",f"在{data['type']}处理中报错：\n{data['error']}")
-            logging.error("运算因错误而终止")
+            process_type = data.get('type', '未知处理') if isinstance(data, dict) else '未知处理'
+            error_message = data.get('error', '未知错误') if isinstance(data, dict) else str(data)
+            show_app_error(self, AppError(
+                "运算错误",
+                f"在{process_type}处理中报错：\n{error_message}",
+                stage=process_type,
+                severity="warning",
+                details=error_message,
+            ))
             self.update_progress(-1) # 进度条重置
             return False
         self.processed_data = data

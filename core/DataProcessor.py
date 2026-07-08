@@ -16,6 +16,7 @@ import math
 import traceback
 
 from ResultDisplayWidget import HeartbeatDraw
+from diagnostics import AppError, format_exception_details
 
 
 def get_unfolded_data(data):
@@ -112,6 +113,7 @@ class DataProcessor(QObject):
     """本类包含所有非计算流程的操作（常开线程）"""
     plot_singal = pyqtSignal(np.ndarray,dict)
     plot_series_signal = pyqtSignal(np.ndarray, str)
+    processing_error_signal = pyqtSignal(object)
     def __init__(self):
         super().__init__()
         logging.info("例外数据处理线程已启动")
@@ -272,51 +274,122 @@ class DataProcessor(QObject):
     @pyqtSlot(object, np.ndarray, str, str)
     def get_fast_selection(self,data, mask, method:str, name:str):
         """本函数是获取快速选取数据并发射的函数"""
-        aim_data = data.image_backup.copy()
-        T, H, W = aim_data.shape
-        mask_flat = mask.reshape(-1)
+        try:
+            aim_data = data.image_backup
+            T, H, W = aim_data.shape
+            mask_flat = mask.reshape(-1)
 
-        # 获取蒙版内的索引
-        mask_indices = np.where(mask_flat)[0]
+            # 获取蒙版内的索引
+            mask_indices = np.where(mask_flat)[0]
 
-        # 重塑数据以便于提取蒙版区域
-        data_reshaped = aim_data.reshape(T, -1)
+            # 重塑数据以便于提取蒙版区域
+            data_reshaped = aim_data.reshape(T, -1)
 
-        # 提取蒙版内的数据
-        masked_data = data_reshaped[:, mask_indices]
+            # 提取蒙版内的数据
+            masked_data = data_reshaped[:, mask_indices]
 
-        # 根据不同的统计方法计算结果
-        result = np.zeros(T, dtype=aim_data.dtype)
+            # 根据不同的统计方法计算结果
+            result = np.zeros(T, dtype=aim_data.dtype)
 
-        for t in range(T):
-            frame_data = masked_data[t, :]
+            for t in range(T):
+                frame_data = masked_data[t, :]
 
-            if len(frame_data) == 0:
-                result[t] = np.nan
-                continue
+                if len(frame_data) == 0:
+                    result[t] = np.nan
+                    continue
 
-            if method == 'mean':
-                result[t] = np.mean(frame_data)
-            elif method == 'max':
-                result[t] = np.max(frame_data)
-            elif method == 'min':
-                result[t] = np.min(frame_data)
-            elif method == 'median':
-                result[t] = np.median(frame_data)
-            elif method == 'quantile_075':
-                result[t] = np.quantile(frame_data, 0.75)
-            elif method == 'std':
-                result[t] = np.std(frame_data)
-            elif method == 'sum':
-                result[t] = np.sum(frame_data)
-            elif method == 'var':
-                result[t] = np.var(frame_data)
-            else:
-                raise ValueError(f"不支持的统计方法: {method}。"
-                                 f"支持的方法: mean, max, min, median, quantile_075, std, sum, var")
+                if method == 'mean':
+                    result[t] = np.mean(frame_data)
+                elif method == 'max':
+                    result[t] = np.max(frame_data)
+                elif method == 'min':
+                    result[t] = np.min(frame_data)
+                elif method == 'median':
+                    result[t] = np.median(frame_data)
+                elif method == 'quantile_075':
+                    result[t] = np.quantile(frame_data, 0.75)
+                elif method == 'std':
+                    result[t] = np.std(frame_data)
+                elif method == 'sum':
+                    result[t] = np.sum(frame_data)
+                elif method == 'var':
+                    result[t] = np.var(frame_data)
+                else:
+                    raise ValueError(f"不支持的统计方法: {method}。"
+                                     f"支持的方法: mean, max, min, median, quantile_075, std, sum, var")
 
-        plot_data = np.column_stack((data.time_point, result))
-        self.plot_series_signal.emit(plot_data, name)
+            plot_data = np.column_stack((data.time_point, result))
+            self.plot_series_signal.emit(plot_data, name)
+        except Exception as exc:
+            details = format_exception_details(exc, "anchor 快速提取", data)
+            logging.error("anchor 快速提取失败\n%s", details)
+            self.processing_error_signal.emit(AppError("快速提取失败", str(exc), stage="anchor 快速提取", details=details))
+
+    @staticmethod
+    def value_distribution_from_frame(frame: np.ndarray, mask: np.ndarray, bins="auto"):
+        """计算单帧 ROI 内真实数值的频数分布。"""
+        frame = np.asarray(frame)
+        mask = np.asarray(mask, dtype=bool)
+        if frame.ndim != 2:
+            raise ValueError(f"值分布统计需要二维当前帧，实际 shape={frame.shape}")
+        if mask.shape != frame.shape:
+            raise ValueError(f"ROI 蒙版形状 {mask.shape} 与当前帧形状 {frame.shape} 不匹配")
+
+        values = frame[mask]
+        if values.size == 0:
+            raise ValueError("ROI 内没有可统计的像素")
+
+        value_mode = "raw"
+        if np.iscomplexobj(values):
+            values = np.abs(values)
+            value_mode = "abs_complex"
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            raise ValueError("ROI 内没有有限数值可统计")
+
+        counts, edges = np.histogram(values, bins=bins)
+        centers = (edges[:-1] + edges[1:]) / 2
+        plot_data = np.column_stack((centers, counts))
+        metadata = {
+            "pixel_count": int(values.size),
+            "min": float(np.min(values)),
+            "max": float(np.max(values)),
+            "mean": float(np.mean(values)),
+            "std": float(np.std(values)),
+            "median": float(np.median(values)),
+            "dtype": str(frame.dtype),
+            "bins": int(len(counts)),
+            "value_mode": value_mode,
+        }
+        return plot_data, metadata
+
+    @staticmethod
+    def _distribution_frame(data, frame_index: int):
+        if getattr(data, "display_source", None) is not None:
+            return data.display_source.get_frame(frame_index if data.is_temporary else 0)
+        source = data.image_backup
+        if data.is_temporary and getattr(source, "ndim", 0) >= 3:
+            return source[frame_index]
+        return source
+
+    @pyqtSlot(object, np.ndarray, int, str)
+    def get_value_distribution(self, data, mask, frame_index: int, name: str):
+        try:
+            frame = self._distribution_frame(data, frame_index)
+            plot_data, metadata = self.value_distribution_from_frame(frame, mask)
+            metadata.update({
+                "frame_index": int(frame_index),
+                "source_name": getattr(data, "source_name", getattr(data, "name", None)),
+            })
+            self.plot_singal.emit(plot_data, {
+                "name": name,
+                "analysis_mode": "hist_precomputed",
+                "metadata": metadata,
+            })
+        except Exception as exc:
+            details = format_exception_details(exc, "anchor 值分布统计", data)
+            logging.error("anchor 值分布统计失败\n%s", details)
+            self.processing_error_signal.emit(AppError("值分布统计失败", str(exc), stage="anchor 值分布统计", details=details))
 
 
 class MassDataProcessor(QObject):
