@@ -1031,7 +1031,7 @@ class SubImageDisplayWidget(QDockWidget):
                     # 获取并发射图像数据
                     self.get_value(y_int, x_int)
 
-                    if self.anchor_active and self.data.is_temporary and self.args_dict['anchor_select']:
+                    if self.anchor_active and self.args_dict['anchor_select']:
                         # anchor模式下取值快速绘图
                         self.anchor_mask = PublicEasyMethod.quick_mask(self.data.framesize,
                                                                                 shape= self.args_dict['anchor_shape'],
@@ -1039,12 +1039,15 @@ class SubImageDisplayWidget(QDockWidget):
                                                                                 center = (y_int,x_int))
                         self.add_fast_selection(x_int,y_int,self.anchor_mask)
                         method = self.args_dict['anchor_method']
+                        frame_index = self.current_time_idx if self.data.is_temporary else 0
                         if method == 'value_distribution':
-                            name = f'canvas{self.id}-({x_int},{y_int})值分布'
-                            self.get_value_distribution.emit(self.data, self.anchor_mask, self.current_time_idx, name)
-                        else:
+                            name = f'canvas{self.id}-({x_int},{y_int})-frame{frame_index}-值分布'
+                            self.get_value_distribution.emit(self.data, self.anchor_mask, frame_index, name)
+                        elif self.data.is_temporary:
                             name = f'canvas{self.id}-({x_int},{y_int}){method}'
                             self.get_fast_selection.emit(self.data,self.anchor_mask, method , name)
+                        else:
+                            logging.warning("二维图像的 anchor 快速提取仅支持值分布统计")
                         logging.info(f"取{(x, y)}的{method}绘图")
                     return
 

@@ -66,6 +66,7 @@ class MainWindow(QMainWindow):
     heartbeat_signal = pyqtSignal(object, int, int ,list, str, str, float)
     basic_math_signal = pyqtSignal(object, str)
     easy_process = pyqtSignal(object, str, object)
+    roi_value_distribution_signal = pyqtSignal(object, np.ndarray, int, object, object, str)
     roi_processed_signal = pyqtSignal(object,np.ndarray,float,bool,bool,float)
     cache_progress_signal = pyqtSignal(object, object, str)
 
@@ -930,6 +931,8 @@ class MainWindow(QMainWindow):
         self.data_name_label = QLabel()
         self.signal_extract = QPushButton("时序信号快速提取")
         Other_layout.addWidget(self.signal_extract)
+        self.roi_distribution_btn = QPushButton("选区分布统计")
+        Other_layout.addWidget(self.roi_distribution_btn)
         self.tDFT_btn2 = QPushButton("二维傅里叶变换")
         Other_layout.addWidget(self.tDFT_btn2)
         self.tDiFT_btn = QPushButton("二维傅里叶逆变换")
@@ -1333,6 +1336,7 @@ class MainWindow(QMainWindow):
         self.proc_thread.plot_singal.connect(self.graph_plot.handle_plot_signal)
         self.proc_thread.plot_series_signal.connect(self.graph_plot.handle_from_image)
         self.proc_thread.processing_error_signal.connect(lambda error: show_app_error(self, error))
+        self.roi_value_distribution_signal.connect(self.proc_thread.get_roi_value_distribution)
 
     def cal_thread_open(self):
         """计算线程相关 以及信号槽连接都放在这里了"""
@@ -1412,6 +1416,7 @@ class MainWindow(QMainWindow):
         self.heartbeat_btn.clicked.connect(self.process_heartbeat)
         self.basic_math_btn.clicked.connect(self.process_math)
         self.signal_extract.clicked.connect(self.process_signal_avg)
+        self.roi_distribution_btn.clicked.connect(self.process_roi_value_distribution)
         self.export_image_btn.clicked.connect(self.export_image)
         self.export_data_btn.clicked.connect(self.export_data)
         # 成像绘制信号
@@ -2128,6 +2133,59 @@ class MainWindow(QMainWindow):
         self.update_status('计算进行中...', 'working')
         self.easy_process.emit(aim_data,'avg',None)
         return None
+
+
+    def _default_distribution_frame_index(self, data):
+        if getattr(data, "ndim", 0) != 3:
+            return 0
+        for canvas in getattr(self.image_display, "display_canvas", []):
+            canvas_data = getattr(canvas, "data", None)
+            if getattr(canvas_data, "timestamp_inherited", None) == getattr(data, "timestamp", None):
+                return max(0, min(int(getattr(canvas, "current_time_idx", 0)), data.timelength - 1))
+        return 0
+
+    def process_roi_value_distribution(self):
+        """计算选区当前帧值分布并显示到 PlotGraph。"""
+        aim_data = self.data_selection()
+        if aim_data is None:
+            return False
+        mask = self.roi_selection(True)
+        if mask is None:
+            return False
+        if mask.shape != aim_data.framesize:
+            QMessageBox.warning(self, "蒙版错误", "蒙版尺寸与数据不匹配")
+            return False
+
+        default_frame = self._default_distribution_frame_index(aim_data)
+        try:
+            frame = DataProcessor._distribution_frame(aim_data, default_frame)
+            _, metadata = DataProcessor.value_distribution_from_frame(frame, mask, bins=1)
+        except Exception as exc:
+            show_app_error(self, AppError("选区分布统计失败", str(exc), stage="选区分布统计", severity="warning"))
+            return False
+
+        max_frame = aim_data.timelength - 1 if getattr(aim_data, "ndim", 0) == 3 else 0
+        dialog = ValueDistributionDialog(metadata["min"], metadata["max"], max_frame=max_frame, default_frame=default_frame, parent=self)
+        if not dialog.exec_():
+            return False
+        try:
+            config = dialog.get_config()
+        except ValueError as exc:
+            QMessageBox.warning(self, "参数错误", str(exc))
+            return False
+
+        frame_index = config["frame_index"]
+        name = f"{aim_data.name}-frame{frame_index}-ROI值分布"
+        self.update_status("选区分布统计中...", "working")
+        self.roi_value_distribution_signal.emit(
+            aim_data,
+            mask,
+            frame_index,
+            config["bins"],
+            config["value_range"],
+            name,
+        )
+        return True
 
     def process_atam(self):
         """累计时间振幅图"""

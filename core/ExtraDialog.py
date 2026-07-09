@@ -2773,6 +2773,96 @@ class RawDataExportDialog(QDialog):
         else:
             raise ValueError(f"不支持的保存格式: {ext}")
 
+
+# 值分布统计参数对话框
+class ValueDistributionDialog(QDialog):
+    def __init__(self, value_min, value_max, max_frame=0, default_frame=0, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("选区值分布统计")
+        self.setMinimumWidth(360)
+        self.value_min = float(value_min)
+        self.value_max = float(value_max)
+        self.max_frame = max(0, int(max_frame))
+        self.default_frame = max(0, min(int(default_frame), self.max_frame))
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        form_layout = QFormLayout()
+
+        range_text = f"{self.value_min:.6g} ~ {self.value_max:.6g}"
+        self.range_hint = QLabel(range_text)
+        form_layout.addRow("当前ROI值域:", self.range_hint)
+
+        self.frame_input = QSpinBox()
+        self.frame_input.setRange(0, self.max_frame)
+        self.frame_input.setValue(self.default_frame)
+        self.frame_input.setEnabled(self.max_frame > 0)
+        form_layout.addRow("统计帧:", self.frame_input)
+
+        self.bin_mode_combo = QComboBox()
+        self.bin_mode_combo.addItems(["自动", "固定数量"])
+        form_layout.addRow("分桶方式:", self.bin_mode_combo)
+
+        self.bin_count_input = QSpinBox()
+        self.bin_count_input.setRange(2, 10000)
+        self.bin_count_input.setValue(100)
+        self.bin_count_input.setEnabled(False)
+        form_layout.addRow("bin数量:", self.bin_count_input)
+
+        self.auto_range_check = QCheckBox("使用当前ROI值域")
+        self.auto_range_check.setChecked(True)
+        form_layout.addRow("统计范围:", self.auto_range_check)
+
+        self.min_input = QLineEdit(f"{self.value_min:.12g}")
+        self.max_input = QLineEdit(f"{self.value_max:.12g}")
+        self.min_input.setEnabled(False)
+        self.max_input.setEnabled(False)
+        form_layout.addRow("最小值:", self.min_input)
+        form_layout.addRow("最大值:", self.max_input)
+
+        layout.addLayout(form_layout)
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        self.bin_mode_combo.currentIndexChanged.connect(self._update_bin_mode)
+        self.auto_range_check.toggled.connect(self._update_range_mode)
+
+    def _update_bin_mode(self):
+        self.bin_count_input.setEnabled(self.bin_mode_combo.currentIndex() == 1)
+
+    def _update_range_mode(self, checked):
+        self.min_input.setEnabled(not checked)
+        self.max_input.setEnabled(not checked)
+
+    def get_config(self):
+        bins = "auto" if self.bin_mode_combo.currentIndex() == 0 else self.bin_count_input.value()
+        value_range = None
+        if not self.auto_range_check.isChecked():
+            try:
+                range_min = float(self.min_input.text())
+                range_max = float(self.max_input.text())
+            except ValueError as exc:
+                raise ValueError("统计范围必须是数字，支持科学计数法") from exc
+            if range_min >= range_max:
+                raise ValueError("统计范围最小值必须小于最大值")
+            value_range = (range_min, range_max)
+        return {
+            "frame_index": self.frame_input.value(),
+            "bins": bins,
+            "value_range": value_range,
+        }
+
+    def accept(self):
+        try:
+            self.get_config()
+        except ValueError as exc:
+            QMessageBox.warning(self, "参数错误", str(exc))
+            return
+        super().accept()
+
 # 数据计算器对话框
 class BasicCalDialog(QDialog):
     def __init__(self, parent=None):

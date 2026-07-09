@@ -326,7 +326,7 @@ class DataProcessor(QObject):
             self.processing_error_signal.emit(AppError("快速提取失败", str(exc), stage="anchor 快速提取", details=details))
 
     @staticmethod
-    def value_distribution_from_frame(frame: np.ndarray, mask: np.ndarray, bins="auto"):
+    def value_distribution_from_frame(frame: np.ndarray, mask: np.ndarray, bins="auto", value_range=None):
         """计算单帧 ROI 内真实数值的频数分布。"""
         frame = np.asarray(frame)
         mask = np.asarray(mask, dtype=bool)
@@ -347,7 +347,18 @@ class DataProcessor(QObject):
         if values.size == 0:
             raise ValueError("ROI 内没有有限数值可统计")
 
-        counts, edges = np.histogram(values, bins=bins)
+        histogram_range = None
+        if value_range is not None:
+            if len(value_range) != 2:
+                raise ValueError("统计范围必须包含最小值和最大值")
+            range_min, range_max = float(value_range[0]), float(value_range[1])
+            if not np.isfinite(range_min) or not np.isfinite(range_max):
+                raise ValueError("统计范围必须是有限数值")
+            if range_min >= range_max:
+                raise ValueError("统计范围最小值必须小于最大值")
+            histogram_range = (range_min, range_max)
+
+        counts, edges = np.histogram(values, bins=bins, range=histogram_range)
         centers = (edges[:-1] + edges[1:]) / 2
         plot_data = np.column_stack((centers, counts))
         metadata = {
@@ -359,16 +370,33 @@ class DataProcessor(QObject):
             "median": float(np.median(values)),
             "dtype": str(frame.dtype),
             "bins": int(len(counts)),
+            "range": histogram_range,
             "value_mode": value_mode,
         }
         return plot_data, metadata
 
     @staticmethod
+    def _distribution_source(data):
+        if hasattr(data, "image_backup"):
+            return data.image_backup
+        if isinstance(data, ProcessedData):
+            return data.data_processed
+        if isinstance(data, Data):
+            return data.data_origin
+        source = getattr(data, "data_processed", None)
+        if source is None:
+            source = getattr(data, "data_origin", None)
+        if source is None:
+            raise ValueError("无法获取用于值分布统计的数据源")
+        return source
+
+    @staticmethod
     def _distribution_frame(data, frame_index: int):
         if getattr(data, "display_source", None) is not None:
-            return data.display_source.get_frame(frame_index if data.is_temporary else 0)
-        source = data.image_backup
-        if data.is_temporary and getattr(source, "ndim", 0) >= 3:
+            return data.display_source.get_frame(frame_index if getattr(data, "is_temporary", False) else 0)
+        source = DataProcessor._distribution_source(data)
+        if getattr(source, "ndim", 0) >= 3:
+            frame_index = max(0, min(int(frame_index), source.shape[0] - 1))
             return source[frame_index]
         return source
 
@@ -390,6 +418,26 @@ class DataProcessor(QObject):
             details = format_exception_details(exc, "anchor 值分布统计", data)
             logging.error("anchor 值分布统计失败\n%s", details)
             self.processing_error_signal.emit(AppError("值分布统计失败", str(exc), stage="anchor 值分布统计", details=details))
+
+
+    @pyqtSlot(object, np.ndarray, int, object, object, str)
+    def get_roi_value_distribution(self, data, mask, frame_index: int, bins, value_range, name: str):
+        try:
+            frame = self._distribution_frame(data, frame_index)
+            plot_data, metadata = self.value_distribution_from_frame(frame, mask, bins=bins, value_range=value_range)
+            metadata.update({
+                "frame_index": int(frame_index),
+                "source_name": getattr(data, "source_name", getattr(data, "name", None)),
+            })
+            self.plot_singal.emit(plot_data, {
+                "name": name,
+                "analysis_mode": "hist_precomputed",
+                "metadata": metadata,
+            })
+        except Exception as exc:
+            details = format_exception_details(exc, "选区值分布统计", data)
+            logging.error("选区值分布统计失败\n%s", details)
+            self.processing_error_signal.emit(AppError("选区值分布统计失败", str(exc), stage="选区值分布统计", details=details))
 
 
 class MassDataProcessor(QObject):
