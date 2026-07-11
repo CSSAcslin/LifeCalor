@@ -8,6 +8,7 @@ from typing import List
 
 import numpy as np
 from PyQt5.QtGui import QColor, QIntValidator, QFont, QCursor, QIcon
+from diagnostics import report_error, report_warning
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGroupBox,
                              QRadioButton, QSpinBox, QLineEdit, QPushButton,
                              QLabel, QMessageBox, QFormLayout, QDoubleSpinBox, QColorDialog, QComboBox, QCheckBox,
@@ -154,7 +155,7 @@ class ToolBucket:
                     f"• 所有帧: all\n\n当前有效范围: 0-{max_frame}"
                 )
                 if parent:
-                    QMessageBox.warning(parent, "输入错误", msg)
+                    report_warning(parent, "输入错误", msg)
                 logging.warning(f"帧数输入错误: {error_msg} - 原文: {text}")
 
             if parse_type == 'freq':
@@ -169,7 +170,7 @@ class ToolBucket:
                     f"• 全频率: all ({freq_min:.1f}-{freq_max:.1f})"
                 )
                 if parent:
-                    QMessageBox.warning(parent, "输入错误", msg)
+                    report_warning(parent, "输入错误", msg)
                 logging.warning(f"频率输入错误: {error_msg} - 原文: {text}")
 
             return None
@@ -304,7 +305,7 @@ class BadFrameDialog(QDialog):
             try:
                 return [int(x.strip()) for x in self.frame_input.text().split(",") if x.strip()]
             except ValueError:
-                QMessageBox.warning(self, "输入错误", "请输入有效的帧号，用逗号分隔")
+                report_warning(self, "输入错误", "请输入有效的帧号，用逗号分隔")
                 return []
 
     def apply_fix(self):
@@ -509,7 +510,7 @@ class CacheSettingsDialog(QDialog):
     def apply_settings(self):
         directory = self.cache_directory_edit.text().strip()
         if not directory:
-            QMessageBox.warning(self, "缓存设置", "请选择缓存目录")
+            report_warning(self, "缓存设置", "请选择缓存目录")
             return
 
         self.params = {
@@ -2407,7 +2408,7 @@ class HeartBeatFrameSelectDialog(QDialog):
         """获取当前选择的路径"""
         if self.save_check.isChecked():
             if not self.path_input.text():
-                QMessageBox.warning(self,"保存错误","请输入或选择要保存的文件夹")
+                report_warning(self, "保存错误", "请输入或选择要保存的文件夹")
                 raise ValueError
             return self.path_input.text()
         else:
@@ -2724,7 +2725,7 @@ class RawDataExportDialog(QDialog):
             QMessageBox.information(self, "导出成功", f"数据已成功保存至：\n{filepath}")
             self.accept()  # 关闭对话框
         except Exception as e:
-            QMessageBox.critical(self, "导出失败", f"导出过程中发生错误：\n{str(e)}")
+            report_error(self, "导出失败", f"导出过程中发生错误：\n{str(e)}")
             self.export_btn.setEnabled(True)
             self.export_btn.setText("确定导出")
 
@@ -2859,7 +2860,7 @@ class ValueDistributionDialog(QDialog):
         try:
             self.get_config()
         except ValueError as exc:
-            QMessageBox.warning(self, "参数错误", str(exc))
+            report_warning(self, "参数错误", str(exc))
             return
         super().accept()
 

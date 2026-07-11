@@ -34,7 +34,6 @@ class DisplayArchitectureTests(unittest.TestCase):
         self.assertIn("latest_frame_render_request_id", source)
         self.assertIn("def on_rendered", source)
         self.assertIn("self.state.is_stale(request_id)", source)
-        self.assertIn("def on_frame_rendered", widget_source)
 
     def test_image_display_centralizes_qimage_creation(self):
         source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
@@ -156,7 +155,7 @@ class DisplayArchitectureTests(unittest.TestCase):
         source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
         self.assertIn("from display.canvas_controller import DisplayCanvasController", source)
         self.assertIn("self.display_canvas_controller = DisplayCanvasController(self)", source)
-        add_block = source[source.index("def add_new_canvas"):source.index("def other_imports")]
+        add_block = source[source.index("def add_new_canvas"):source.index("def make_hover_handler")]
         self.assertIn("self.display_canvas_controller.add_new_canvas(assign_data)", add_block)
         self.assertIn("self.display_canvas_controller.load_image(data_type, other_params, origin_data)", add_block)
         self.assertNotIn("DataViewAndSelectPop", add_block)
@@ -173,17 +172,17 @@ class DisplayArchitectureTests(unittest.TestCase):
 
     def test_mainwindow_display_methods_remain_thin(self):
         source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
-        add_block = source[source.index("def add_new_canvas"):source.index("def other_imports")]
+        add_block = source[source.index("def add_new_canvas"):source.index("def make_hover_handler")]
         self.assertLess(len(add_block.splitlines()), 12)
         self.assertNotIn("DataViewAndSelectPop", add_block)
         self.assertNotIn("ImagingData.create_image", add_block)
 
-    def test_image_display_render_methods_remain_wrappers(self):
+    def test_image_display_routes_requests_directly_to_render_controller(self):
         source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
         start = source.index("def request_frame_render")
-        request_block = source[start:source.index("def _start_frame_render", start)]
+        request_block = source[start:source.index("def closeEvent", start)]
         self.assertIn("self.render_controller.request_frame_render(idx)", request_block)
-        self.assertLess(len(request_block.splitlines()), 8)
+        self.assertNotIn("def on_frame_rendered", source)
 
     def test_video_playback_refreshes_hover_value_for_current_cursor(self):
         source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")

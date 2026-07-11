@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from diagnostics import report_warning
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 from ExtraDialog import DataExportDialog, DataSavingPop
@@ -17,13 +18,13 @@ class ExportController:
     def export_image(self):
         current_index = self.window.result_display.currentIndex()
         if current_index < 0:
-            QMessageBox.warning(self.window, "导出失败", "没有可导出的图像")
+            report_warning(self.window, "导出失败", "没有可导出的图像")
             return
 
         tab = self.window.result_display.widget(current_index)
         canvas = tab.findChild(FigureCanvas)
         if not canvas:
-            QMessageBox.warning(self.window, "导出失败", "未找到图像画布")
+            report_warning(self.window, "导出失败", "未找到图像画布")
             return
 
         try:
@@ -34,8 +35,8 @@ class ExportController:
                 canvas.figure.savefig(path, dpi=300)
                 QMessageBox.information(self.window, "导出成功", f"图像已保存至:\n{path}")
                 logging.info(f"导出成功,图像已保存至:{path}")
-        except Exception as exc:
-            logging.info(f"数据未保存: {exc}")
+        except Exception:
+            logging.exception("图像导出失败")
 
     def export_data(self):
         result_display = self.window.result_display
@@ -67,7 +68,7 @@ class ExportController:
             if save_dataframe(dataframe, file_path, has_header, task_state):
                 logging.info("数据已保存")
             else:
-                logging.info(f"数据未保存: {task_state.error}")
+                logging.error("数据导出失败: %s", task_state.error)
             self.window.update_status("准备就绪", 'idle')
             return
 
@@ -80,7 +81,7 @@ class ExportController:
             logging.warning('请先加载并处理数据')
             return
         if not can_export_em_data(processed_data.type_processed):
-            QMessageBox.warning(self.window, '提示', '请先变换处理数据')
+            report_warning(self.window, '提示', '请先变换处理数据')
             return
 
         dialog = DataExportDialog(datatypes=['tif', 'avi', 'gif', 'png'])

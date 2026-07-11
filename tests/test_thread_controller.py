@@ -21,7 +21,7 @@ class FakeThread:
         self.calls.append("quit")
         self.running = False
 
-    def wait(self):
+    def wait(self, _timeout=None):
         self.calls.append("wait")
 
     def deleteLater(self):

@@ -23,7 +23,7 @@ from display.service import FrameRenderService
 from display.render_controller import RenderController
 from ExtraDialog import ROIInfoDialog, ColorMapDialog, DataExportDialog, ParamsResetDialog
 from widget.AdvancedTimeline import AdvancedTimeline
-from diagnostics import report_exception
+from diagnostics import report_exception, report_warning
 
 import matplotlib.cm as cm
 
@@ -32,7 +32,6 @@ class ImageDisplayWindow(QMainWindow):
     add_canvas_signal = pyqtSignal()
     draw_result_signal = pyqtSignal(str, int, object,dict)
     params_update_signal = pyqtSignal(dict)
-    image_style_change_signal = pyqtSignal(object,dict)
     image_export_signal = pyqtSignal(object, str, str, str, bool, dict)
     render_status_signal = pyqtSignal(str, str)
     def __init__(self, params,parent=None):
@@ -304,9 +303,6 @@ class ImageDisplayWindow(QMainWindow):
         new_canvas.render_status_signal.connect(self.render_status_signal.emit)
         self.display_canvas.append(new_canvas)
         self.add_dock(self.display_canvas[-1])
-        if self.tool_parameters['use_colormap']:
-            self.image_style_change_signal.emit(self.display_canvas[-1].data, self.tool_parameters)
-            # self.display_canvas[-1].set_toolset(self.tool_parameters)
         # self.addDockWidget(Qt.LeftDockWidgetArea, self.display_canvas[-1])
 
     def _remove_single_canvas(self, canvas_id):
@@ -454,7 +450,7 @@ class ImageDisplayWindow(QMainWindow):
         """收集所有画布的信息"""
         canvas_info = []
         if not self.display_canvas:
-            QMessageBox.warning(self,"图像错误","当前并没有画布和数据")
+            report_warning(self, "图像错误", "当前并没有画布和数据")
             return False
         for canvas in self.display_canvas:
             info = {
@@ -511,7 +507,7 @@ class ImageDisplayWindow(QMainWindow):
     def show_roi_info_dialog(self):
         """显示ROI信息的对话框"""
         if not self.display_canvas:
-            QMessageBox.warning(self, "图像错误", "当前没有显示任何图像画布")
+            report_warning(self, "图像错误", "当前没有显示任何图像画布")
             return
 
         dialog = ROIInfoDialog(self.get_all_canvas_info(), parent=self)
@@ -543,12 +539,10 @@ class ImageDisplayWindow(QMainWindow):
                 if not self.display_canvas:
                     return None
                 for canvas in self.display_canvas:
-                    self.image_style_change_signal.emit(canvas.data, tool_dict) # 去处理数据
                     canvas.set_toolset(self.tool_parameters) # 向下
             else:
                 if not self.display_canvas:
                     return None
-                self.image_style_change_signal.emit(self.display_canvas[canvas].data, tool_dict)
                 self.display_canvas[canvas].set_toolset(tool_dict)
         pass
 
@@ -565,7 +559,7 @@ class ImageDisplayWindow(QMainWindow):
     def export_canvas_dialog(self, info = None, is_temporal = None):
         """导出画布数据的对话框"""
         if not self.display_canvas:
-            QMessageBox.warning(self, "图像错误", "当前没有显示任何图像画布")
+            report_warning(self, "图像错误", "当前没有显示任何图像画布")
             return
 
         if info is None and is_temporal is None:
@@ -586,9 +580,19 @@ class ImageDisplayWindow(QMainWindow):
                 logging.error(f"画布选择错误")
                 return
             arg_dict = dialog.get_values()
-            arg_dict.update({'max_bound': self.display_canvas[canvas_id].max_value,
-                             'min_bound': self.display_canvas[canvas_id].min_value,
-                             'cmap': self.display_canvas[canvas_id].colormap})
+            target_canvas = self.display_canvas[canvas_id]
+            arg_dict.update({
+                'max_bound': target_canvas.max_value,
+                'min_bound': target_canvas.min_value,
+                'cmap': target_canvas.colormap,
+                'render_params': {
+                    'use_colormap': bool(target_canvas.use_colormap),
+                    'colormap': target_canvas.colormap,
+                    'auto_range': bool(target_canvas.auto_boundary_set),
+                    'min_value': target_canvas.min_value,
+                    'max_value': target_canvas.max_value,
+                },
+            })
             self.image_export_signal.emit(self.display_canvas[canvas_id].data,
                                           directory,prefix,filetype,
                                           self.display_canvas[canvas_id].is_temporal,
@@ -1352,18 +1356,6 @@ class SubImageDisplayWidget(QDockWidget):
     def request_frame_render(self, idx):
         return self.render_controller.request_frame_render(idx)
 
-    def _start_frame_render(self, idx):
-        return self.render_controller._start_frame_render(idx)
-
-    def _start_pending_frame_render(self):
-        return self.render_controller.start_pending_frame_render()
-
-    def on_frame_rendered(self, request_id, rendered):
-        return self.render_controller.on_rendered(request_id, rendered)
-
-    def on_frame_render_failed(self, request_id, message):
-        return self.render_controller.on_failed(request_id, message)
-
     def closeEvent(self, event):
         """重写关闭事件"""
         if not self._is_closing:
@@ -1588,7 +1580,7 @@ class SubImageDisplayWidget(QDockWidget):
         length = end - start
 
         if length <= 0:
-            QMessageBox.warning(self, "无法裁剪", "选区长度无效。")
+            report_warning(self, "无法裁剪", "选区长度无效。")
             return
 
         # 2. 弹出确认对话框 (重要！防止误操作)
@@ -1623,7 +1615,7 @@ class SubImageDisplayWidget(QDockWidget):
         length = end - start
 
         if length <= 0:
-            QMessageBox.warning(self, "无法裁剪", "选区长度无效。")
+            report_warning(self, "无法裁剪", "选区长度无效。")
             return
 
         # 2. 弹出确认对话框 (重要！防止误操作)

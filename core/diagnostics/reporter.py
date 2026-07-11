@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import traceback
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -50,24 +51,56 @@ def format_exception_details(exc: BaseException, stage: str | None = None, data:
     return "\n".join(lines)
 
 
-def _message_box_method(severity: str):
-    if severity == "warning":
-        return QMessageBox.warning
-    if severity == "information":
-        return QMessageBox.information
-    return QMessageBox.critical
+_RECENT_POPUPS = {}
 
+
+def _should_popup(error: AppError) -> bool:
+    if error.severity not in {"error", "critical"}:
+        return False
+    fingerprint = (error.title, error.message, error.stage)
+    now = time.monotonic()
+    previous = _RECENT_POPUPS.get(fingerprint, 0.0)
+    _RECENT_POPUPS[fingerprint] = now
+    return now - previous > 1.0
 
 def show_app_error(parent: Any, error: AppError) -> None:
     details = error.details or ""
     if error.original is not None and not details:
         details = format_exception_details(error.original, error.stage, error.context.get("data"))
     log_message = f"{error.title}: {error.message}"
+    log_method = {
+        "information": logging.info,
+        "info": logging.info,
+        "warning": logging.warning,
+        "error": logging.error,
+        "critical": logging.critical,
+    }.get(error.severity, logging.error)
     if details:
-        logging.error("%s\n%s", log_message, details)
+        log_method("%s\n%s", log_message, details, extra={"lifecalor_user_reported": True})
     else:
-        logging.error(log_message)
-    _message_box_method(error.severity)(parent, error.title, error.message)
+        log_method(log_message, extra={"lifecalor_user_reported": True})
+    if _should_popup(error):
+        QMessageBox.critical(parent, error.title, error.message)
+
+
+
+def report_warning(parent: Any, title: str, message: str, stage: str | None = None) -> AppError:
+    error = AppError(title, str(message), stage=stage, severity="warning")
+    show_app_error(parent, error)
+    target = parent
+    while target is not None:
+        update_status = getattr(target, "update_status", None)
+        if callable(update_status):
+            update_status(str(message), "warning")
+            break
+        target = getattr(target, "parent", lambda: None)() if callable(getattr(target, "parent", None)) else None
+    return error
+
+
+def report_error(parent: Any, title: str, message: str, stage: str | None = None) -> AppError:
+    error = AppError(title, str(message), stage=stage, severity="error")
+    show_app_error(parent, error)
+    return error
 
 
 def report_exception(

@@ -7,7 +7,7 @@ CORE = ROOT / "core"
 if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))
 
-import ExportWorkflow as export_workflow
+from exporting import workflow as export_workflow
 import TaskState as task_state_module
 
 

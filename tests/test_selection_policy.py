@@ -8,7 +8,7 @@ CORE = ROOT / "core"
 if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))
 
-import SelectionPolicy as selection_policy
+from selection import policy as selection_policy
 
 
 class SelectionPolicyTests(unittest.TestCase):

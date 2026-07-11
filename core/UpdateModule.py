@@ -12,6 +12,7 @@ import shutil
 import markdown
 from pathlib import Path
 from packaging import version
+from diagnostics import report_error
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
                             QWidget, QPushButton, QLabel, QProgressBar, QTextEdit,
                             QMessageBox, QGroupBox, QDialog, QDialogButtonBox,
@@ -158,7 +159,7 @@ class UpdateDialog(QDialog):
         self.log_message(f"更新错误: {error_message}",error=True)
 
         # 显示错误对话框
-        QMessageBox.warning(self, "检查更新失败", error_message)
+        report_error(self, "检查更新失败", error_message)
 
     def handle_version_info(self, version_info):
         """处理版本信息"""
@@ -265,7 +266,7 @@ class UpdateDialog(QDialog):
         self.status_label.setText("下载失败")
         self.log_message(f"下载错误: {error_message}",error=True)
 
-        QMessageBox.critical(self, "下载失败", error_message)
+        report_error(self, "下载失败", error_message)
 
     def handle_download_complete(self, file_path):
         """处理下载完成"""
@@ -363,7 +364,7 @@ del "%~f0"
         self.update_status.emit("更新失败",'error')
         self.log_message(f"更新错误: {error_message}",error = True )
 
-        QMessageBox.critical(self, "更新失败", error_message)
+        report_error(self, "更新失败", error_message)
 
 
 class UpdateChecker(QThread):

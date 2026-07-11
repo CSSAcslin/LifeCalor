@@ -7,6 +7,8 @@ from typing import Any, Callable, Iterable, Optional
 
 import numpy as np
 
+from dataio import copy_npy_to_memory, write_npy_atomic
+
 DEFAULT_CACHE_THRESHOLD_BYTES = 512 * 1024 * 1024
 ProgressCallback = Optional[Callable[[int, int, str], None]]
 
@@ -44,7 +46,7 @@ class ArrayStore:
         self.progress_callback = progress_callback
         self.config.ensure_dir()
 
-    def put_array(self, array: np.ndarray, owner_id: str, field_name: str) -> ArrayRef:
+    def put_array(self, array: np.ndarray, owner_id: str, field_name: str, cancellation_token=None) -> ArrayRef:
         cache_dir = self.config.ensure_dir()
         safe_owner = _safe_name(owner_id)
         safe_field = _safe_name(field_name)
@@ -62,7 +64,13 @@ class ArrayStore:
         if self.progress_callback:
             self.progress_callback(0, total, f"正在写入缓存: {safe_field}")
         try:
-            np.save(path, array)
+            write_npy_atomic(
+                path,
+                array,
+                progress=self.progress_callback,
+                token=cancellation_token,
+                message=f"正在写入缓存: {safe_field}",
+            )
         except Exception:
             logging.exception(
                 "缓存读取失败: field=%s shape=%s dtype=%s nbytes=%s path=%s",
@@ -95,15 +103,21 @@ class ArrayStore:
             field_name=safe_field,
         )
 
-    def load_ref(self, ref: ArrayRef, mmap_mode=None):
+    def load_ref(self, ref: ArrayRef, mmap_mode=None, cancellation_token=None):
         if not isinstance(ref, ArrayRef):
             return ref
         if self.progress_callback:
             self.progress_callback(0, ref.nbytes, f"正在读取缓存: {ref.field_name}")
         try:
-            loaded = ref.load(mmap_mode=mmap_mode)
             if mmap_mode is None:
-                loaded = np.array(loaded)
+                loaded = copy_npy_to_memory(
+                    ref.path,
+                    progress=self.progress_callback,
+                    token=cancellation_token,
+                    message=f"正在读取缓存: {ref.field_name}",
+                )
+            else:
+                loaded = ref.load(mmap_mode=mmap_mode)
         except Exception:
             logging.exception(
                 "缓存读取失败: field=%s shape=%s dtype=%s nbytes=%s path=%s",
@@ -131,32 +145,49 @@ class ArrayStore:
             logging.exception("删除缓存文件失败: %s", path)
         return False
 
-    def clear_all(self) -> int:
+    def clear_all(self, cancellation_token=None) -> int:
         cache_dir = self.config.ensure_dir()
+        paths = list(cache_dir.glob("*.npy"))
+        total = len(paths)
         deleted = 0
-        for path in cache_dir.glob("*.npy"):
+        if self.progress_callback:
+            self.progress_callback(0, total, "正在清除缓存")
+        for index, path in enumerate(paths, 1):
+            if cancellation_token is not None:
+                cancellation_token.raise_if_cancelled()
             try:
                 if path.is_file():
                     path.unlink()
                     deleted += 1
             except Exception:
                 logging.exception("删除缓存文件失败: %s", path)
+            if self.progress_callback:
+                self.progress_callback(index, total, "正在清除缓存")
         logging.info("缓存目录清理完成: deleted=%s dir=%s", deleted, cache_dir)
         return deleted
 
-    def cleanup_orphans(self, active_refs: Iterable[ArrayRef]) -> int:
+    def cleanup_orphans(self, active_refs: Iterable[ArrayRef], cancellation_token=None) -> int:
         cache_dir = self.config.ensure_dir()
         active_paths = {Path(ref.path).resolve() for ref in active_refs if isinstance(ref, ArrayRef)}
+        paths = list(cache_dir.glob("*.npy"))
+        total = len(paths)
         deleted = 0
-        for path in cache_dir.glob("*.npy"):
+        if self.progress_callback:
+            self.progress_callback(0, total, "正在扫描孤立缓存")
+        for index, path in enumerate(paths, 1):
+            if cancellation_token is not None:
+                cancellation_token.raise_if_cancelled()
             try:
                 if path.resolve() not in active_paths:
                     path.unlink()
                     deleted += 1
             except Exception:
                 logging.exception("清理孤立缓存文件失败: %s", path)
+            if self.progress_callback:
+                self.progress_callback(index, total, "正在扫描孤立缓存")
         logging.info("孤立缓存清理完成: deleted=%s active=%s dir=%s", deleted, len(active_paths), cache_dir)
         return deleted
+
 
 
 def _safe_name(value: Any) -> str:

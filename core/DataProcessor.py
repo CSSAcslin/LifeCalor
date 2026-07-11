@@ -1511,7 +1511,7 @@ class MassDataProcessor(QObject):
 
     def stop(self):
         """请求中止处理"""
-        self.abort = True
+        self.abortion = True
 
     @staticmethod
     def calculate_amp_dur(data, thr, mode='open'):

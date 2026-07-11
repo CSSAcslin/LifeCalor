@@ -43,7 +43,7 @@ class FakeDataFrame:
 
 class ExportPolicyTests(unittest.TestCase):
     def test_prepare_curve_export_drops_fit_curve_when_requested(self):
-        from ExportPolicy import prepare_dataframe_for_export
+        from exporting.policy import prepare_dataframe_for_export
 
         frame = FakeDataFrame(["time", "signal", "fit_curve"])
         prepared = prepare_dataframe_for_export(frame, current_mode="curve", include_fitting=False)
@@ -51,7 +51,7 @@ class ExportPolicyTests(unittest.TestCase):
         self.assertEqual(prepared.columns.values, ["time", "signal"])
 
     def test_prepare_diff_export_drops_fit_curve_level_when_requested(self):
-        from ExportPolicy import prepare_dataframe_for_export
+        from exporting.policy import prepare_dataframe_for_export
 
         frame = FakeDataFrame([("x", "原始数据"), ("x", "拟合曲线")])
         prepared = prepare_dataframe_for_export(frame, current_mode="diff", include_fitting=False)
@@ -59,7 +59,7 @@ class ExportPolicyTests(unittest.TestCase):
         self.assertEqual(prepared.columns.values, [("x", "原始数据")])
 
     def test_em_export_requires_frequency_processed_data(self):
-        from ExportPolicy import can_export_em_data
+        from exporting.policy import can_export_em_data
 
         self.assertTrue(can_export_em_data("ROI_stft"))
         self.assertTrue(can_export_em_data("ROI_cwt"))

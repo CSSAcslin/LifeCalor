@@ -3,6 +3,8 @@ import os
 import time
 import copy
 import weakref
+import shutil
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +30,8 @@ from ArrayCache import (
     should_cache_array,
 )
 from display.source import DisplaySourceFactory
+from display.renderer import FrameRenderParams, FrameRenderer
+from tasks.model import CancellationToken, TaskCancelled
 _ARRAY_CACHE_CONFIG = ArrayCacheConfig(cache_dir=Path.cwd() / ".lifecalor_cache", threshold_bytes=512 * 1024 * 1024)
 _ARRAY_CACHE_PROGRESS_CALLBACK = None
 
@@ -147,6 +151,19 @@ def export_array_from_data(data, format_type, is_temporal):
     raise ValueError("当前数据对象不包含可导出的图像数组")
 
 
+def render_frame_for_export(frame, render_params=None):
+    if not render_params or not render_params.get("use_colormap", False):
+        return np.asarray(frame)
+    params = FrameRenderParams(
+        use_colormap=True,
+        colormap=render_params.get("colormap", "jet"),
+        auto_range=bool(render_params.get("auto_range", True)),
+        min_value=render_params.get("min_value"),
+        max_value=render_params.get("max_value"),
+    )
+    return FrameRenderer.render(np.asarray(frame), params).image
+
+
 def export_as_temporal_images(result, is_temporal):
     image = np.asarray(result)
     return bool(is_temporal and image.ndim in (3, 4))
@@ -163,9 +180,9 @@ def cache_array_or_keep_memory(store: ArrayStore, array: np.ndarray, owner_id: s
         return array
 
 
-def force_cache_arrays(target, include_image_import: bool = False) -> list[ArrayRef]:
+def force_cache_arrays(target, include_image_import: bool = False, cancellation_token=None, progress_callback=None) -> list[ArrayRef]:
     """Persist a history object's array payloads to npy refs, regardless of threshold."""
-    store = get_array_store()
+    store = get_array_store(progress_callback=progress_callback)
     refs: list[ArrayRef] = []
     owner_id = f"{target.__class__.__name__}_{getattr(target, 'serial_number', 'unknown')}_{getattr(target, 'timestamp', '')}"
 
@@ -175,7 +192,8 @@ def force_cache_arrays(target, include_image_import: bool = False) -> list[Array
             refs.append(storage)
             return
         if isinstance(storage, np.ndarray):
-            ref = cache_array_or_keep_memory(store, storage, owner_id, field_name)
+            cancellation_token.raise_if_cancelled() if cancellation_token is not None else None
+            ref = store.put_array(storage, owner_id, field_name, cancellation_token=cancellation_token)
             if isinstance(ref, ArrayRef):
                 object.__setattr__(target, storage_attr, ref)
                 object.__setattr__(target, public_attr, ref)
@@ -191,7 +209,8 @@ def force_cache_arrays(target, include_image_import: bool = False) -> list[Array
             if isinstance(value, ArrayRef):
                 refs.append(value)
             elif isinstance(value, np.ndarray):
-                ref = cache_array_or_keep_memory(store, value, owner_id, f"out_processed_{key}")
+                cancellation_token.raise_if_cancelled() if cancellation_token is not None else None
+                ref = store.put_array(value, owner_id, f"out_processed_{key}", cancellation_token=cancellation_token)
                 if isinstance(ref, ArrayRef):
                     target.out_processed[key] = ref
                     refs.append(ref)
@@ -200,19 +219,24 @@ def force_cache_arrays(target, include_image_import: bool = False) -> list[Array
     return refs
 
 
-def materialize_cached_arrays(target, progress_callback=None, cancel_check=None):
+def materialize_cached_arrays(target, progress_callback=None, cancel_check=None, cancellation_token=None):
     """Load ArrayRef-backed arrays into memory, suitable for worker-thread execution."""
     store = get_array_store(progress_callback=progress_callback)
+    cancellation_token = cancellation_token or CancellationToken()
 
     def check_cancelled():
         if cancel_check is not None and cancel_check():
-            raise CacheLoadCancelled("缓存读取已取消")
+            cancellation_token.cancel()
+        try:
+            cancellation_token.raise_if_cancelled()
+        except TaskCancelled as exc:
+            raise CacheLoadCancelled(str(exc)) from exc
 
     if isinstance(target, Data):
         check_cancelled()
         storage = object.__getattribute__(target, "__dict__").get("_data_origin_storage")
         if isinstance(storage, ArrayRef):
-            loaded = store.load_ref(storage, mmap_mode=None)
+            loaded = store.load_ref(storage, mmap_mode=None, cancellation_token=cancellation_token)
             check_cancelled()
             object.__setattr__(target, "_data_origin_storage", loaded)
             object.__setattr__(target, "data_origin", loaded)
@@ -227,14 +251,14 @@ def materialize_cached_arrays(target, progress_callback=None, cancel_check=None)
         check_cancelled()
         storage = object.__getattribute__(target, "__dict__").get("_data_processed_storage")
         if isinstance(storage, ArrayRef):
-            loaded = store.load_ref(storage, mmap_mode=None)
+            loaded = store.load_ref(storage, mmap_mode=None, cancellation_token=cancellation_token)
             check_cancelled()
             object.__setattr__(target, "_data_processed_storage", loaded)
             object.__setattr__(target, "data_processed", loaded)
         for key, value in list((target.out_processed or {}).items()):
             check_cancelled()
             if isinstance(value, ArrayRef):
-                target.out_processed[key] = store.load_ref(value, mmap_mode=None)
+                target.out_processed[key] = store.load_ref(value, mmap_mode=None, cancellation_token=cancellation_token)
     check_cancelled()
     return target
 
@@ -245,13 +269,15 @@ class ArrayLoadWorker(QObject):
     error_signal = pyqtSignal(str)
     cancelled_signal = pyqtSignal()
 
-    def __init__(self, target):
+    def __init__(self, target, cancellation_token=None):
         super().__init__()
         self.target = target
+        self.cancellation_token = cancellation_token or CancellationToken()
         self._cancel_requested = False
 
     def cancel(self):
         self._cancel_requested = True
+        self.cancellation_token.cancel()
 
     def is_cancel_requested(self):
         return self._cancel_requested
@@ -262,6 +288,7 @@ class ArrayLoadWorker(QObject):
                 self.target,
                 progress_callback=self.progress_signal.emit,
                 cancel_check=self.is_cancel_requested,
+                cancellation_token=self.cancellation_token,
             )
             if self._cancel_requested:
                 self.cancelled_signal.emit()
@@ -281,109 +308,72 @@ class DataManager(QObject):
     # remove_request_back = pyqtSignal(dict)
     # amend_request_back = pyqtSignal(dict)
     data_progress_signal = pyqtSignal(int, int)
-    process_finish_signal = pyqtSignal(object)
     processed_result = pyqtSignal(object)
+    export_finished = pyqtSignal(object)
+    export_failed = pyqtSignal(str)
+    export_cancelled = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.color_map_manager = ColorMapManager()
+        self.cancellation_token = CancellationToken()
         logging.info("图像数据管理线程已启动")
 
-    def to_uint8(self, data):
-        """归一化和数字类型调整"""
-        data_o = data.image_backup
-        min_value = data.imagemin
-        max_value = data.imagemax
-        if data.datatype == np.uint8 and max_value == 255:
-            data.image_data = data_o.copy()
-            return True
+    def set_cancellation_token(self, token):
+        self.cancellation_token = token or CancellationToken()
 
-        # 计算数组的最小值和最大值
-        data.image_data = ((data_o - min_value) / (max_value - min_value) * 255).astype(np.uint8)
-        self.process_finish_signal.emit(data)
-        return True
+    def cancel(self):
+        self.cancellation_token.cancel()
 
-    def to_colormap(self, data, params):
-        """伪色彩实现（其实仅在生成视图时才会更新）"""
-        logging.info("样式应用中，预览会同步更新")
-        self.color_map_manager = ColorMapManager()
-        colormode = params['colormap']
-        if params['auto_boundary_set']:
-            min_value = data.imagemin
-            max_value = data.imagemax
-        else:
-            min_value = params['min_value']
-            max_value = params['max_value']
-        if colormode is None:
-            self.to_uint8(data)
-            data.colormode = colormode
-            return False
-        if data.is_temporary:
-            T, H, W = data.imageshape
-            self.data_progress_signal.emit(0, T)
-            new_data = np.zeros((T, H, W, 4), dtype=np.uint8)
-            for i, image in enumerate(data.image_backup):
-                new_data[i] = self.color_map_manager.apply_colormap(
-                    image,
-                    colormode,
-                    min_value,
-                    max_value
-                )
-                self.data_progress_signal.emit(i, T)
-            data.image_data = new_data
-            self.data_progress_signal.emit(T, T)
-        else:
-            H, W = data.imageshape
-            new_data = np.zeros((H, W, 4), dtype=np.uint8)
-            new_data = self.color_map_manager.apply_colormap(
-                data.image_backup,
-                colormode,
-                min_value,
-                max_value
-            )
-            data.image_data = new_data
-        data.colormode = colormode
-        self.process_finish_signal.emit(data)
-        return True
+    def _check_cancelled(self):
+        self.cancellation_token.raise_if_cancelled()
 
     @pyqtSlot(object, str, str, str, bool, dict)
     def export_data(self, data, output_dir, prefix, format_type='tif', is_temporal=True, arg_dict=None):
-        """
-        时频变换后目标频率下的结果导出
-        支持多种格式: tif, avi, png, gif
-
-        参数:
-            result: 输入数据数组
-            output_dir: 输出目录路径
-            prefix: 文件前缀
-            format_type: 导出格式 ('tif', 'avi', 'png', 'gif')
-        """
         format_type = format_type.lower()
-        arg_dict = arg_dict or {}  # 如果arg_dict为None，设为空字典 ，学学，这get多优雅. 其实直接可以初始化为{} 留着做教训吧
-        duration = arg_dict.get('duration', 60)
-        cmap = arg_dict.get('cmap', 'jet')
-        max_bound = arg_dict.get('max_bound', 255)
-        min_bound = arg_dict.get('min_bound', 0)
-        title = arg_dict.get('title', '')
-        colorbar_label = arg_dict.get('colorbar_label', '')
-        result = export_array_from_data(data, format_type, is_temporal)
-
-        # 根据格式类型调用不同的导出函数
-        if format_type == 'tif':
-            return self.export_as_tif(result, output_dir, prefix, is_temporal)
-        elif format_type == 'avi':
-            return self.export_as_avi(result, output_dir, prefix, duration)
-        elif format_type == 'png':
-            return self.export_as_png(result, output_dir, prefix, is_temporal)
-        elif format_type == 'gif':
-            return self.export_as_gif(result, output_dir, prefix, duration)
-        elif format_type == 'plt':
-            result = data.image_backup # 只有成像数据会走到这一步
-            return self.export_as_plt(result, output_dir, prefix, is_temporal, cmap, max_bound, min_bound, title,
-                                      colorbar_label)
-        else:
-            logging.error(f"不支持的格式类型: {format_type}")
-            raise ValueError(f"不支持格式: {format_type}。请使用 'tif', 'avi', 'png' 或 'gif'")
+        arg_dict = arg_dict or {}
+        os.makedirs(output_dir, exist_ok=True)
+        staging_dir = tempfile.mkdtemp(prefix=".lifecalor_export_", dir=output_dir)
+        try:
+            self._check_cancelled()
+            duration = arg_dict.get('duration', 60)
+            cmap = arg_dict.get('cmap', 'jet')
+            max_bound = arg_dict.get('max_bound', 255)
+            min_bound = arg_dict.get('min_bound', 0)
+            title = arg_dict.get('title', '')
+            colorbar_label = arg_dict.get('colorbar_label', '')
+            result = export_array_from_data(data, format_type, is_temporal)
+            render_params = arg_dict.get('render_params')
+            if format_type == 'tif':
+                created = self.export_as_tif(result, staging_dir, prefix, is_temporal, render_params)
+            elif format_type == 'avi':
+                created = self.export_as_avi(result, staging_dir, prefix, duration, render_params)
+            elif format_type == 'png':
+                created = self.export_as_png(result, staging_dir, prefix, is_temporal, render_params)
+            elif format_type == 'gif':
+                created = self.export_as_gif(result, staging_dir, prefix, duration, render_params)
+            elif format_type == 'plt':
+                created = self.export_as_plt(data.image_backup, staging_dir, prefix, is_temporal, cmap, max_bound, min_bound, title, colorbar_label)
+            else:
+                raise ValueError(f"不支持格式: {format_type}。请使用 'tif', 'avi', 'png' 或 'gif'")
+            self._check_cancelled()
+            final_files = []
+            for staged_file in created:
+                destination = os.path.join(output_dir, os.path.basename(staged_file))
+                os.replace(staged_file, destination)
+                final_files.append(destination)
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            self.export_finished.emit(final_files)
+            return final_files
+        except TaskCancelled:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            logging.warning("导出任务已取消: %s", prefix)
+            self.export_cancelled.emit()
+            return None
+        except Exception as exc:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            logging.exception("导出任务失败: format=%s prefix=%s", format_type, prefix, extra={"lifecalor_user_reported": True})
+            self.export_failed.emit(str(exc))
+            return None
 
     def _normalize_data(self, data):
         """统一归一化处理，支持彩色/灰度数据"""
@@ -401,7 +391,7 @@ class DataManager(QObject):
         normalized = ((data - data_min) / (data_max - data_min) * 255).astype(np.uint8)
         return normalized
 
-    def export_as_tif(self, result, output_dir, prefix, is_temporal=True):
+    def export_as_tif(self, result, output_dir, prefix, is_temporal=True, render_params=None):
         """支持彩色TIFF导出"""
         created_files = []
         if export_as_temporal_images(result, is_temporal):
@@ -410,10 +400,11 @@ class DataManager(QObject):
             self.data_progress_signal.emit(0, num_frames)
 
             for frame_idx in range(num_frames):
+                self._check_cancelled()
                 frame_name = f"{prefix}-{frame_idx:0{num_digits}d}.tif"
                 output_path = os.path.join(output_dir, frame_name)
 
-                frame = result[frame_idx]
+                frame = render_frame_for_export(result[frame_idx], render_params)
                 frame, photometric = prepare_still_frame(frame)
                 tiff.imwrite(output_path, frame, photometric=photometric)
 
@@ -423,7 +414,8 @@ class DataManager(QObject):
             num_frames = 1
             frame_name = f"{prefix}.tif"
             output_path = os.path.join(output_dir, frame_name)
-            frame, photometric = prepare_still_frame(result)
+            frame = render_frame_for_export(result, render_params)
+            frame, photometric = prepare_still_frame(frame)
             tiff.imwrite(output_path, frame, photometric=photometric)
             created_files.append(output_path)
             self.data_progress_signal.emit(num_frames + 1, num_frames)
@@ -431,51 +423,60 @@ class DataManager(QObject):
         logging.info(f'导出TIFF完成: {output_dir}, 共{num_frames}帧')
         return created_files
 
-    def export_as_avi(self, result, output_dir, prefix, duration=60):
-        """支持彩色视频导出"""
+    def export_as_avi(self, result, output_dir, prefix, duration=60, render_params=None):
+        """逐帧渲染并导出视频，避免创建完整伪彩数组。"""
         os.makedirs(output_dir, exist_ok=True)
-
-        normalized = self._normalize_data(result)
-        normalized, is_color = prepare_video_frames(normalized)
-        num_frames = normalized.shape[0]
+        frames, source_is_color = prepare_video_frames(result)
+        num_frames = frames.shape[0]
         self.data_progress_signal.emit(0, num_frames)
-
-        height, width = normalized.shape[1:3]
-
-        if is_color:
-            normalized = normalized[..., ::-1]
-
         output_path = os.path.join(output_dir, f"{prefix}.avi")
         fps = video_fps_for_duration(num_frames, duration)
-        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height), isColor=is_color)
-
-        for frame_idx in range(num_frames):
-            frame = normalized[frame_idx]
-            if not is_color and frame.ndim == 3:
-                frame = frame.squeeze()
-            out.write(frame)
-            self.data_progress_signal.emit(frame_idx + 1, num_frames)
-
-        out.release()
-        logging.info(f'导出AVI完成: {output_path}, 共{num_frames}帧')
+        first = render_frame_for_export(frames[0], render_params)
+        if render_params and render_params.get("use_colormap", False):
+            first = first[..., :3]
+        elif not source_is_color:
+            data_min = np.nanmin(np.abs(frames) if np.iscomplexobj(frames) else frames)
+            data_max = np.nanmax(np.abs(frames) if np.iscomplexobj(frames) else frames)
+            gray_params = FrameRenderParams(auto_range=False, min_value=float(data_min), max_value=float(data_max))
+            first = FrameRenderer.render(first, gray_params).image
+        is_color = first.ndim == 3 and first.shape[-1] >= 3
+        height, width = first.shape[:2]
+        out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'MJPG'), fps, (width, height), isColor=is_color)
+        if not out.isOpened():
+            raise OSError(f"无法创建AVI文件: {output_path}")
+        try:
+            for frame_idx in range(num_frames):
+                self._check_cancelled()
+                frame = render_frame_for_export(frames[frame_idx], render_params)
+                if render_params and render_params.get("use_colormap", False):
+                    frame = frame[..., :3]
+                elif not source_is_color:
+                    frame = FrameRenderer.render(frame, gray_params).image
+                if frame.ndim == 3:
+                    frame = frame[..., :3][..., ::-1]
+                out.write(np.ascontiguousarray(frame))
+                self.data_progress_signal.emit(frame_idx + 1, num_frames)
+        finally:
+            out.release()
+        logging.info('导出AVI完成: %s, 共%s帧', output_path, num_frames)
         return [output_path]
 
-    def export_as_png(self, result, output_dir, prefix, is_temporal=True):
+    def export_as_png(self, result, output_dir, prefix, is_temporal=True, render_params=None):
         """支持彩色PNG导出"""
         created_files = []
         # 归一化处理
-        normalized = self._normalize_data(result)
+        normalized = result if render_params and render_params.get('use_colormap', False) else self._normalize_data(result)
 
         if export_as_temporal_images(result, is_temporal):
             num_frames = result.shape[0]
             num_digits = len(str(num_frames))
             self.data_progress_signal.emit(0, num_frames)
             for frame_idx in range(num_frames):
+                self._check_cancelled()
                 frame_name = f"{prefix}-{frame_idx:0{num_digits}d}.png"
                 output_path = os.path.join(output_dir, frame_name)
 
-                frame = normalized[frame_idx]
+                frame = render_frame_for_export(normalized[frame_idx], render_params)
                 frame, mode = image_mode_for_pillow(frame)
                 img = Image.fromarray(frame, mode)
 
@@ -487,7 +488,8 @@ class DataManager(QObject):
             num_frames = 1
             frame_name = f"{prefix}.png"
             output_path = os.path.join(output_dir, frame_name)
-            frame, mode = image_mode_for_pillow(normalized)
+            frame = render_frame_for_export(normalized, render_params)
+            frame, mode = image_mode_for_pillow(frame)
             img = Image.fromarray(frame, mode)
             img.save(output_path)
             created_files.append(output_path)
@@ -496,9 +498,9 @@ class DataManager(QObject):
         logging.info(f'导出PNG完成: {output_dir}, 共{num_frames}帧')
         return created_files
 
-    def export_as_gif(self, result, output_dir, prefix, duration=60):
+    def export_as_gif(self, result, output_dir, prefix, duration=60, render_params=None):
         """彩色GIF导出"""
-        normalized = self._normalize_data(result)
+        normalized = result if render_params and render_params.get('use_colormap', False) else self._normalize_data(result)
         normalized, is_color = prepare_video_frames(normalized)
         num_frames = normalized.shape[0]
         self.data_progress_signal.emit(0, num_frames)
@@ -506,7 +508,11 @@ class DataManager(QObject):
         palette_img = None
 
         for frame_idx in range(num_frames):
-            frame = normalized[frame_idx]
+            self._check_cancelled()
+            frame = render_frame_for_export(normalized[frame_idx], render_params)
+            if frame.ndim == 3 and frame.shape[-1] == 4:
+                frame = frame[..., :3]
+            is_color = frame.ndim == 3
 
             if is_color:
                 img = Image.fromarray(frame, 'RGB')

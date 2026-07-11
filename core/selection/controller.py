@@ -90,8 +90,8 @@ class SelectionController:
             raise TypeError("_warn expects title/message or parent/title/message")
         if self.warning is not None:
             return self.warning(*warning_args)
-        from PyQt5.QtWidgets import QMessageBox
-        return QMessageBox.warning(parent, title, message)
+        from diagnostics import report_warning
+        return report_warning(parent, title, message)
 
     @staticmethod
     def _default_data_dialog_factory(**kwargs):

@@ -14,6 +14,8 @@ from PIL import Image
 from typing import List, Union, Optional, Callable
 
 from DataManager import *
+from dataio import copy_npy_to_memory
+from tasks.model import CancellationToken, TaskCancelled
 
 from PyQt5.QtCore import QObject
 
@@ -24,6 +26,8 @@ class ImportManager(QObject):
     update_QMessageBox = pyqtSignal(str, str, str)
     processing_progress_signal = pyqtSignal(int, int) # 进度槽
     import_finished = pyqtSignal(Data)
+    import_failed = pyqtSignal(str)
+    import_cancelled = pyqtSignal()
     def __init__(self):
         super().__init__()
         self.type_all ={
@@ -31,9 +35,56 @@ class ImportManager(QObject):
             'sif_folder': self.load_and_sort_sif,
             'avi_EM': self.load_avi,
             'tif_EM': self.load_tiff,
+            'npy': self.load_npy,
         }
         self.abortion = False
+        self.cancellation_token = CancellationToken()
         logging.info("数据导入线程已启动")
+
+    def set_cancellation_token(self, token):
+        self.cancellation_token = token or CancellationToken()
+        self.abortion = False
+
+    def cancel(self):
+        self.abortion = True
+        self.cancellation_token.cancel()
+
+    def _raise_if_cancelled(self):
+        if self.abortion:
+            self.cancellation_token.cancel()
+        self.cancellation_token.raise_if_cancelled()
+
+    def load_npy(self, filepath, time_step=1.0, space_step=1.0, time_unit="s", space_unit="px", **_kwargs):
+        """Import a numeric 2D/3D NPY array through the shared chunked reader."""
+        array = copy_npy_to_memory(
+            filepath,
+            progress=lambda current, total, _message: self.processing_progress_signal.emit(current, total),
+            token=self.cancellation_token,
+            message="正在读取NPY数据",
+        )
+        if array.ndim not in (2, 3):
+            raise ValueError(f"NPY数据必须是二维或三维数组，当前shape={array.shape}")
+        self._raise_if_cancelled()
+        frame_count = array.shape[0] if array.ndim == 3 else 1
+        time_point = np.arange(frame_count, dtype=np.float64) * float(time_step)
+        parameters = {
+            "file_path": filepath,
+            "time_step": float(time_step),
+            "time_unit": time_unit,
+            "space_step": float(space_step),
+            "space_unit": space_unit,
+            "external_npy": True,
+            "source_dtype": str(array.dtype),
+            "source_shape": tuple(array.shape),
+        }
+        self.import_finished.emit(Data(
+            data_origin=array,
+            time_point=time_point,
+            format_import="npy",
+            image_import=array,
+            parameters=parameters,
+            name=os.path.basename(filepath),
+        ))
 
     @pyqtSlot(str,str,dict)
     def import_dispatch(self,import_type:str, filepath:str, kwargs_dict: Dict[str, Any]):
@@ -42,10 +93,19 @@ class ImportManager(QObject):
             try:
                 handler = self.type_all[import_type]
                 self._call_with_kwargs(handler,filepath,kwargs_dict)
+            except TaskCancelled:
+                logging.warning("数据导入已取消: %s", import_type)
+                self.update_status.emit("数据导入已取消", "idle")
+                self.import_cancelled.emit()
             except Exception as e:
-                logging.error(f"处理信号 '{import_type}' 时出错: {e}")
+                logging.exception("处理导入任务失败: type=%s path=%s", import_type, filepath)
+                self.update_QMessageBox.emit('error', '导入错误', str(e))
+                self.update_status.emit("数据导入失败", "error")
+                self.import_failed.emit(str(e))
         else:
-            logging.error("导入类型不支持")
+            message = f"导入类型不支持: {import_type}"
+            logging.error(message)
+            self.import_failed.emit(message)
 
     def _call_with_kwargs(self, handler: Callable, filepath: str, kwargs_dict: Dict[str, Any]):
         """
@@ -131,6 +191,7 @@ class ImportManager(QObject):
         if not tiff_files or tiff_files == []:
             self.update_status.emit("文件夹中没有目标TIFF文件", 'warning')
             self.update_QMessageBox.emit("warning", "导入错误", "文件夹中没有目标TIFF文件")
+            self.import_cancelled.emit()
             return
         # 数据处理合并
         try:
@@ -139,6 +200,7 @@ class ImportManager(QObject):
             vmin_array = []
             vmean_array = []
             for _, fpath in files:
+                self._raise_if_cancelled()
                 img_data = tiff.imread(fpath)
                 vmax_array.append(np.max(img_data))
                 vmin_array.append(np.min(img_data))
@@ -201,6 +263,7 @@ class ImportManager(QObject):
 
         try:
             for filename in os.listdir(foldpath):
+                self._raise_if_cancelled()
                 if filename.endswith('.sif'):
                     filepath = os.path.join(foldpath, filename)
                     name = os.path.splitext(filename)[0]  # 去除扩展名
@@ -216,15 +279,15 @@ class ImportManager(QObject):
                         time = int(match.group(1))
                         data = sif_parser.np_open(filepath)[0][0]
                         time_data[time] = data
-                else:
-                    self.update_status.emit("文件夹中没有目标SIF文件",'warning')
-                    self.update_QMessageBox.emit('error','导入错误',"文件夹中没有目标SIF文件,请确认选择的文件格式是否匹配")
-                    logging.warning("文件夹中没有目标SIF文件")
-                    return False
+            if not time_data:
+                message = "文件夹中没有可导入的SIF时间序列"
+                self.update_status.emit(message, 'warning')
+                self.update_QMessageBox.emit('warning', '导入提示', message)
+                self.import_cancelled.emit()
+                return False
 
-            # 检查是否找到背景
             if background is None:
-                raise logging.error("未找到背景文件（文件名应包含 'no'）")
+                raise ValueError("未找到背景文件（文件名应包含 'no'）")
 
             # 按时间排序
             self.sif_sorted_times = sorted(time_data.keys())

@@ -1,6 +1,7 @@
 import logging
 import math
 import numpy as np
+from diagnostics import report_warning
 from PyQt5 import QtWidgets
 from PyQt5.QtWidgets import ( QDialog, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QGroupBox, QWidget, QComboBox, QCheckBox)
@@ -464,7 +465,7 @@ class SpatialExtractor(QDialog):
 
         target_axes = [cb.currentIndex() for cb in self.combo_boxes]
         if len(set(target_axes)) != self.ndim:
-            QtWidgets.QMessageBox.warning(self, "轴错误", "导出的轴有重复，请确保每个维度不同！")
+            report_warning(self, "轴错误", "导出的轴有重复，请确保每个维度不同！")
             return
 
         sub_data = np.transpose(sub_data, target_axes)
@@ -477,7 +478,7 @@ class SpatialExtractor(QDialog):
                 r_t = self.bounds_float[self.time_axis.currentIndex()]
                 time_point = self.aim_data.time_point[int(r_t[0]):int(r_t[1])+1]
             except IndexError as e:
-                QtWidgets.QMessageBox.warning(self, "数值错误", "对时间轴切片时，发现超出原本时间轴刻度")
+                report_warning(self, "数值错误", "对时间轴切片时，发现超出原本时间轴刻度")
                 return
 
         ori_data = self.aim_data

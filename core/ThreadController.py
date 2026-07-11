@@ -12,10 +12,14 @@ def is_thread_active(thread: Any, expected_type: Optional[Type] = None, is_delet
     return bool(callable(is_running) and is_running())
 
 
-def stop_thread(thread: Any, expected_type: Optional[Type] = None, is_deleted: Callable[[Any], bool] = lambda _: False) -> bool:
+def stop_thread(thread: Any, expected_type: Optional[Type] = None, is_deleted: Callable[[Any], bool] = lambda _: False,
+                wait_ms: int = 1000) -> bool:
+    """Stop an event-loop thread with a bounded wait; never block the GUI indefinitely."""
     if not is_thread_active(thread, expected_type=expected_type, is_deleted=is_deleted):
         return False
     thread.quit()
-    thread.wait()
+    stopped = thread.wait(max(0, int(wait_ms)))
+    if stopped is False:
+        return False
     thread.deleteLater()
     return True

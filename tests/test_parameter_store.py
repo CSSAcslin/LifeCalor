@@ -10,7 +10,7 @@ import unittest
 
 class ParameterStoreTests(unittest.TestCase):
     def test_load_group_preserves_default_types_and_string_fallbacks(self):
-        from ParameterStore import load_param_group
+        from settings.parameter_store import load_param_group
 
         raw_settings = {
             "enabled": "true",
@@ -33,7 +33,7 @@ class ParameterStoreTests(unittest.TestCase):
         self.assertEqual(params["label"], "fallback")
 
     def test_load_group_uses_defaults_for_invalid_numeric_values(self):
-        from ParameterStore import load_param_group
+        from settings.parameter_store import load_param_group
 
         params = load_param_group({"count": "bad", "ratio": None}.get, {"count": 3, "ratio": 1.5})
 

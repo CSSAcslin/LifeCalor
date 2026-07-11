@@ -7,7 +7,7 @@ CORE = ROOT / "core"
 if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))
 
-from ProgressPolicy import normalize_progress
+from progress.policy import normalize_progress
 
 
 class ProgressPolicyTests(unittest.TestCase):

@@ -35,7 +35,8 @@ from display.status import render_status_update
 from display.canvas_signals import CanvasSignalBinder, disconnect_canvas_signal as disconnect_display_canvas_signal
 from display.canvas_controller import DisplayCanvasController
 from display.hover import format_hover_value
-from diagnostics import AppError, show_app_error
+from diagnostics import AppError, report_warning, show_app_error
+from tasks import TaskCoordinator, TaskStatus
 
 
 class MainWindow(QMainWindow):
@@ -58,6 +59,7 @@ class MainWindow(QMainWindow):
     cwt_quality_signal = pyqtSignal(object,float, int, int, int, str)
     cwt_python_signal = pyqtSignal(object,float, int, int, str, float)
     mass_export_signal = pyqtSignal(np.ndarray, str, str, str, bool, dict)
+    managed_export_signal = pyqtSignal(object, str, str, str, bool, dict)
     atam_signal = pyqtSignal(object)
     tDgf_signal = pyqtSignal(object,int,float,bool)
     sscs_signal = pyqtSignal(object, int, float, bool)
@@ -73,7 +75,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "1.0.5"  # 当前程序版本
+        self.current_version = "1.0.6"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = get_github_auth_header()
@@ -94,9 +96,16 @@ class MainWindow(QMainWindow):
 
         # 界面加载
         self.init_ui()
+        self.task_coordinator = TaskCoordinator(self)
+        self.task_coordinator.task_updated.connect(self._on_task_updated)
+        self.task_coordinator.task_finished.connect(self._on_task_finished)
+        self._legacy_task_ids = {}
+        self._displayed_task_id = None
         self.selection_controller = SelectionController(self)
         self.export_controller = ExportController(self)
         self.history_controller = HistoryController(self)
+        if self._cleanup_cache_on_startup:
+            QTimer.singleShot(0, self.history_controller.cleanup_orphans)
         self.canvas_signal_binder = CanvasSignalBinder(self)
         self.display_canvas_controller = DisplayCanvasController(self)
         self.log_file = self.get_log_path()
@@ -212,8 +221,7 @@ class MainWindow(QMainWindow):
             'cache_cleanup_startup': True,
         })
         self.apply_cache_settings()
-        if self.tool_params.get('cache_cleanup_startup', True):
-            self.cleanup_array_cache_orphans()
+        self._cleanup_cache_on_startup = bool(self.tool_params.get('cache_cleanup_startup', True))
 
         self.save_params()
         self.save_timer = QTimer()
@@ -1014,6 +1022,8 @@ class MainWindow(QMainWindow):
 
         # 数据操作
         data_manipulation_menu = self.menu.addMenu("数据操作")
+        import_npy_action = data_manipulation_menu.addAction("导入 NPY 数据")
+        import_npy_action.triggered.connect(self.load_npy)
 
         # 数据操作——数据计算器
         data_calculator = data_manipulation_menu.addAction('数据计算器')
@@ -1300,6 +1310,37 @@ class MainWindow(QMainWindow):
             self.update_status("准备就绪",'idle')
 
     """线程与信号连接"""
+    def start_managed_export(self, data, output_dir, prefix, format_type, is_temporal, arg_dict):
+        task = self.task_coordinator.create_task(f"导出 {prefix}", "export")
+        task.start()
+        self._export_task_id = task.task_id
+        self.dat_thread.set_cancellation_token(task.token)
+        task.cancel_callback = self.dat_thread.cancel
+        self.task_coordinator.task_updated.emit(task)
+        self.managed_export_signal.emit(data, output_dir, prefix, format_type, is_temporal, arg_dict)
+
+    def _export_progress(self, current, total):
+        task_id = getattr(self, "_export_task_id", None)
+        if task_id and self.task_coordinator.registry.get(task_id) is not None:
+            self.task_coordinator.progress(task_id, current, total, "正在导出数据")
+        else:
+            self.update_progress(current, total)
+
+    def _export_finished(self, _files):
+        task_id = getattr(self, "_export_task_id", None)
+        if task_id:
+            self.task_coordinator.complete(task_id, "数据导出完成")
+
+    def _export_failed(self, message):
+        task_id = getattr(self, "_export_task_id", None)
+        if task_id:
+            self.task_coordinator.fail(task_id, message)
+
+    def _export_cancelled(self):
+        task_id = getattr(self, "_export_task_id", None)
+        if task_id:
+            self.task_coordinator.cancelled(task_id, "数据导出已取消")
+
     def import_thread_open(self):
         """数据导入线程开启（.11.1版本加入）"""
         self.import_thread = QThread()
@@ -1309,8 +1350,10 @@ class MainWindow(QMainWindow):
         self.data_import_signal.connect(self.imp_thread.import_dispatch)
         self.imp_thread.update_status.connect(self.update_status)
         self.imp_thread.update_QMessageBox.connect(self.update_QMessageBox)
-        self.imp_thread.processing_progress_signal.connect(self.update_progress)
+        self.imp_thread.processing_progress_signal.connect(self._import_progress)
         self.imp_thread.import_finished.connect(self.import_result)
+        self.imp_thread.import_failed.connect(self._import_failed)
+        self.imp_thread.import_cancelled.connect(self._import_cancelled)
 
     def data_thread_open(self):
         """图像数据操作线程（.10.10版本加入 ）和例外数据处理线程（.11.2版本加入）"""
@@ -1318,13 +1361,15 @@ class MainWindow(QMainWindow):
         self.dat_thread = DataManager()
         self.dat_thread.moveToThread(self.data_thread)
 
-        self.image_display.image_style_change_signal.connect(self.dat_thread.to_colormap)
-        self.image_display.image_export_signal.connect(self.dat_thread.export_data)
-        self.dat_thread.data_progress_signal.connect(self.update_progress)
-        self.dat_thread.process_finish_signal.connect(self.image_display.update_canvas_by_stamp)
-        self.mass_export_signal.connect(self.dat_thread.export_data)
+        self.image_display.image_export_signal.connect(self.start_managed_export)
+        self.managed_export_signal.connect(self.dat_thread.export_data)
+        self.dat_thread.data_progress_signal.connect(self._export_progress)
+        self.mass_export_signal.connect(self.start_managed_export)
         self.roi_processed_signal.connect(self.dat_thread.ROI_processed)
         self.dat_thread.processed_result.connect(self.processed_result)
+        self.dat_thread.export_finished.connect(self._export_finished)
+        self.dat_thread.export_failed.connect(self._export_failed)
+        self.dat_thread.export_cancelled.connect(self._export_cancelled)
 
         #
         self.process_thread = QThread()
@@ -1500,6 +1545,49 @@ class MainWindow(QMainWindow):
 
         return '已恢复历史'
 
+    def dispatch_import(self, import_type, filepath, params):
+        task = self.task_coordinator.create_task(
+            f"导入 {os.path.basename(filepath) or import_type}",
+            "import",
+        )
+        task.start()
+        self._import_task_id = task.task_id
+        self.imp_thread.set_cancellation_token(task.token)
+        task.cancel_callback = self.imp_thread.cancel
+        self.task_coordinator.task_updated.emit(task)
+        self.data_import_signal.emit(import_type, filepath, params)
+        return task
+
+    def _import_progress(self, current, total):
+        task_id = getattr(self, "_import_task_id", None)
+        if task_id and self.task_coordinator.registry.get(task_id) is not None:
+            self.task_coordinator.progress(task_id, current, total, "正在导入数据")
+        else:
+            self.update_progress(current, total)
+
+    def _import_failed(self, message):
+        task_id = getattr(self, "_import_task_id", None)
+        if task_id and self.task_coordinator.registry.get(task_id) is not None:
+            self.task_coordinator.fail(task_id, message)
+
+    def _import_cancelled(self):
+        task_id = getattr(self, "_import_task_id", None)
+        if task_id and self.task_coordinator.registry.get(task_id) is not None:
+            self.task_coordinator.cancelled(task_id, "数据导入已取消")
+
+    def load_npy(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择 NPY 数据文件",
+            self.settings.value("last_folder", ""),
+            "NumPy 数据 (*.npy);;所有文件 (*)",
+        )
+        if not file_path:
+            logging.info("用户取消选择 NPY 文件")
+            return False
+        self.dispatch_import("npy", file_path, dict(self.basic_params))
+        return True
+
     def load_tiff_folder(self):
         """加载TIFF文件夹(FS-iSCAT)"""
         self.time_step = float(self.time_step_input.value())
@@ -1508,7 +1596,7 @@ class MainWindow(QMainWindow):
             logging.info(folder_path)
             self.update_status("已加载TIFF文件夹",'idle')
             current_group = self.group_selector.currentText()
-            self.data_import_signal.emit('tif_series', folder_path, {'current_group':current_group,**self.basic_params})
+            self.dispatch_import('tif_series', folder_path, {'current_group':current_group,**self.basic_params})
 
         elif not folder_path:
             self.update_status("文件夹选择已取消", 'idle')
@@ -1522,7 +1610,7 @@ class MainWindow(QMainWindow):
             self.update_status("已加载SIF文件夹",'idle')
 
             # 读取文件夹中的所有sif文件
-            self.data_import_signal.emit('sif_folder',folder_path,{'normalize_type' : self.method_combo.currentText(),**self.basic_params})
+            self.dispatch_import('sif_folder', folder_path, {'normalize_type': self.method_combo.currentText(), **self.basic_params})
 
         elif not folder_path:
             self.update_status("文件夹选择已取消", 'idle')
@@ -1531,7 +1619,6 @@ class MainWindow(QMainWindow):
     def load_avi(self):
         """加载avi读取线程传递函数"""
         self.status_label.setText("正在处理数据...")
-        self.ensure_task_thread_running("avi_thread", "import")
         file_types = "AVI视频文件 (*.avi);;所有文件 (*)"
 
         # 获取文件路径
@@ -1550,13 +1637,12 @@ class MainWindow(QMainWindow):
         logging.info(f"已选择AVI文件: {file_path}")
         self.update_status("正在加载AVI文件...",'working')
 
-        self.data_import_signal.emit('avi_EM',file_path, {'fps':self.fps_input.value(),**self.basic_params})
+        self.dispatch_import('avi_EM', file_path, {'fps': self.fps_input.value(), **self.basic_params})
         self.update_param('EM','EM_fps', self.fps_input.value())
 
     def load_tiff_folder_EM(self):
         """加载TIFF文件夹(FS-iSCAT)"""
         self.status_label.setText("正在处理数据...")
-        self.ensure_task_thread_running("avi_thread", "import")
         folder_path = QFileDialog.getExistingDirectory(
             self,
             "选择TIFF图像序列文件夹",
@@ -1570,7 +1656,7 @@ class MainWindow(QMainWindow):
 
         for f in os.listdir(folder_path):
             if f.lower().endswith(('.tif', '.tiff')):
-                self.data_import_signal.emit('tif_EM',folder_path, {'fps':self.fps_input.value(),**self.basic_params})
+                self.dispatch_import('tif_EM', folder_path, {'fps': self.fps_input.value(), **self.basic_params})
                 self.update_status("正在加载tiff文件...",'working')
                 self.update_param('EM','EM_fps', self.fps_input.value())
                 return
@@ -1583,6 +1669,9 @@ class MainWindow(QMainWindow):
         self.data = data
         self.settings.setValue("last_folder", os.path.dirname(data.parameters['file_path']))
         logging.info(f'成功加载{data.format_import}数据({data.name})')
+        task_id = getattr(self, "_import_task_id", None)
+        if task_id and self.task_coordinator.registry.get(task_id) is not None:
+            self.task_coordinator.complete(task_id, "数据导入完成")
         self.update_status("已加载文件", 'idle')
         # 成像显示
         self.load_image(origin_data=self.data)
@@ -1595,27 +1684,6 @@ class MainWindow(QMainWindow):
     def load_image(self, data_type='original', other_params: str = None, origin_data=None):
         """加载图像显示画布。"""
         return self.display_canvas_controller.load_image(data_type, other_params, origin_data)
-
-    def other_imports(self): # 没用
-        msg_box = QMessageBox()
-        msg_box.setWindowTitle("画布操作")
-        msg_box.setText("请选择是否要覆盖当前画布或新建画布")
-
-        # 添加标准按钮
-        overwrite_btn = msg_box.addButton("覆盖", QMessageBox.ActionRole)
-        new_btn = msg_box.addButton("新建", QMessageBox.ActionRole)
-        hide_btn = msg_box.addButton("隐藏", QMessageBox.ActionRole)
-        msg_box.exec_()
-
-        # 返回结果
-        if msg_box.clickedButton() == overwrite_btn:
-            return "overwrite"
-        elif msg_box.clickedButton() == new_btn:
-            self.add_new_canvas('latest')
-            return "new"
-        elif msg_box.clickedButton() == hide_btn:
-            return "hide"
-        return None
 
     def make_hover_handler(self):
         args = {'x': None, 'y': None, 't': None, 'value': None, 'origin': None}
@@ -1819,6 +1887,73 @@ class MainWindow(QMainWindow):
         text, state = update
         self.update_status(text, state)
 
+    def _on_task_updated(self, task):
+        """Reflect only the current foreground task in the compact status bar."""
+        foreground = self.task_coordinator.registry.foreground()
+        if foreground is not None and foreground.task_id != task.task_id:
+            return
+        self._displayed_task_id = task.task_id
+        if task.status == TaskStatus.CANCELLING:
+            self.update_status(f"正在中断: {task.name}", "working")
+            return
+        if task.status == TaskStatus.RUNNING:
+            self.update_status(task.message or task.name, "working")
+            if task.total:
+                self.update_progress(task.current, task.total)
+
+    def _on_task_finished(self, task):
+        if self._displayed_task_id != task.task_id:
+            return
+        next_task = self.task_coordinator.registry.foreground()
+        if next_task is not None and next_task.task_id != task.task_id:
+            self._on_task_updated(next_task)
+            return
+        self._displayed_task_id = None
+        if task.status == TaskStatus.FAILED:
+            self.update_status(f"任务失败: {task.name}", "error")
+            show_app_error(self, AppError("任务失败", task.error or task.name, stage=task.category, severity="error"))
+        elif task.status == TaskStatus.CANCELLED:
+            self.update_status(f"已中断: {task.name}", "idle")
+        else:
+            self.update_status(task.message or f"任务完成: {task.name}", "idle")
+        self.update_progress(-1)
+
+    def cancel_active_task(self):
+        """Request cancellation without waiting in the GUI thread."""
+        if self.task_coordinator.cancel_foreground_task():
+            return True
+        logging.info("当前没有可中断的前台任务")
+        self.update_status("当前没有可中断任务", "idle")
+        return False
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.cancel_active_task()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def handle_logged_error(self, level, message):
+        concise = str(message).splitlines()[0]
+        show_app_error(self, AppError(
+            "运行错误",
+            concise,
+            stage="日志错误桥",
+            severity="critical" if level == "CRITICAL" else "error",
+            details=str(message),
+        ))
+
+    def handle_unhandled_exception(self, exc_type, exc_value, exc_traceback):
+        details = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        show_app_error(self, AppError(
+            "程序发生未捕获错误",
+            f"{exc_type.__name__}: {exc_value}\n详细信息已写入日志。",
+            stage="未捕获异常",
+            severity="critical",
+            details=details,
+            original=exc_value,
+        ))
+
     def update_status(self, status, working_status='idle'):
         """更新状态条的显示"""
         self.status_label.setText(status)
@@ -1829,21 +1964,27 @@ class MainWindow(QMainWindow):
         elif working_status == 'warning':
             light = "red_light.png"
             logging.warning(status)
-        elif working_status == 'error':
-            QMessageBox.warning(self,'错误！',status)
-            logging.error(status)
-            light = "green_light.png"
+        elif working_status in ('error', 'failed'):
+            logging.error(status, extra={"lifecalor_user_reported": True})
+            light = "red_light.png"
         else:
             light = "red_light.png"
         self.status_light.setPixmap(QPixmap(f":/icons/{light}").scaled(16, 16))
 
     def update_QMessageBox(self, message_type, title, message):
-        if message_type == 'warning':
-            QMessageBox.warning(self, title, message)
-        elif message_type == 'error':
-            QMessageBox.error(self, title, message)
-        elif message_type == 'information':
-            QMessageBox.information(self, title, message)
+        if message_type == "error":
+            foreground = self.task_coordinator.registry.foreground()
+            if foreground is not None:
+                self.task_coordinator.fail(foreground.task_id, message)
+            else:
+                show_app_error(self, AppError(title, message, severity="error"))
+                self.update_status(message, "error")
+        elif message_type == "warning":
+            logging.warning("%s: %s", title, message)
+            self.update_status(message, "warning")
+        else:
+            logging.info("%s: %s", title, message)
+            self.update_status(message, "idle")
 
     """各种计算方法"""
     def vectorROI_signal_show(self):
@@ -1880,7 +2021,7 @@ class MainWindow(QMainWindow):
         # 检查帧数是否有效
         invalid_frames = [f for f in frames if f < 0 or f > self.max_frame]
         if invalid_frames:
-            QMessageBox.warning(
+            report_warning(
                 self, "帧数超出范围",
                 f"有效帧数范围: 0-{self.max_frame}\n无效帧: {invalid_frames}"
             )
@@ -2117,7 +2258,7 @@ class MainWindow(QMainWindow):
         if mask is None:
             return
         if mask.shape != data.framesize:
-            QMessageBox.warning(self, "蒙版错误", "蒙版尺寸与数据不匹配")
+            report_warning(self, "蒙版错误", "蒙版尺寸与数据不匹配")
             return
         self.ensure_task_thread_running("calc_thread", "calculation")
         self.update_status('计算进行中...', 'working')
@@ -2153,7 +2294,7 @@ class MainWindow(QMainWindow):
         if mask is None:
             return False
         if mask.shape != aim_data.framesize:
-            QMessageBox.warning(self, "蒙版错误", "蒙版尺寸与数据不匹配")
+            report_warning(self, "蒙版错误", "蒙版尺寸与数据不匹配")
             return False
 
         default_frame = self._default_distribution_frame_index(aim_data)
@@ -2171,7 +2312,7 @@ class MainWindow(QMainWindow):
         try:
             config = dialog.get_config()
         except ValueError as exc:
-            QMessageBox.warning(self, "参数错误", str(exc))
+            report_warning(self, "参数错误", str(exc))
             return False
 
         frame_index = config["frame_index"]
@@ -2246,7 +2387,7 @@ class MainWindow(QMainWindow):
                                       self.EM_params['thr_known'])
                 self.tDgf_btn.setEnabled(False)
         else:
-            QMessageBox.warning(self,"数据错误","不支持的数据类型，请确认前序处理是否正确（是否确认ROI）")
+            report_warning(self, "数据错误", "不支持的数据类型，请确认前序处理是否正确（是否确认ROI）")
             self.update_status("准备就绪", 'idle')
             return
 
@@ -2267,7 +2408,7 @@ class MainWindow(QMainWindow):
                                       self.EM_params['thr_known'])
                 self.sscs_btn.setEnabled(False)
         else:
-            QMessageBox.warning(self,"数据错误","不支持的数据类型，请确认前序处理是否正确（是否确认ROI）")
+            report_warning(self, "数据错误", "不支持的数据类型，请确认前序处理是否正确（是否确认ROI）")
             self.update_status("准备就绪", 'idle')
             return
 
@@ -2361,6 +2502,9 @@ class MainWindow(QMainWindow):
             ))
             self.update_progress(-1) # 进度条重置
             return False
+        foreground_task = self.task_coordinator.registry.foreground()
+        if foreground_task is not None and foreground_task.category in {"calculation", "em_processing"}:
+            self.task_coordinator.complete(foreground_task.task_id, "数据处理完成")
         self.processed_data = data
         # 各处理后响应
         process_type = self.processed_data.type_processed
@@ -2533,9 +2677,38 @@ class MainWindow(QMainWindow):
         return thread_is_active(thread, expected_type=QThread, is_deleted=sip.isdeleted)
 
     def ensure_task_thread_running(self, thread_name: str, task_key: str) -> bool:
-        """启动线程并同步任务状态。"""
+        """启动兼容线程，并在统一任务注册表登记可取消的前台任务。"""
+        thread = getattr(self, thread_name, None)
+        worker_map = {
+            "import": getattr(self, "imp_thread", None),
+            "calculation": getattr(self, "cal_thread", None),
+            "em_processing": getattr(self, "mass_data_processor", None),
+            "export": getattr(self, "dat_thread", None),
+        }
+        worker = worker_map.get(task_key)
+        if worker is not None and hasattr(worker, "abortion"):
+            worker.abortion = False
+
+        def request_cancel():
+            if worker is not None:
+                if hasattr(worker, "abortion"):
+                    worker.abortion = True
+                stop_method = getattr(worker, "stop", None)
+                if callable(stop_method):
+                    stop_method()
+            if thread is not None and hasattr(thread, "requestInterruption"):
+                thread.requestInterruption()
+
+        task = self.task_coordinator.create_task(
+            name={"import": "导入数据", "calculation": "寿命计算", "em_processing": "数据处理", "export": "导出数据"}.get(task_key, task_key),
+            category=task_key,
+            cancel_callback=request_cancel,
+        )
+        task.start()
+        self._legacy_task_ids[task_key] = task.task_id
+        self.task_coordinator.task_updated.emit(task)
         return ensure_thread_running(
-            getattr(self, thread_name, None),
+            thread,
             self.task_states[task_key],
             expected_type=QThread,
             is_deleted=sip.isdeleted,
@@ -2602,12 +2775,6 @@ class MainWindow(QMainWindow):
         """在线程中读取缓存数组，避免历史选择时阻塞 GUI。"""
         return self.history_controller.load_cached_history_async(target, attr_name)
 
-    def finish_cached_history_load(self, loaded, attr_name):
-        return self.history_controller.finish_cached_history_load(loaded, attr_name)
-
-    def cache_load_failed(self, message):
-        return self.history_controller.cache_load_failed(message)
-
     def data_history_clear(self):
         """本次历史清除：只清空内存历史，不删除已落盘缓存。"""
         if Data is not None:
@@ -2621,18 +2788,9 @@ class MainWindow(QMainWindow):
 
     '''以下控制台命令更新'''
     def stop_calculation(self):
-        """终止当前计算"""
-        # 这里需要实现终止计算的逻辑
-        # 可以通过设置标志位或直接终止计算线程
-        logging.warning("计算终止请求已接收，正在停止...")
-        if hasattr(self, 'cal_thread'):
-            # self.cal_thread.stop()
-            self.stop_thread(0)
-        if hasattr(self, 'avi_thread'):
-            # self.avi_thread.stop()
-            self.stop_thread(1)
-        return
-        # 实际终止逻辑需要根据你的计算实现来添加
+        """兼容控制台入口：转发为非阻塞的全局任务取消请求。"""
+        logging.warning("任务中断请求已接收")
+        return self.cancel_active_task()
 
     def save_config(self):
         """保存当前配置(留空暂不实现)"""
