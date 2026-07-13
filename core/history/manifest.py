@@ -170,6 +170,7 @@ def restore_history_item(item: dict):
         _restore_common_fields(instance, item)
         object.__setattr__(instance, "timestamp_inherited", item.get("timestamp_inherited"))
         object.__setattr__(instance, "type_processed", item.get("type_processed", ""))
+        object.__setattr__(instance, "parameters", metadata.get("parameters") or {})
         object.__setattr__(instance, "time_point", _restore_time_point(metadata, tuple(item.get("shape", ())), metadata.get("out_processed_metadata") or {}))
         object.__setattr__(instance, "ROI_applied", False)
         object.__setattr__(instance, "ROI_mask", None)

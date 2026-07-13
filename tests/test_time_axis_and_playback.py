@@ -22,6 +22,11 @@ class TimeAxisAndPlaybackTests(unittest.TestCase):
         self.assertEqual(playback_interval_ms(None, 5), 3000)
         self.assertEqual(playback_interval_ms(20, 5), 50)
 
+    def test_timeline_prefers_original_fps_clock_over_numeric_axis(self):
+        from display.playback_policy import timeline_label
+
+        self.assertEqual(timeline_label(25, 20, np.arange(30) / 20), "00:01:05")
+
     def test_fast_selection_axis_rebuilds_legacy_stft_metadata(self):
         data = SimpleNamespace(time_point=np.array([0.0]), out_processed={"fps": 100.0, "window_step": 25}, source_name="restored-stft")
 
@@ -36,6 +41,7 @@ class TimeAxisAndPlaybackTests(unittest.TestCase):
         restored = restore_history_item(build_manifest_item(processed))
 
         np.testing.assert_allclose(restored.time_point, np.arange(4) * 0.25)
+        self.assertEqual(restored.parameters, {})
 
 
     def test_legacy_manifest_rebuilds_stft_axis_from_metadata(self):
