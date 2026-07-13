@@ -2,6 +2,8 @@ from PyQt5.QtCore import pyqtSignal, Qt, QRectF, QPointF, QPoint
 from PyQt5.QtGui import QColor, QPainter, QPen, QBrush
 from PyQt5.QtWidgets import QWidget, QSizePolicy
 
+from display.playback_policy import normalized_fps, timeline_label, valid_time_axis
+
 
 class AdvancedTimeline(QWidget):
     """高阶时间轴组件"""
@@ -23,8 +25,8 @@ class AdvancedTimeline(QWidget):
 
         # --- 数据模型 ---
         self.total_frames = total_frames - 1
-        self.fps = fps
-        self.time_point = time_point
+        self.fps = normalized_fps(fps)
+        self.time_point = valid_time_axis(time_point, total_frames)
         self.current_frame = 0
         self.selection_start = 0
         self.selection_end = total_frames
@@ -220,17 +222,7 @@ class AdvancedTimeline(QWidget):
 
             # 文字
             painter.setPen(self.text_color)
-            if self.fps > 0:
-                seconds = f / self.fps
-                minutes = int(seconds // 60)
-                remaining_seconds = int(seconds % 60)
-                frames = int((seconds - int(seconds)) * self.fps)
-                time_str = f"{minutes:02d}:{remaining_seconds:02d}:{frames:0{len(str(self.fps))}d}"
-            elif self.time_point is not None:
-                val = self.time_point[f]
-                time_str = str(val)
-            else:
-                time_str = str(f)
+            time_str = timeline_label(f, self.fps, self.time_point)
             painter.drawText(QPointF(x + 4, ruler_h - 4), time_str)
             painter.setPen(self.tick_color)
 
@@ -449,7 +441,7 @@ class AdvancedTimeline(QWidget):
         """
         更新 FPS 并重绘标尺
         """
-        self.fps = max(0, fps)  # 保证不为负数即可
+        self.fps = normalized_fps(fps)
         self.update()
 
     def set_time_point(self, time_point):
@@ -457,7 +449,7 @@ class AdvancedTimeline(QWidget):
         设置时间点数组。
         :param time_point: numpy 数组或列表，长度应对应 total_frames
         """
-        self.time_point = time_point
+        self.time_point = valid_time_axis(time_point, self.total_frames + 1)
         self.update() # 触发重绘
 
     def update_data_range(self, new_total_frames):

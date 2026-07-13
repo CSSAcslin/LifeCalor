@@ -2,6 +2,7 @@ import os
 import logging
 import sys
 import traceback
+import time
 
 from PyQt5.QtCore import QObject, pyqtSignal, Qt
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
@@ -20,6 +21,9 @@ class ConsoleHandler(QObject, logging.Handler):
         self.unhandled_error.connect(parent.handle_unhandled_exception)
         self.legacy_error.connect(parent.handle_logged_error)
 
+        self._last_uncaught = None
+        self._last_uncaught_at = 0.0
+        self._suppressed_uncaught = 0
         sys.excepthook = self.handle_uncaught_exception
 
     def emit(self, record):
@@ -36,6 +40,16 @@ class ConsoleHandler(QObject, logging.Handler):
             return
 
         error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        fingerprint = (exc_type.__name__, str(exc_value), error_msg)
+        now = time.monotonic()
+        if fingerprint == self._last_uncaught and now - self._last_uncaught_at < 2.0:
+            self._suppressed_uncaught += 1
+            return
+        if self._suppressed_uncaught:
+            logging.warning("已抑制 %d 条短时间重复的未捕获异常", self._suppressed_uncaught)
+            self._suppressed_uncaught = 0
+        self._last_uncaught = fingerprint
+        self._last_uncaught_at = now
         logging.critical("未捕获异常:\n%s", error_msg, extra={"lifecalor_user_reported": True})
         self.unhandled_error.emit(exc_type, exc_value, exc_traceback)
 

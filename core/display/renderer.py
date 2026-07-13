@@ -26,7 +26,16 @@ class FrameRenderer:
     @staticmethod
     def render(frame: np.ndarray, params: FrameRenderParams | None = None) -> RenderedFrame:
         params = params or FrameRenderParams()
-        normalized, min_value, max_value = FrameRenderer._normalize(frame, params)
+        values = np.asarray(frame)
+        if values.ndim == 3 and values.shape[-1] in (3, 4) and not params.use_colormap:
+            color = FrameRenderer._color_uint8(values)
+            if color.shape[-1] == 3:
+                alpha = np.full(color.shape[:2] + (1,), 255, dtype=np.uint8)
+                color = np.concatenate((color, alpha), axis=-1)
+            return RenderedFrame(image=color, mode="RGBA", min_value=float(np.min(values)), max_value=float(np.max(values)))
+        if values.ndim == 3 and values.shape[-1] in (3, 4):
+            values = values[..., 0] * 0.2126 + values[..., 1] * 0.7152 + values[..., 2] * 0.0722
+        normalized, min_value, max_value = FrameRenderer._normalize(values, params)
         gray = np.clip(normalized * 255.0, 0, 255).astype(np.uint8)
 
         if params.use_colormap:
@@ -38,6 +47,20 @@ class FrameRenderer:
             )
 
         return RenderedFrame(image=gray, mode="L", min_value=min_value, max_value=max_value)
+
+
+    @staticmethod
+    def _color_uint8(values: np.ndarray) -> np.ndarray:
+        if values.dtype == np.uint8:
+            return values.copy()
+        numeric = values.astype(np.float32)
+        finite = numeric[np.isfinite(numeric)]
+        if finite.size == 0:
+            return np.zeros(values.shape, dtype=np.uint8)
+        low, high = float(finite.min()), float(finite.max())
+        if high <= low:
+            return np.zeros(values.shape, dtype=np.uint8)
+        return np.clip((numeric - low) * 255.0 / (high - low), 0, 255).astype(np.uint8)
 
     @staticmethod
     def _normalize(frame: np.ndarray, params: FrameRenderParams):

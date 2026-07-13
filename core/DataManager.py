@@ -1418,11 +1418,14 @@ class ImagingData:
     def __post_init__(self):
         self.imageshape = self.image_backup.shape
         self.ndim = self.image_backup.ndim
-        self.totalframes = self.imageshape[0] if self.ndim == 3 else 1
-        self.framesize = (self.imageshape[1], self.imageshape[2]) if self.ndim == 3 else (self.imageshape[0],
-                                                                                          self.imageshape[1])
-        # 不考虑数据点只有一个的情况
-        self.is_temporary = True if self.ndim == 3 else False
+        if getattr(self, "display_source", None) is not None:
+            self.totalframes = self.display_source.frame_count
+            self.framesize = self.display_source.frame_shape
+            self.is_temporary = self.totalframes > 1
+        else:
+            self.totalframes = self.imageshape[0] if self.ndim == 3 else 1
+            self.framesize = (self.imageshape[1], self.imageshape[2]) if self.ndim == 3 else (self.imageshape[0], self.imageshape[1])
+            self.is_temporary = self.ndim == 3
         preview = self.display_source.get_frame(0) if getattr(self, "display_source", None) is not None else self.image_backup
         preview_for_stats = np.abs(preview) if np.iscomplexobj(preview) else preview
         finite_preview = preview_for_stats[np.isfinite(preview_for_stats)]

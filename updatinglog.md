@@ -1,5 +1,14 @@
 # 更新日志
 
+### c 1.0.7 2026.7.13
+新增：左侧“导入设置”增加通用文件导入模式，支持自动识别、NumPy NPY、二维/三维灰度 TIFF、Palette TIFF 和单帧 RGB TIFF；原“数据操作”中的 NPY 入口已移除。
+新增：建立 ImportRequest、ImporterRegistry、格式探测和统一 ImportedPayload 数据契约，后续新增 OME-TIFF、HDF5 等格式无需继续扩张 MainWindow 导入流程。
+新增：TIFF 导入会读取 axes、photometric、page 和 dtype metadata；Palette TIFF 保留索引科学值与原始颜色显示，RGB TIFF 保留颜色显示并明确以亮度值用于分析。
+修改：修复 NPY 缺少 FPS 时 AdvancedTimeline 在 paintEvent 中反复抛错的问题；FPS、真实时间轴、帧序号和默认播放时长现使用统一策略。
+修改：历史缓存时间轴改为紧凑持久化并支持旧索引重建，恢复的 STFT/CWT 数据可继续进行 anchor 快速提取。
+修改：通用 NPY/TIFF 读取进入统一导入任务，保留连续进度、取消和错误处理；时间基准可在导入设置中选择时间间隔或 FPS。
+修改：未捕获异常增加短时间同指纹去重，避免绘制事件错误造成弹窗与日志循环；快速提取错误统一通过结构化诊断通道上报。
+
 ### c 1.0.6 2026.7.11
 新增：建立可扩展多任务注册表，每个任务拥有独立 ID、状态、进度、取消令牌和前后台属性，为后续并发任务面板打下基础。
 新增：Esc 接入统一任务中断，按键只发送取消请求，不再在 GUI 线程中等待线程退出。

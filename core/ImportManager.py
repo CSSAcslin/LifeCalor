@@ -14,7 +14,7 @@ from PIL import Image
 from typing import List, Union, Optional, Callable
 
 from DataManager import *
-from dataio import copy_npy_to_memory
+from importing import default_importer_registry
 from tasks.model import CancellationToken, TaskCancelled
 
 from PyQt5.QtCore import QObject
@@ -36,7 +36,10 @@ class ImportManager(QObject):
             'avi_EM': self.load_avi,
             'tif_EM': self.load_tiff,
             'npy': self.load_npy,
+            'tiff_file': self.load_tiff_file,
+            'auto_file': self.load_auto_file,
         }
+        self.importer_registry = default_importer_registry()
         self.abortion = False
         self.cancellation_token = CancellationToken()
         logging.info("数据导入线程已启动")
@@ -54,37 +57,35 @@ class ImportManager(QObject):
             self.cancellation_token.cancel()
         self.cancellation_token.raise_if_cancelled()
 
-    def load_npy(self, filepath, time_step=1.0, space_step=1.0, time_unit="s", space_unit="px", **_kwargs):
-        """Import a numeric 2D/3D NPY array through the shared chunked reader."""
-        array = copy_npy_to_memory(
-            filepath,
+    def _load_registered_file(self, format_id, filepath, **options):
+        payload = self.importer_registry.read(
+            format_id, filepath, options,
             progress=lambda current, total, _message: self.processing_progress_signal.emit(current, total),
             token=self.cancellation_token,
-            message="正在读取NPY数据",
         )
-        if array.ndim not in (2, 3):
-            raise ValueError(f"NPY数据必须是二维或三维数组，当前shape={array.shape}")
         self._raise_if_cancelled()
-        frame_count = array.shape[0] if array.ndim == 3 else 1
-        time_point = np.arange(frame_count, dtype=np.float64) * float(time_step)
-        parameters = {
-            "file_path": filepath,
-            "time_step": float(time_step),
-            "time_unit": time_unit,
-            "space_step": float(space_step),
-            "space_unit": space_unit,
-            "external_npy": True,
-            "source_dtype": str(array.dtype),
-            "source_shape": tuple(array.shape),
-        }
+        warning = payload.parameters.get("import_warning")
+        if warning:
+            logging.warning("%s: %s", payload.name, warning)
+            self.update_status.emit(warning, "warning")
         self.import_finished.emit(Data(
-            data_origin=array,
-            time_point=time_point,
-            format_import="npy",
-            image_import=array,
-            parameters=parameters,
-            name=os.path.basename(filepath),
+            data_origin=payload.data,
+            time_point=payload.time_point,
+            format_import=payload.format_import,
+            image_import=payload.display_data,
+            parameters=payload.parameters,
+            name=payload.name,
         ))
+
+    def load_npy(self, filepath, **options):
+        """Import a numeric 2D/3D NPY file through the registered importer."""
+        return self._load_registered_file("npy", filepath, **options)
+
+    def load_tiff_file(self, filepath, **options):
+        return self._load_registered_file("tiff", filepath, **options)
+
+    def load_auto_file(self, filepath, **options):
+        return self._load_registered_file("auto", filepath, **options)
 
     @pyqtSlot(str,str,dict)
     def import_dispatch(self,import_type:str, filepath:str, kwargs_dict: Dict[str, Any]):
@@ -141,15 +142,10 @@ class ImportManager(QObject):
             call_kwargs[params[0]] = filepath
 
         # 添加其他参数
+        accepts_extra = any(p.kind == Parameter.VAR_KEYWORD for p in sig.parameters.values())
         for key, value in kwargs_dict.items():
-            if key != 'filepath':  # filepath 已经处理过了
-                if key in params:
-                    call_kwargs[key] = value
-                elif any(p.kind == Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-                    # 如果函数接受 **kwargs，添加所有额外参数
-                    if 'kwargs' not in call_kwargs:
-                        call_kwargs['kwargs'] = {}
-                    call_kwargs['kwargs'][key] = value
+            if key != 'filepath' and (key in params or accepts_extra):
+                call_kwargs[key] = value
 
         # 调用处理器函数
         return handler(**call_kwargs)

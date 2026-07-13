@@ -17,6 +17,14 @@ class DisplaySource:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     @property
+    def axes(self) -> str:
+        return str(self.metadata.get("axes") or "")
+
+    @property
+    def is_color(self) -> bool:
+        return self.axes.endswith("C") and self.array.shape[-1] in (3, 4)
+
+    @property
     def shape(self):
         return self.array.shape
 
@@ -30,20 +38,24 @@ class DisplaySource:
 
     @property
     def frame_count(self) -> int:
-        if self.array.ndim <= 2:
+        if "T" in self.axes:
+            return int(self.array.shape[self.axes.index("T")])
+        if self.is_color or self.array.ndim <= 2:
             return 1
         return int(self.array.shape[0])
 
     @property
     def frame_shape(self):
-        if self.array.ndim <= 2:
+        if "Y" in self.axes and "X" in self.axes:
+            return (int(self.array.shape[self.axes.index("Y")]), int(self.array.shape[self.axes.index("X")]))
+        if self.frame_count == 1:
             return self.array.shape
         return self.array.shape[1:]
 
     def get_frame(self, index: int = 0) -> np.ndarray:
-        if self.array.ndim <= 2:
+        if self.is_color or self.array.ndim <= 2:
             if index not in (0, -1):
-                raise IndexError(f"frame index {index} out of range for 2D source")
+                raise IndexError(f"frame index {index} out of range for single-frame source")
             return self.array
         if index < 0:
             index += self.frame_count
@@ -74,7 +86,14 @@ class DisplaySourceFactory:
                 array = data_obj.data_processed
                 source_type = "ProcessedData"
         else:
-            array = data_obj.data_origin
+            parameters = getattr(data_obj, "parameters", None) or {}
+            display_axes = str(parameters.get("display_axes") or "")
+            display_array = getattr(data_obj, "image_import", None)
+            if display_axes.endswith("C") and isinstance(display_array, np.ndarray):
+                array = display_array
+            else:
+                array = data_obj.data_origin
+            metadata["axes"] = display_axes or str(parameters.get("source_axes") or "")
             source_type = class_name
 
         if not isinstance(array, np.ndarray):

@@ -75,7 +75,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "1.0.6"  # 当前程序版本
+        self.current_version = "1.0.7"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = get_github_auth_header()
@@ -526,7 +526,7 @@ class MainWindow(QMainWindow):
 
         # 模式选择
         self.fuction_select = QComboBox()
-        self.fuction_select.addItems(['请选择分析模式','超快成像动态分析','EM-iSCAT','其他方法'])
+        self.fuction_select.addItems(['请选择分析模式','超快成像动态分析','EM-iSCAT','通用文件导入','其他方法'])
         left_layout0.addWidget(self.fuction_select)
         left_layout0.addWidget(param_panel)
 
@@ -601,6 +601,23 @@ class MainWindow(QMainWindow):
         v_layout.addLayout(type_choose)
         EM_iSCAT_group.setLayout(v_layout)
         self.funtion_stack.addWidget(EM_iSCAT_group)
+
+        # 通用文件导入
+        general_import_group = self.QGroupBoxCreator(style="inner")
+        general_import_layout = QVBoxLayout()
+        self.general_format_selector = QComboBox()
+        self.general_format_selector.addItems(["自动识别", "NumPy NPY", "TIFF 图像/堆栈"])
+        self.general_color_policy = QComboBox()
+        self.general_color_policy.addItems(["保留 TIFF 颜色显示", "转换为灰度显示"])
+        self.general_time_basis = QComboBox()
+        self.general_time_basis.addItems(["使用时间间隔", "使用 FPS"])
+        self.general_file_btn = QPushButton("选择数据文件")
+        general_import_layout.addWidget(self.general_format_selector)
+        general_import_layout.addWidget(self.general_color_policy)
+        general_import_layout.addWidget(self.general_time_basis)
+        general_import_layout.addWidget(self.general_file_btn)
+        general_import_group.setLayout(general_import_layout)
+        self.funtion_stack.addWidget(general_import_group)
 
         # 科学分析模块
         Sim_group = self.QGroupBoxCreator(style="inner")
@@ -971,9 +988,12 @@ class MainWindow(QMainWindow):
             self.fps_input.setEnabled(True)
             self.time_step_input.setEnabled(False)
             self.time_unit_combo.setEnabled(False)
-        if self.fuction_select.currentIndex() == 3:
+        if self.fuction_select.currentIndex() in (3, 4):
             self.between_stack.setCurrentIndex(3)
             self.update_status('准备就绪')
+            self.fps_input.setEnabled(True)
+            self.time_step_input.setEnabled(True)
+            self.time_unit_combo.setEnabled(True)
 
     def mode_switch_change(self, mode:int):
         """模式改变后"""
@@ -1022,9 +1042,6 @@ class MainWindow(QMainWindow):
 
         # 数据操作
         data_manipulation_menu = self.menu.addMenu("数据操作")
-        import_npy_action = data_manipulation_menu.addAction("导入 NPY 数据")
-        import_npy_action.triggered.connect(self.load_npy)
-
         # 数据操作——数据计算器
         data_calculator = data_manipulation_menu.addAction('数据计算器')
         data_calculator.triggered.connect(self.process_math)
@@ -1433,6 +1450,9 @@ class MainWindow(QMainWindow):
         self.sif_folder_btn.clicked.connect(self.load_sif_folder)
         self.avi_select_btn.clicked.connect(self.load_avi)
         self.EMtiff_folder_btn.clicked.connect(self.load_tiff_folder_EM)
+        self.general_file_btn.clicked.connect(self.load_general_file)
+        self.general_format_selector.currentIndexChanged.connect(
+            lambda index: self.general_color_policy.setEnabled(index in (0, 2)))
         self.analyze_region_btn.clicked.connect(self.region_analyze_start)
         self.analyze_btn.clicked.connect(self.distribution_analyze_start)
         self.heat_transfer_btn.clicked.connect(self.heat_transfer_start)
@@ -1575,18 +1595,39 @@ class MainWindow(QMainWindow):
         if task_id and self.task_coordinator.registry.get(task_id) is not None:
             self.task_coordinator.cancelled(task_id, "数据导入已取消")
 
-    def load_npy(self):
+    def load_general_file(self):
+        format_index = self.general_format_selector.currentIndex()
+        filters = {
+            0: "支持的数据 (*.npy *.tif *.tiff);;所有文件 (*)",
+            1: "NumPy 数据 (*.npy);;所有文件 (*)",
+            2: "TIFF 图像 (*.tif *.tiff);;所有文件 (*)",
+        }
+        import_types = {0: "auto_file", 1: "npy", 2: "tiff_file"}
         file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择 NPY 数据文件",
-            self.settings.value("last_folder", ""),
-            "NumPy 数据 (*.npy);;所有文件 (*)",
+            self, "选择数据文件", self.settings.value("last_folder", ""), filters[format_index]
         )
         if not file_path:
-            logging.info("用户取消选择 NPY 文件")
+            logging.info("用户取消选择通用数据文件")
             return False
-        self.dispatch_import("npy", file_path, dict(self.basic_params))
+        options = {
+            **self.basic_params,
+            "time_basis": "fps" if self.general_time_basis.currentIndex() == 1 else "time_step",
+            "color_policy": "preserve" if self.general_color_policy.currentIndex() == 0 else "grayscale",
+        }
+        if options["time_basis"] == "fps":
+            options["fps"] = self.fps_input.value()
+            options["time_unit"] = "s"
+        self.dispatch_import(import_types[format_index], file_path, options)
         return True
+
+    def load_npy(self):
+        """兼容旧调用；界面入口已统一迁移到左侧导入设置。"""
+        previous = self.general_format_selector.currentIndex()
+        self.general_format_selector.setCurrentIndex(1)
+        try:
+            return self.load_general_file()
+        finally:
+            self.general_format_selector.setCurrentIndex(previous)
 
     def load_tiff_folder(self):
         """加载TIFF文件夹(FS-iSCAT)"""
