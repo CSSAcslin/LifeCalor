@@ -1453,7 +1453,7 @@ class ImagingData:
             instance.source_name = data_obj.name
             instance.source_format = data_obj.format_import
             # instance.fps = getattr(data_obj, 'parameters', {}).get('fps', 10) # 优雅
-            instance.fps = (getattr(data_obj, 'parameters') or {}).get('fps', 0) # 改进版
+            instance.fps = (getattr(data_obj, 'parameters') or {}).get('fps')
             instance.image_type = 'from_data'
         elif isinstance(data_obj, ProcessedData):
             if arg:
@@ -1466,7 +1466,7 @@ class ImagingData:
             instance.source_type = "ProcessedData"
             instance.source_name = data_obj.name
             instance.source_format = data_obj.type_processed
-            instance.fps = (getattr(data_obj, 'out_processed') or {}).get('fps', 0)
+            instance.fps = (getattr(data_obj, 'out_processed') or {}).get('fps')
             if data_obj.ROI_applied:
                 instance.image_type = 'from_ROIed'
             else:

@@ -35,6 +35,62 @@ def _json_safe(value: Any):
     return str(value)
 
 
+def _serialize_time_point(value: Any):
+    if value is None:
+        return None
+    axis = np.asarray(value).reshape(-1)
+    if axis.size == 0:
+        return {"kind": "time_axis", "values": []}
+    if axis.size == 1:
+        return {"kind": "linear_time_axis", "start": float(axis[0]), "step": 0.0, "count": 1}
+    numeric = axis.astype(np.float64)
+    steps = np.diff(numeric)
+    if np.all(np.isfinite(numeric)) and np.allclose(steps, steps[0], rtol=1e-7, atol=1e-12):
+        return {
+            "kind": "linear_time_axis",
+            "start": float(numeric[0]),
+            "step": float(steps[0]),
+            "count": int(axis.size),
+        }
+    return {"kind": "time_axis", "values": [_json_safe(item) for item in axis]}
+
+
+def _restore_time_point(metadata: dict, shape: tuple, parameters: dict):
+    encoded = metadata.get("time_point")
+    if isinstance(encoded, list):
+        return np.asarray(encoded)
+    if isinstance(encoded, dict):
+        kind = encoded.get("kind")
+        if kind == "linear_time_axis":
+            count = max(0, int(encoded.get("count", 0)))
+            return float(encoded.get("start", 0.0)) + np.arange(count) * float(encoded.get("step", 0.0))
+        if kind == "time_axis":
+            return np.asarray(encoded.get("values") or [])
+
+    frame_count = int(shape[0]) if len(shape) == 3 else 0
+    if frame_count <= 0:
+        return None
+    try:
+        fps = float(parameters.get("fps", 0))
+    except (TypeError, ValueError):
+        fps = 0.0
+    try:
+        window_step = float(parameters.get("window_step", 0))
+    except (TypeError, ValueError):
+        window_step = 0.0
+    if fps > 0 and window_step > 0:
+        return np.arange(frame_count, dtype=np.float64) * window_step / fps
+    try:
+        time_step = float(parameters.get("time_step", 0))
+    except (TypeError, ValueError):
+        time_step = 0.0
+    if time_step > 0:
+        return np.arange(frame_count, dtype=np.float64) * time_step
+    if fps > 0:
+        return np.arange(frame_count, dtype=np.float64) / fps
+    return np.arange(frame_count, dtype=np.float64)
+
+
 def array_ref_to_dict(ref: ArrayRef) -> dict:
     return {
         "path": str(ref.path),
@@ -93,7 +149,7 @@ def restore_history_item(item: dict):
         _restore_common_fields(instance, item)
         object.__setattr__(instance, "format_import", item.get("format_import", ""))
         object.__setattr__(instance, "parameters", metadata.get("parameters") or {})
-        object.__setattr__(instance, "time_point", None)
+        object.__setattr__(instance, "time_point", _restore_time_point(metadata, tuple(item.get("shape", ())), metadata.get("parameters") or {}))
         object.__setattr__(instance, "out_processed", {})
         object.__setattr__(instance, "ROI_applied", False)
         if "data_origin" in arrays:
@@ -114,7 +170,7 @@ def restore_history_item(item: dict):
         _restore_common_fields(instance, item)
         object.__setattr__(instance, "timestamp_inherited", item.get("timestamp_inherited"))
         object.__setattr__(instance, "type_processed", item.get("type_processed", ""))
-        object.__setattr__(instance, "time_point", None)
+        object.__setattr__(instance, "time_point", _restore_time_point(metadata, tuple(item.get("shape", ())), metadata.get("out_processed_metadata") or {}))
         object.__setattr__(instance, "ROI_applied", False)
         object.__setattr__(instance, "ROI_mask", None)
         out_processed = dict(metadata.get("out_processed_metadata") or {})
@@ -208,7 +264,7 @@ def build_manifest_item(item, kind: str | None = None) -> dict:
             key: value for key, value in (getattr(item, "out_processed", None) or {}).items()
             if not isinstance(value, ArrayRef) and not isinstance(value, np.ndarray)
         }),
-        "time_point": _json_safe(getattr(item, "time_point", None)),
+        "time_point": _serialize_time_point(getattr(item, "time_point", None)),
     }
     return {
         "id": f"{kind}:{getattr(item, 'serial_number', '')}:{getattr(item, 'timestamp', '')}",

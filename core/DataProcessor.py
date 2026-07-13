@@ -271,6 +271,49 @@ class DataProcessor(QObject):
 
         return result
 
+
+    @staticmethod
+    def aligned_time_axis(data, length: int) -> np.ndarray:
+        """Return an axis matching a temporal result, including restored legacy data."""
+        axis = getattr(data, "time_point", None)
+        if axis is not None:
+            axis = np.asarray(axis).reshape(-1)
+            if axis.size == length:
+                return axis
+
+        metadata = getattr(data, "out_processed", None) or getattr(data, "parameters", None) or {}
+        candidate = metadata.get("time_series")
+        if isinstance(candidate, np.ndarray) and candidate.size == length:
+            return candidate.reshape(-1)
+        try:
+            fps = float(metadata.get("fps", 0))
+        except (TypeError, ValueError):
+            fps = 0.0
+        try:
+            window_step = float(metadata.get("window_step", 0))
+        except (TypeError, ValueError):
+            window_step = 0.0
+        if fps > 0 and window_step > 0:
+            rebuilt = np.arange(length, dtype=np.float64) * window_step / fps
+        else:
+            try:
+                time_step = float(metadata.get("time_step", 0))
+            except (TypeError, ValueError):
+                time_step = 0.0
+            if time_step > 0:
+                rebuilt = np.arange(length, dtype=np.float64) * time_step
+            elif fps > 0:
+                rebuilt = np.arange(length, dtype=np.float64) / fps
+            else:
+                rebuilt = np.arange(length, dtype=np.float64)
+        logging.warning(
+            "数据时间轴长度与结果不匹配，已重建: name=%s, axis=%s, result=%s",
+            getattr(data, "source_name", getattr(data, "name", "")),
+            0 if axis is None else axis.size,
+            length,
+        )
+        return rebuilt
+
     @pyqtSlot(object, np.ndarray, str, str)
     def get_fast_selection(self,data, mask, method:str, name:str):
         """本函数是获取快速选取数据并发射的函数"""
@@ -318,11 +361,10 @@ class DataProcessor(QObject):
                     raise ValueError(f"不支持的统计方法: {method}。"
                                      f"支持的方法: mean, max, min, median, quantile_075, std, sum, var")
 
-            plot_data = np.column_stack((data.time_point, result))
+            plot_data = np.column_stack((self.aligned_time_axis(data, T), result))
             self.plot_series_signal.emit(plot_data, name)
         except Exception as exc:
             details = format_exception_details(exc, "anchor 快速提取", data)
-            logging.error("anchor 快速提取失败\n%s", details)
             self.processing_error_signal.emit(AppError("快速提取失败", str(exc), stage="anchor 快速提取", details=details))
 
     @staticmethod

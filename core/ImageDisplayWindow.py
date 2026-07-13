@@ -21,6 +21,7 @@ from DataManager import ImagingData, ColorMapManager, PublicEasyMethod
 from display.renderer import FrameRenderParams, FrameRenderer
 from display.service import FrameRenderService
 from display.render_controller import RenderController
+from display.playback_policy import playback_interval_ms
 from ExtraDialog import ROIInfoDialog, ColorMapDialog, DataExportDialog, ParamsResetDialog
 from widget.AdvancedTimeline import AdvancedTimeline
 from diagnostics import report_exception, report_warning
@@ -1379,8 +1380,7 @@ class SubImageDisplayWidget(QDockWidget):
             self.reset_button.setEnabled(True)
 
             # 计算帧间隔时间（毫秒）
-            total_time = 15000  # 15秒
-            frame_interval = max(1, 1000 // self.data.fps) if self.data.fps is not None else max(1, total_time // self.max_time_idx)
+            frame_interval = playback_interval_ms(self.data.fps, self.max_time_idx)
             self.play_timer.start(frame_interval)
 
             # 同步播放
