@@ -17,6 +17,7 @@ import traceback
 
 from ResultDisplayWidget import HeartbeatDraw
 from diagnostics import AppError, format_exception_details
+from calculator import CalculationEngine, CalculationPlan
 
 
 def get_unfolded_data(data):
@@ -1672,73 +1673,62 @@ class MassDataProcessor(QObject):
 
         return np.array(time_constants), np.array(mse_values)
 
-    @pyqtSlot(object, str)
-    def basic_math_operation(self, data, formula: str):
-        """
-        对3D时序视频数据进行自定义数学运算
-
-        参数:
-        data: ProcessedData对象 或 原始数据
-        formula: 从计算器UI获取的算式字符串，例如 "(<data><.max> <-> <data>) <*> 2"
-        """
-        if isinstance(data, ProcessedData):
-            pure_data = data.data_processed
-            out_processed = data.out_processed
-        else:
-            pure_data = data.data_origin
-            out_processed = data.parameters
-
+    @pyqtSlot(object)
+    def calculation_operation(self, plan):
+        """Execute a validated multi-source calculation plan."""
         try:
-            frames = data.datashape[0] if data.timelength != 1 else 1
-            self.processing_progress_signal.emit(0, frames)
-
-            # 1. 解析自定义算式，将其转化为合法的 Python/Numpy 表达式
-            parsed_expr = formula
-
-            # 替换数据变量
-            parsed_expr = parsed_expr.replace("data", "pure_data")
-
-            # 替换 Numpy 统计方法
-            parsed_expr = parsed_expr.replace(".max", ".max()")
-            parsed_expr = parsed_expr.replace(".min", ".min()")
-            parsed_expr = parsed_expr.replace(".mean", ".mean()")
-            # parsed_expr = parsed_expr.replace(".std", ".std()")
-            parsed_expr = parsed_expr.replace(".sum", ".sum()")
-
-            # 2. 安全地执行运算 (利用 Numpy 广播机制，一次性计算整个3D矩阵)
-            # 使用 eval 时限制命名空间，只允许使用 pure_data 和 numpy，保障系统安全
-            allowed_globals = {"__builtins__": None, "np": np}
-            allowed_locals = {"pure_data": pure_data}
-
-            result_data = eval(parsed_expr, allowed_globals, allowed_locals)
-
-            # 我们将其扩展回与原视频相同的维度，或者按需保留（这里选择保留并在控制台提示）
-            if np.isscalar(result_data) or result_data.ndim == 0:
-                logging.info(f"提示: 自定义运算结果为单一标量值 {result_data}")
-
-            self.processing_progress_signal.emit(frames, frames)  # 因为是向量化运算，瞬间完成，直接满进度
-
-            # 3. 封装返回结果
-            self.processed_result.emit(ProcessedData(
-                data.timestamp,
-                f'{data.name}@math',
-                "Basic_math",
-                time_point=data.time_point,
-                data_processed=np.squeeze(result_data),
-                out_processed={
-                    'formula_used': formula,  # 记录使用的算式
-                    'parsed_expr': parsed_expr,  # 记录解析后的实际表达式
-                    **out_processed
+            if not isinstance(plan, CalculationPlan):
+                raise TypeError("计算任务类型无效")
+            self.processing_progress_signal.emit(0, 1)
+            result_data, validation = CalculationEngine.execute(plan)
+            if result_data.ndim == 0:
+                result_data = result_data.reshape(1)
+            primary = plan.operands[0].source
+            primary_time = getattr(primary, "time_point", None)
+            time_point = None
+            if primary_time is not None and result_data.ndim in (1, 3):
+                primary_time = np.asarray(primary_time).reshape(-1)
+                if result_data.shape[0] == primary_time.size:
+                    time_point = primary_time.copy()
+            sources = [
+                {
+                    "alias": item.alias,
+                    "name": getattr(item.source, "name", ""),
+                    "timestamp": getattr(item.source, "timestamp", None),
+                    "payload_key": item.payload_key,
+                    "slice": item.slice_text,
+                    "shape": tuple(CalculationEngine.source_info(item).shape),
                 }
+                for item in plan.operands
+            ]
+            trace = [
+                {
+                    "expression": step.expression,
+                    "input_shapes": step.input_shapes,
+                    "output_shape": step.output_shape,
+                    "dtype": step.dtype,
+                }
+                for step in validation.steps
+            ]
+            result_name = plan.result_name or f"{getattr(primary, 'name', 'data')}@math"
+            self.processing_progress_signal.emit(1, 1)
+            self.processed_result.emit(ProcessedData(
+                getattr(primary, "timestamp", 0.0),
+                result_name,
+                "Multi_data_math",
+                time_point=time_point,
+                data_processed=result_data,
+                out_processed={
+                    "formula_used": plan.expression,
+                    "calculator_sources": sources,
+                    "shape_trace": trace,
+                    "estimated_bytes": validation.estimated_bytes,
+                },
             ))
             return True
-
-        except SyntaxError:
-            error_msg = f"算式语法错误，请检查您的输入: {formula}"
-            self.processed_result.emit({'type': "Basic_math", 'error': error_msg})
-            return False
-        except Exception as e:
-            self.processed_result.emit({'type': "Basic_math", 'error': str(e)})
+        except Exception as exc:
+            logging.exception("多数据运算失败", extra={"lifecalor_user_reported": True})
+            self.processed_result.emit({"type": "Multi_data_math", "error": str(exc)})
             return False
 
     # 4. 主分析流程

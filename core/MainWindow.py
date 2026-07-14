@@ -20,6 +20,7 @@ from DataManager import *
 from UpdateModule import *
 from PlotGraphWidget import *
 from SpatialExtractor import SpatialExtractor
+from calculator.dialog import DataCalculatorDialog
 from widget import TriStateSwitch
 from AppConfig import get_github_auth_header
 from settings import load_param_group
@@ -66,7 +67,7 @@ class MainWindow(QMainWindow):
     tDFT_signal = pyqtSignal(object)
     tDiFT_signal = pyqtSignal(object)
     heartbeat_signal = pyqtSignal(object, int, int ,list, str, str, float)
-    basic_math_signal = pyqtSignal(object, str)
+    calculator_signal = pyqtSignal(object)
     easy_process = pyqtSignal(object, str, object)
     roi_value_distribution_signal = pyqtSignal(object, np.ndarray, int, object, object, str)
     roi_processed_signal = pyqtSignal(object,np.ndarray,float,bool,bool,float)
@@ -75,7 +76,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "1.0.7"  # 当前程序版本
+        self.current_version = "1.0.8"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = get_github_auth_header()
@@ -1436,7 +1437,7 @@ class MainWindow(QMainWindow):
         self.tDFT_signal.connect(self.mass_data_processor.twoD_fourier_transform)
         self.tDiFT_signal.connect(self.mass_data_processor.twoD_inverse_fourier_transform)
         self.heartbeat_signal.connect(self.mass_data_processor.heartbeat_movement)
-        self.basic_math_signal.connect(self.mass_data_processor.basic_math_operation)
+        self.calculator_signal.connect(self.mass_data_processor.calculation_operation)
 
         # self.avi_thread.start()
 
@@ -2484,18 +2485,33 @@ class MainWindow(QMainWindow):
         self.update_status('心肌细胞跳动分析中...', 'working')
         return True
 
+    def calculator_sources(self):
+        """Return current and historical data objects without duplicate entries."""
+        sources = []
+        seen = set()
+        candidates = [self.data, self.processed_data, *list(Data.history), *list(ProcessedData.history)]
+        for source in candidates:
+            if source is None:
+                continue
+            identity = (source.__class__.__name__, getattr(source, "timestamp", None), getattr(source, "serial_number", id(source)))
+            if identity in seen:
+                continue
+            seen.add(identity)
+            sources.append(source)
+        return sources
+
     def process_math(self):
-        """基本运算简单计算处理"""
-        aim_data = self.data_selection()
-        if aim_data is None:
+        """Open the validated multi-source calculation workspace."""
+        sources = self.calculator_sources()
+        if not sources:
+            report_warning(self, "数据计算器", "当前没有可用于运算的数据")
             return False
-        self.ensure_task_thread_running("avi_thread", "em_processing")
-        dialog = BasicCalDialog()
+        dialog = DataCalculatorDialog(sources, self)
         if dialog.exec_():
-            formula = dialog.get_formula()
-            if formula.strip():
-                self.basic_math_signal.emit(aim_data,formula)
-                return True
+            self.ensure_task_thread_running("avi_thread", "em_processing")
+            self.calculator_signal.emit(dialog.get_plan())
+            self.update_status("多数据运算中...", "working")
+            return True
         return False
 
     def data_crop(self):
