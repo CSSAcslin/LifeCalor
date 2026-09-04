@@ -22,6 +22,7 @@ from display.renderer import FrameRenderParams, FrameRenderer
 from display.service import FrameRenderService
 from display.render_controller import RenderController
 from display.playback_policy import playback_interval_ms
+from display.data_details import CanvasDataDetailsDialog
 from ExtraDialog import ROIInfoDialog, ColorMapDialog, DataExportDialog, ParamsResetDialog
 from widget.AdvancedTimeline import AdvancedTimeline
 from diagnostics import report_exception, report_warning
@@ -647,6 +648,7 @@ class SubImageDisplayWidget(QDockWidget):
         self.render_status = 'idle'
         self._initial_display_scheduled = False
         self._is_closing = False
+        self.data_details_dialog = None
         self._start_frame_render_worker()
         self.colormap = None
 
@@ -1359,6 +1361,8 @@ class SubImageDisplayWidget(QDockWidget):
 
     def closeEvent(self, event):
         """重写关闭事件"""
+        if self.data_details_dialog is not None:
+            self.data_details_dialog.close()
         if not self._is_closing:
             self.prepare_for_removal()
             self.parent_window.del_canvas(self.id)
@@ -1526,6 +1530,11 @@ class SubImageDisplayWidget(QDockWidget):
         """显示画布专属右键菜单"""
         menu = QMenu(self)
 
+        details_action = QAction("查看当前画布数据详情", self)
+        details_action.setToolTip("查看来源、数据分类、尺寸、参数和当前画布状态")
+        details_action.triggered.connect(self.show_data_details)
+        menu.addAction(details_action)
+        menu.addSeparator()
         sync_action = QAction("开启同步播放/滑动", self)
         sync_action.setCheckable(True)
         sync_action.setChecked(self.is_sync_enabled)
@@ -1538,6 +1547,16 @@ class SubImageDisplayWidget(QDockWidget):
 
         menu.exec_(global_pos)
 
+    def show_data_details(self):
+        if self.data_details_dialog is None:
+            dialog = CanvasDataDetailsDialog(self, self)
+            dialog.destroyed.connect(lambda: setattr(self, "data_details_dialog", None))
+            self.data_details_dialog = dialog
+        else:
+            self.data_details_dialog.refresh()
+        self.data_details_dialog.show()
+        self.data_details_dialog.raise_()
+        self.data_details_dialog.activateWindow()
     def toggle_sync(self, checked):
         """切换同步状态"""
         self.is_sync_enabled = checked

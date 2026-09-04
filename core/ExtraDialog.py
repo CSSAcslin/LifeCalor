@@ -21,6 +21,7 @@ from fontTools.merge import layoutPreMerge
 
 from DataManager import Data,ProcessedData,ImagingData
 from widget.DataTreeWidget import DataHistoryTreeWidget, DataTreeEntry
+from dataio.classification import DataCategory, describe_source
 import re
 
 class ToolBucket:

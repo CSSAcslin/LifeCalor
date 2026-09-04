@@ -1,4 +1,4 @@
-﻿import copy
+import copy
 import logging
 
 import cv2
@@ -460,7 +460,6 @@ class DataProcessor(QObject):
             })
         except Exception as exc:
             details = format_exception_details(exc, "anchor 值分布统计", data)
-            logging.error("anchor 值分布统计失败\n%s", details)
             self.processing_error_signal.emit(AppError("值分布统计失败", str(exc), stage="anchor 值分布统计", details=details))
 
 
@@ -480,7 +479,6 @@ class DataProcessor(QObject):
             })
         except Exception as exc:
             details = format_exception_details(exc, "选区值分布统计", data)
-            logging.error("选区值分布统计失败\n%s", details)
             self.processing_error_signal.emit(AppError("选区值分布统计失败", str(exc), stage="选区值分布统计", details=details))
 
 
@@ -488,6 +486,7 @@ class MassDataProcessor(QObject):
     """大型数据（EM-iSCAT）处理的线程解决"""
     processing_progress_signal = pyqtSignal(int, int) # 进度槽
     processed_result = pyqtSignal(object)
+    processing_error_signal = pyqtSignal(object)
     calculator_completed = pyqtSignal(object)
     calculator_failed = pyqtSignal(object)
 
@@ -495,6 +494,19 @@ class MassDataProcessor(QObject):
         super().__init__()
         logging.info("大数据处理线程已载入")
         self.abortion = False
+
+    def _emit_failure(self, title, stage, exc, data=None):
+        details = format_exception_details(exc, stage, data)
+        self.processing_error_signal.emit(AppError(
+            title,
+            str(exc),
+            stage=stage,
+            severity="error",
+            details=details,
+            original=exc,
+            context={"data": data} if data is not None else {},
+        ))
+        return False
 
     @pyqtSlot(object,int,bool)
     def pre_process(self,data,bg_num = 360,unfold=True):
@@ -567,8 +579,7 @@ class MassDataProcessor(QObject):
             self.processing_progress_signal.emit(100, 100)
             return True
         except Exception as e:
-            self.processed_result.emit({'type': "EM_pre_processed", 'error': str(e)})
-            return False
+            return self._emit_failure("数据处理失败", "EM_pre_processed", e, data)
 
     @pyqtSlot(object,float,int,int,int,int,int,str)
     def quality_stft(self,data,target_freq: float,scale_range:int,fps:int, window_size: int, noverlap: int,
@@ -810,8 +821,7 @@ class MassDataProcessor(QObject):
 
             except Exception as e:
                 traceback.print_exc()
-                self.processed_result.emit({'type': "ROI_stft", 'error': str(e)})
-                return False
+                return self._emit_failure("数据处理失败", "ROI_stft", e, data)
 
             finally:
                 # --- 7. 清理资源 (至关重要) ---
@@ -927,8 +937,7 @@ class MassDataProcessor(QObject):
                 self.processing_progress_signal.emit(total_pixels, total_pixels)
                 return True
             except Exception as e:
-                self.processed_result.emit({'type': "ROI_stft", 'error': str(e)})
-                return False
+                return self._emit_failure("数据处理失败", "ROI_stft", e, data)
 
     def get_window(self,window_type, window_size):
         try:
@@ -992,8 +1001,7 @@ class MassDataProcessor(QObject):
             self.processing_progress_signal.emit(100, 100)
             return True
         except Exception as e:
-            self.processed_result.emit({'type': "cwt_quality", 'error': str(e)})
-            return False
+            return self._emit_failure("数据处理失败", "cwt_quality", e, data)
 
     @pyqtSlot(object,float, int, int,str, float)
     def python_cwt(self,data, target_freq: float, fps: int, totalscales: int, wavelet: str, cwt_scale_range: float):
@@ -1067,8 +1075,7 @@ class MassDataProcessor(QObject):
             self.processing_progress_signal.emit(total_pixels, total_pixels)
             return True
         except Exception as e:
-            self.processed_result.emit({'type':"ROI_cwt",'error':str(e)})
-            return False
+            return self._emit_failure("数据处理失败", "ROI_cwt", e, data)
 
     @pyqtSlot(object)
     def accumulate_amplitude(self,data):
@@ -1211,8 +1218,7 @@ class MassDataProcessor(QObject):
                                              }))
             return True
         except Exception as e:
-            self.processed_result.emit({'type':"Single_channel_signal",'error':str(e)})
-            return False
+            return self._emit_failure("数据处理失败", "Single_channel_signal", e, data)
 
     @pyqtSlot(object, int, float, bool)
     def simple_single_channel(self, data: ProcessedData|Data, zm=2, thr=2.5, thr_known=False):
@@ -1267,8 +1273,7 @@ class MassDataProcessor(QObject):
                                                                  }))
             return True
         except Exception as e:
-            self.processed_result.emit({'type': "简单 Single_channel_signal", 'error': str(e)})
-            return False
+            return self._emit_failure("数据处理失败", "简单 Single_channel_signal", e, data)
 
     @pyqtSlot(object)
     def twoD_fourier_transform(self,data,):
@@ -1325,8 +1330,7 @@ class MassDataProcessor(QObject):
             self.processing_progress_signal.emit(frames, frames)
             return True
         except Exception as e:
-            self.processed_result.emit({'type': "2D_Fourier_transform", 'error': str(e)})
-            return False
+            return self._emit_failure("数据处理失败", "2D_Fourier_transform", e, data)
 
     @pyqtSlot(object)
     def twoD_inverse_fourier_transform(self, data):
@@ -1405,8 +1409,7 @@ class MassDataProcessor(QObject):
             return True
 
         except Exception as e:
-            self.processed_result.emit({'type': "2D_Inverse_Fourier_transform", 'error': str(e)})
-            return False
+            return self._emit_failure("数据处理失败", "2D_Inverse_Fourier_transform", e, data)
 
     @pyqtSlot(object, int, int ,list, str, str, float)
     def heartbeat_movement(self, data, step, base_num, after_series, save_path = "", export_mode = 'video', scale = 1):
@@ -1704,7 +1707,6 @@ class MassDataProcessor(QObject):
             self.calculator_completed.emit(processed)
             return True
         except Exception as exc:
-            logging.exception("多数据运算失败", extra={"lifecalor_user_reported": True})
             expression = getattr(plan, "expression", "")
             operands = []
             for item in getattr(plan, "operands", ()):

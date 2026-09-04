@@ -5,7 +5,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 
 class TaskStatus(str, Enum):
@@ -54,6 +54,7 @@ class TaskRecord:
     finished_at: Optional[float] = None
     token: CancellationToken = field(default_factory=CancellationToken, repr=False)
     cancel_callback: Optional[Callable[[], None]] = field(default=None, repr=False)
+    diagnostic: Any = field(default=None, repr=False)
 
     def start(self, total: int = 0, message: str = "") -> None:
         self.status = TaskStatus.RUNNING
@@ -61,6 +62,7 @@ class TaskRecord:
         self.total = max(0, int(total))
         self.message = message
         self.error = None
+        self.diagnostic = None
         self.started_at = time.time()
 
     def advance(self, current: int, total: Optional[int] = None, message: str = "") -> None:

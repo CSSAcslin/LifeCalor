@@ -62,7 +62,6 @@ class TaskCoordinator(QObject):
         task.fail(error)
         self.task_updated.emit(task)
         self.task_finished.emit(task)
-        logging.error("任务失败: id=%s category=%s name=%s error=%s", task.task_id, task.category, task.name, error, extra={"lifecalor_user_reported": True})
 
     def cancel_task(self, task_id: str) -> bool:
         requested = self.registry.request_cancel(task_id)

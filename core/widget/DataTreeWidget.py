@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import QHeaderView, QTreeWidget, QTreeWidgetItem, QWidget
 
 from ArrayCache import ArrayRef
 from DataManager import Data, ProcessedData
+from dataio.classification import DataCategory, DataDescriptor, describe_source, describe_value
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,7 @@ class DataTreeEntry:
     dtype: str = ""
     payload_key: Optional[str] = None
     selectable: bool = False
+    descriptor: Optional[DataDescriptor] = None
 
     def resolve(self):
         if self.payload_key is not None:
@@ -47,13 +49,13 @@ class DataHistoryTreeWidget(QTreeWidget):
         super().__init__(parent)
         self.action_factory = action_factory
         self.node_map = {}
-        self.setColumnCount(6)
-        self.setHeaderLabels(["名称 / Key", "类型", "尺寸 & 大小", "数值范围", "创建时间 / 值", action_title])
+        self.setColumnCount(7)
+        self.setHeaderLabels(["名称 / Key", "来源", "数据类型", "尺寸 & 大小", "数值范围", "创建时间 / 值", action_title])
         header = self.header()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
-        for column in (1, 2):
+        for column in (1, 2, 3):
             header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
-        for column in (3,4,5):
+        for column in (4, 5, 6):
             header.setSectionResizeMode(column, QHeaderView.Interactive)
         self.setColumnWidth(0, 300)
         self.setAlternatingRowColors(True)
@@ -122,62 +124,53 @@ class DataHistoryTreeWidget(QTreeWidget):
     def _add_mapping(self, parent, title, mapping, source, selectable_arrays):
         root = QTreeWidgetItem(parent)
         root.setText(0, title)
+        root.setText(2, DataCategory.STRUCTURED.value)
         root.setToolTip(0, title)
         for key, value in mapping.items():
             item = QTreeWidgetItem(root)
-            if isinstance(value, ArrayRef):
+            if isinstance(value, (ArrayRef, np.ndarray)):
                 shape, dtype = tuple(value.shape), str(value.dtype)
-                entry = DataTreeEntry(source, str(key), "ArrayRef", shape, dtype, str(key), selectable_arrays)
-                self._configure_entry(item, entry, None, None, None)
-            elif isinstance(value, np.ndarray):
-                entry = DataTreeEntry(source, str(key), "ndarray", tuple(value.shape), str(value.dtype), str(key), selectable_arrays)
-                # Tree construction stays metadata-only; scanning history arrays
-                # here blocks the GUI and may page cached data back into memory.
+                descriptor = describe_source(source, str(key))
+                entry = DataTreeEntry(
+                    source, str(key), type(value).__name__, shape, dtype,
+                    str(key), selectable_arrays, descriptor,
+                )
                 self._configure_entry(item, entry, None, None, None)
             elif isinstance(value, dict):
                 item.setText(0, str(key))
                 item.setText(1, "dict")
+                item.setText(2, DataCategory.STRUCTURED.value)
+                item.setText(5, self._format_value(value))
                 self._set_tooltips(item)
+                self._add_mapping(item, "内容", value, source, selectable_arrays=False)
             else:
+                descriptor = describe_value(value, semantic_hint=str(key))
                 item.setText(0, str(key))
                 item.setText(1, type(value).__name__)
-                item.setText(4, self._format_value(value))
+                item.setText(2, descriptor.label)
+                item.setText(3, self._shape_text(descriptor.shape, descriptor.dtype))
+                item.setText(5, self._format_value(value))
                 self._set_tooltips(item)
-
-    def _add_plain_mapping(self, parent, mapping):
-        for key, value in mapping.items():
-            item = QTreeWidgetItem(parent)
-            item.setText(0, str(key))
-            if isinstance(value, dict):
-                item.setText(1, "dict")
-                item.setText(4, self._format_value(value))
-                self._add_plain_mapping(item, value)
-            elif isinstance(value, (np.ndarray, ArrayRef)):
-                shape = tuple(value.shape)
-                dtype = str(value.dtype)
-                item.setText(1, type(value).__name__)
-                item.setText(2, self._shape_text(shape, dtype))
-            else:
-                item.setText(1, type(value).__name__)
-                item.setText(4, self._format_value(value))
-            self._set_tooltips(item)
 
     def _configure_entry(self, item, entry, minimum, maximum, timestamp):
         item.setData(0, Qt.UserRole, entry)
         item.setText(0, entry.label)
         item.setText(1, entry.kind)
-        item.setText(2, self._shape_text(entry.shape, entry.dtype))
-        item.setText(3, self._range_text(minimum, maximum))
+        descriptor = entry.descriptor or describe_source(entry.source, entry.payload_key)
+        item.setText(2, descriptor.label)
+        item.setText(3, self._shape_text(entry.shape, entry.dtype))
+        item.setText(4, self._range_text(minimum, maximum))
+        item.setToolTip(2, descriptor.reason)
         if timestamp is not None:
             try:
-                item.setText(4, time.strftime("%y/%m/%d %H:%M:%S", time.localtime(float(timestamp))))
+                item.setText(5, time.strftime("%y/%m/%d %H:%M:%S", time.localtime(float(timestamp))))
             except (TypeError, ValueError, OverflowError, OSError):
-                item.setText(4, str(timestamp))
+                item.setText(5, str(timestamp))
         self._set_tooltips(item)
         if entry.selectable and self.action_factory is not None:
             widget = self.action_factory(self, item, entry)
             if widget is not None:
-                self.setItemWidget(item, 5, widget)
+                self.setItemWidget(item, 6, widget)
 
     @staticmethod
     def _shape_text(shape, dtype):
@@ -231,7 +224,7 @@ class DataHistoryTreeWidget(QTreeWidget):
         query = (text or "").strip().lower()
 
         def visit(item):
-            own = any(query in item.text(column).lower() for column in range(min(5, item.columnCount())))
+            own = any(query in item.text(column).lower() for column in range(min(6, item.columnCount())))
             child_match = False
             for index in range(item.childCount()):
                 child_match = visit(item.child(index)) or child_match

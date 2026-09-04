@@ -76,7 +76,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "1.0.9"  # 当前程序版本
+        self.current_version = "1.0.10"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = get_github_auth_header()
@@ -1398,7 +1398,7 @@ class MainWindow(QMainWindow):
         self.fix_bad_frames_signal.connect(self.proc_thread.fix_bad_frames)
         self.proc_thread.plot_singal.connect(self.graph_plot.handle_plot_signal)
         self.proc_thread.plot_series_signal.connect(self.graph_plot.handle_from_image)
-        self.proc_thread.processing_error_signal.connect(lambda error: show_app_error(self, error))
+        self.proc_thread.processing_error_signal.connect(self._handle_processing_error)
         self.roi_value_distribution_signal.connect(self.proc_thread.get_roi_value_distribution)
 
     def cal_thread_open(self):
@@ -1441,6 +1441,7 @@ class MainWindow(QMainWindow):
         self.calculator_signal.connect(self.mass_data_processor.calculation_operation)
         self.mass_data_processor.calculator_completed.connect(self._calculator_completed)
         self.mass_data_processor.calculator_failed.connect(self._calculator_failed)
+        self.mass_data_processor.processing_error_signal.connect(self._handle_processing_error)
 
         # self.avi_thread.start()
 
@@ -1955,8 +1956,12 @@ class MainWindow(QMainWindow):
             return
         self._displayed_task_id = None
         if task.status == TaskStatus.FAILED:
-            self.update_status(f"任务失败: {task.name}", "error")
-            show_app_error(self, AppError("任务失败", task.error or task.name, stage=task.category, severity="error"))
+            error = task.diagnostic or AppError(
+                "任务失败", task.error or task.name, stage=task.category,
+                severity="error", task_id=task.task_id,
+            )
+            self.update_status(f"任务失败: {task.name}", "error", record_log=False)
+            show_app_error(self, error)
         elif task.status == TaskStatus.CANCELLED:
             self.update_status(f"已中断: {task.name}", "idle")
         else:
@@ -1978,16 +1983,6 @@ class MainWindow(QMainWindow):
             return
         super().keyPressEvent(event)
 
-    def handle_logged_error(self, level, message):
-        concise = str(message).splitlines()[0]
-        show_app_error(self, AppError(
-            "运行错误",
-            concise,
-            stage="日志错误桥",
-            severity="critical" if level == "CRITICAL" else "error",
-            details=str(message),
-        ))
-
     def handle_unhandled_exception(self, exc_type, exc_value, exc_traceback):
         details = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
         show_app_error(self, AppError(
@@ -1999,7 +1994,18 @@ class MainWindow(QMainWindow):
             original=exc_value,
         ))
 
-    def update_status(self, status, working_status='idle'):
+    def _handle_processing_error(self, error):
+        foreground = self.task_coordinator.registry.foreground()
+        if foreground is not None and foreground.category in {"calculation", "em_processing"}:
+            error.task_id = foreground.task_id
+            foreground.diagnostic = error
+            self.task_coordinator.fail(foreground.task_id, error.message)
+            return
+        self.update_progress(-1)
+        self.update_status(error.message, "error", record_log=False)
+        show_app_error(self, error)
+
+    def update_status(self, status, working_status='idle', record_log=True):
         """更新状态条的显示"""
         self.status_label.setText(status)
         if working_status == 'idle' : # idle
@@ -2008,9 +2014,11 @@ class MainWindow(QMainWindow):
             light = "yellow_light.png"
         elif working_status == 'warning':
             light = "red_light.png"
-            logging.warning(status)
+            if record_log:
+                logging.warning(status)
         elif working_status in ('error', 'failed'):
-            logging.error(status, extra={"lifecalor_user_reported": True})
+            if record_log:
+                logging.error(status, extra={"lifecalor_user_reported": True})
             light = "red_light.png"
         else:
             light = "red_light.png"
@@ -2558,14 +2566,18 @@ class MainWindow(QMainWindow):
 
     def _calculator_failed(self, error):
         task_id = getattr(self, "_calculator_task_id", None)
-        if task_id and self.task_coordinator.registry.get(task_id) is not None:
+        task = self.task_coordinator.registry.get(task_id) if task_id else None
+        if task is not None:
+            error.task_id = task_id
+            task.diagnostic = error
             self.task_coordinator.fail(task_id, error.message)
+        else:
+            self.update_status("多数据运算失败", "error", record_log=False)
+            show_app_error(self, error)
         self._calculator_task_id = None
         dialog = getattr(self, "data_calculator", None)
         if dialog is not None:
             dialog.set_execution_failed(error)
-        show_app_error(self, error)
-        self.update_status("多数据运算失败", "error")
 
     def data_crop(self):
         """数据空间切片器"""
@@ -2592,25 +2604,21 @@ class MainWindow(QMainWindow):
     """结果处理"""
     def processed_result(self, data):
         """处理过后的数据都来这里重整再分配"""
-        if isinstance(data, ProcessedData):
-            pass
-        else:
+        if not isinstance(data, ProcessedData):
             self.cwt_quality_btn.setEnabled(True)
             self.stft_quality_btn.setEnabled(True)
             self.stft_process_btn.setEnabled(True)
             self.cwt_process_btn.setEnabled(True)
             self.tDgf_btn.setEnabled(True)
             self.sscs_btn.setEnabled(True)
-            process_type = data.get('type', '未知处理') if isinstance(data, dict) else '未知处理'
-            error_message = data.get('error', '未知错误') if isinstance(data, dict) else str(data)
-            show_app_error(self, AppError(
-                "运算错误",
-                f"在{process_type}处理中报错：\n{error_message}",
-                stage=process_type,
+            error = AppError(
+                "处理结果类型无效",
+                f"收到无法分发的处理结果：{type(data).__name__}",
+                stage="结果分发",
                 severity="warning",
-                details=error_message,
-            ))
-            self.update_progress(-1) # 进度条重置
+                details=repr(data),
+            )
+            self._handle_processing_error(error)
             return False
         foreground_task = self.task_coordinator.registry.foreground()
         if foreground_task is not None and foreground_task.category in {"calculation", "em_processing"}:
@@ -2924,18 +2932,33 @@ class MainWindow(QMainWindow):
 
 
 class StreamLogger(object):
-    """重定向标准输出到日志系统"""
+    """Buffer redirected output and keep it out of the popup channel."""
 
     def __init__(self, log_level):
         self.log_level = log_level
-        self.linebuf = ''
+        self.linebuf = ""
 
     def write(self, buf):
-        for line in buf.rstrip().splitlines():
-            logging.log(self.log_level, line.rstrip())
+        text = str(buf or "")
+        self.linebuf += text
+        while "\n" in self.linebuf:
+            line, self.linebuf = self.linebuf.split("\n", 1)
+            if line.rstrip():
+                logging.log(
+                    self.log_level,
+                    line.rstrip(),
+                    extra={"ui_silent": True, "lifecalor_user_reported": True},
+                )
+        return len(text)
 
     def flush(self):
-        pass
+        if self.linebuf.rstrip():
+            logging.log(
+                self.log_level,
+                self.linebuf.rstrip(),
+                extra={"ui_silent": True, "lifecalor_user_reported": True},
+            )
+        self.linebuf = ""
 
 
 if __name__ == "__main__":
