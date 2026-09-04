@@ -20,6 +20,7 @@ from PyQt5.QtCore import Qt, QEvent, QTimer, QModelIndex, pyqtSignal, QSize
 from fontTools.merge import layoutPreMerge
 
 from DataManager import Data,ProcessedData,ImagingData
+from widget.DataTreeWidget import DataHistoryTreeWidget, DataTreeEntry
 import re
 
 class ToolBucket:
@@ -1032,8 +1033,6 @@ class DataExportDialog(QDialog):
                     self.canvas_selector.addItem(item)
             form_layout.addRow(QLabel("画布选择"),self.canvas_selector)
             self.canvas_selector.currentIndexChanged.connect(self.datatypes_change)
-        else:
-            pass
 
         # 1. 路径选择组件
 
@@ -1326,11 +1325,6 @@ class DataViewAndSelectPop(QDialog):
         # 只处理数据列的点击，忽略按钮列的点击
         if col_index < table.columnCount() - 1:
             self.on_row_button_clicked(row_index, table)
-
-    def on_show_selected(self):
-        """当add_canvas为True时，显示选择的画布（留空）"""
-        # 这里可以添加显示画布的逻辑
-        pass
 
     def get_selected_timestamp(self):
         """获取选择的数据信息,(timestamp,selected_type(data or processed_data))"""
@@ -1937,279 +1931,84 @@ class ColorMapDialog(QDialog):
 
 # 数据树结构显示
 class DataTreeViewDialog(QDialog):
-    """.12.2版本从原来专为plot使用的，现在加入多功能。改名为树结构显示，原来叫DataPlotSelectDialog"""
-    sig_plot_request = pyqtSignal(np.ndarray,str, object)
+    """数据历史树的绘图、成像和导出兼容外壳。"""
+
+    sig_plot_request = pyqtSignal(np.ndarray, str, object)
     sig_canvas_signal = pyqtSignal(object, str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("数据流管理与导出")
         self.resize(1100, 500)
-        self.setModal(False)  # 设为非模态，方便一边看数据一边操作主界面
-        self.setWindowFlags(Qt.Dialog |
-                            Qt.WindowCloseButtonHint |
-                            Qt.WindowContextHelpButtonHint)
+        self.setModal(False)
+        self.setWindowFlags(Qt.Dialog | Qt.WindowCloseButtonHint | Qt.WindowContextHelpButtonHint)
         self.help_window = None
         self.init_ui()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
-
-        # 顶部说明
         header_layout = QHBoxLayout()
         header_layout.addWidget(QLabel("数据层级结构：原始数据 (Data) -> 处理数据 (ProcessedData) -> ..."))
-
         refresh_btn = QPushButton("刷新列表（收起列表）")
+        refresh_btn.setToolTip("重新读取当前内存历史，并将树恢复为仅展开第一层")
         refresh_btn.clicked.connect(self.refresh_data)
         expand_all_btn = QPushButton("展开列表")
+        expand_all_btn.setToolTip("展开数据层级，但保持 Parameters 和 Other Results 收起")
         expand_all_btn.clicked.connect(self.expand_except_parameters_results)
+        header_layout.addStretch(1)
         header_layout.addWidget(refresh_btn)
         header_layout.addWidget(expand_all_btn)
-
         layout.addLayout(header_layout)
-
-        # 核心控件：QTreeWidget
-        self.tree = QTreeWidget()
-        self.tree.setColumnCount(6)
-        self.tree.setHeaderLabels(["名称 / Key", "类型", "尺寸 & 大小", "数值范围", "创建时 / 值", "操作"])
-
-        # 调整列宽
-        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        # self.tree.header().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.tree.setColumnWidth(4, 160)
-
-        self.tree.setAlternatingRowColors(True)   # 开启交替行颜色（可选，看起来更像表格）
-        self.tree.setAnimated(True)              # 开启展开收起的动画
-        self.tree.setIndentation(20)            # 设置缩进宽度
-
+        self.tree = DataHistoryTreeWidget(self, self._tree_action_factory)
         layout.addWidget(self.tree)
 
     def refresh_data(self):
-        self.tree.clear()
-
-        # 1. 获取所有数据
-        data_history = Data.get_history_list()
-        processed_data_history = ProcessedData.get_history_list()
-
-        # 2. 建立节点映射表 { timestamp_float: QTreeWidgetItem }
-        # 用于通过 timestamp 快速（或遍历）找到父节点的 TreeItem
-        self.node_map = {}
-
-        # --- 第一步：加载所有原始 Data (作为根节点) ---
-        # 倒序显示，让最新的在最上面（符合直觉），但在构建Map时要注意顺序
-        # 为了逻辑顺畅，我们先建立好所有的Data节点
-        for data_obj in reversed(data_history):
-            root_item = QTreeWidgetItem(self.tree)
-            self._setup_data_item(root_item, data_obj)
-
-            # 添加 Parameters
-            if data_obj.parameters:
-                param_node = QTreeWidgetItem(root_item)
-                param_node.setText(0, "⚙️ Parameters")
-                self._fill_dict_items(param_node, data_obj.parameters, data_obj)
-
-            # 记录到 Map 中，供后续 ProcessedData 查找父节点
-            self.node_map[data_obj.timestamp] = root_item
-
-        # --- 第二步：加载 ProcessedData (支持多层嵌套) ---
-
-        # 关键点：必须按【创建时间正序】排序。
-        # 这样保证在处理 "子ProcessedData" 时，它的 "父ProcessedData" 已经被创建并加入到 self.node_map 中了。
-        sorted_processed = sorted(processed_data_history, key=lambda x: getattr(x, 'timestamp', 0))
-
-        orphan_processed = []  # 记录找不到爹的孤儿数据
-
-        for proc_obj in sorted_processed:
-            # 1. 寻找父节点
-            parent_ts = proc_obj.timestamp_inherited
-            parent_item = None
-
-            # 由于浮点数精度问题，不能直接 dict.get(float)，需要模糊匹配
-            # 优化：如果数据量极大，建议将 timestamp 格式化字符串作为 key
-            # 这里采用遍历匹配 (对于UI显示的数据量级通常没问题)
-            for ts, item in self.node_map.items():
-                if abs(ts - parent_ts) < 1e-6:
-                    parent_item = item
-                    break
-
-            if parent_item:
-                # 2. 找到了父节点（可能是 Data，也可能是之前添加的 ProcessedData）
-                proc_item = QTreeWidgetItem(parent_item)
-                self._setup_processed_item(proc_item, proc_obj)
-
-                # 添加 Out Processed Results
-                if proc_obj.out_processed:
-                    out_node = QTreeWidgetItem(proc_item)
-                    out_node.setText(0, "⚙️ Other Results")
-                    self._fill_dict_items(out_node, proc_obj.out_processed, proc_obj)
-
-                # 3. 重要：将当前 ProcessedData 也加入 Map
-                # 这样后续的数据如果是基于它的，就可以把它当做父节点
-                if hasattr(proc_obj, 'timestamp'):
-                    self.node_map[proc_obj.timestamp] = proc_item
-            else:
-                # 没找到父节点，暂时放入孤儿列表
-                orphan_processed.append(proc_obj)
-
-        # --- 第三步：处理孤儿数据 (原始数据已被删除或丢失) ---
-        if orphan_processed:
-            orphan_root = QTreeWidgetItem(self.tree)
-            orphan_root.setText(0, "历史处理记录 (无关联源数据)")
-            # 设置颜色提示
-            # orphan_root.setForeground(0, QBrush(Qt.GlobalColor.gray))
-            orphan_root.setExpanded(True)
-
-            for proc_obj in orphan_processed:
-                # 注意：这里孤儿内部如果也有嵌套关系，上面的逻辑因为找不到第一级父节点，
-                # 后续子节点也会掉入 orphan_processed。
-                # 在孤儿区简单平铺显示，或者也可以再做一次递归，视需求而定。
-                # 这里做简单平铺处理：
-                proc_item = QTreeWidgetItem(orphan_root)
-                self._setup_processed_item(proc_item, proc_obj)
-
-                if proc_obj.out_processed:
-                    out_node = QTreeWidgetItem(proc_item)
-                    out_node.setText(0, "⚙️ Out Processed Results")
-                    self._fill_dict_items(out_node, proc_obj.out_processed, proc_obj)
-
-        self.tree.expandToDepth(0)
+        self.tree.refresh_data()
+        self.node_map = self.tree.node_map
 
     def expand_except_parameters_results(self):
-        def process_item(item):
-            if item.text(0) in ["⚙️ Parameters", "⚙️ Other Results"]:
-                item.setExpanded(False)
-            else:
-                item.setExpanded(True)
-                for i in range(item.childCount()):
-                    process_item(item.child(i))
+        self.tree.expand_except_metadata()
 
-        root = self.tree.invisibleRootItem()
-        for i in range(root.childCount()):
-            process_item(root.child(i))
-
-    def _setup_data_item(self, item: QTreeWidgetItem, data_obj: Data):
-        """配置 Data 类型的行显示"""
-        item.setText(0, f"📦 {data_obj.name}")
-        item.setText(1, f"原始 ({data_obj.format_import})")
-        item.setText(2, self._shape_to_str(data_obj.datashape)+'\n'+self._format_array_size(data_obj.data_origin))
-        item.setText(3, f"{data_obj.datamin:.3f} ~ {data_obj.datamax:.3f}")
-        # 将时间戳格式化
-        time_str = time.strftime('%y/%m/%d %H:%M:%S', time.localtime(data_obj.timestamp))
-        item.setText(4, time_str)
-
-        # 检查是否线性数据并添加按钮
-        self._check_and_add_button(item, data_obj.data_origin, data_obj.name, data_obj)
-
-    def _setup_processed_item(self, item: QTreeWidgetItem, proc_obj: ProcessedData):
-        """配置 ProcessedData 类型的行显示"""
-        item.setText(0, f"🔎 {re.sub(r'[^@]+@', '...@', proc_obj.name)}") # 类似输出: ...@...@r_stft
-        item.setText(1, f"🏷️ {proc_obj.type_processed}")
-        if proc_obj.data_processed is not None:
-            item.setText(2, self._shape_to_str(proc_obj.datashape)+'\n'+self._format_array_size(proc_obj.data_processed))
-            item.setText(3, f"{proc_obj.datamin:.3f} ~ {proc_obj.datamax:.3f}")
-        else:
-            item.setText(2, "None")
-        time_str = time.strftime('%y/%m/%d %H:%M:%S', time.localtime(proc_obj.timestamp))
-        item.setText(4, time_str)
-
-        # 检查是否线性数据并添加按钮
-        if proc_obj.data_processed is not None:
-            self._check_and_add_button(item, proc_obj.data_processed, proc_obj.name, proc_obj)
-
-    def _fill_dict_items(self, parent_item: QTreeWidgetItem, data_dict: dict, original_obj):
-        """递归填充字典数据"""
-        for k, v in data_dict.items():
-            child = QTreeWidgetItem(parent_item)
-            child.setText(0, str(k))
-
-            # 如果值是 numpy 数组，显示其摘要
-            if isinstance(v, np.ndarray):
-                child.setText(1, "ndarray")
-                child.setText(2, self._shape_to_str(v.shape))
-                child.setText(3, f'{v.min():.2f} ~ {v.max():.2f}')
-                child.setText(4, "Array Data")
-                # 如果是一维数组，也允许导出
-                self._check_and_add_button(child, v, str(k), original_obj, False)
-            elif isinstance(v, dict):
-                child.setText(1, "dict")
-                self._fill_dict_items(child, v, original_obj)  # 递归
-            elif isinstance(v, list):
-                child.setText(1, "list")
-                child.setText(2, self._shape_to_str(len(v)))
-                try:
-                    child.setText(3, f'{min(v):.2f} ~ {max(v):.2f}')
-                except:
-                    child.setText(3, f'{v[0]} ~ {v[-1]}')
-                child.setText(4, "List Data")
-            elif isinstance(v, float):
-                child.setText(1, "float")
-                child.setText(4,f'{v:.4f}')
-            else:
-                child.setText(1, type(v).__name__)
-                child.setText(4, str(v))
-
-    def _check_and_add_button(self, item: QTreeWidgetItem, data_array: np.ndarray, name: str, original_obj, is_father = True):
-        """
-        判断数据是否为线性（1D），如果是，在最后一列添加按钮
-        判断是否是图像，如果是，加导出成像按钮
-        """
-        if not isinstance(data_array, np.ndarray):
-            return
-
-        is_linear = False
-        is_image = False
-        # 判断逻辑：一维数组，或者二维数组中有一维是1 (例如 (1000, 1))
-        if data_array.ndim == 1:
-            is_linear = True
-        elif data_array.ndim == 2:
-            if data_array.shape[0] == 1 or data_array.shape[1] == 1:
-                is_linear = True
-            else:
-                is_image = True
-        elif data_array.ndim == 3:
-            is_image = True
+    def _tree_action_factory(self, _tree, _item, entry: DataTreeEntry):
+        if not entry.shape:
+            return None
+        ndim = len(entry.shape)
+        is_linear = ndim == 1 or (ndim == 2 and 1 in entry.shape)
+        is_image = ndim in (2, 3) and not is_linear
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
 
         if is_linear:
-            linear_layout = QHBoxLayout()
             new_name = QLineEdit()
-            new_name.setPlaceholderText("请为数据重命名（默认为原名，建议改名）")
-            new_name.setToolTip("重命名数据仅在可视化窗口内应用")
-            linear_btn = QPushButton(QIcon(':icons/icon_add.svg'),"数据可视化(线性)")
-            linear_layout.addWidget(new_name)
-            linear_layout.addWidget(linear_btn)
-            linear_widget = QWidget()
-            linear_widget.setLayout(linear_layout)
-            # 使用 lambda 捕获数据
-            # 注意：lambda 中的变量绑定问题，需要默认参数
-            linear_btn.clicked.connect(lambda _, d=data_array, o=original_obj: self.emit_plot_signal(d, new_name.text() or name, o))
-            linear_btn.setStyleSheet("padding: 0px;")
+            new_name.setPlaceholderText("可选名称")
+            new_name.setToolTip("仅修改本次可视化曲线名称，不修改源数据")
+            button = QPushButton(QIcon(':icons/icon_add.svg'), "数据可视化")
+            button.setToolTip("将该一维数据添加到结果绘图区域")
+            button.clicked.connect(
+                lambda _checked=False, e=entry, editor=new_name:
+                self.emit_plot_signal(e.resolve(), editor.text() or e.label, e.source)
+            )
+            layout.addWidget(new_name)
+            layout.addWidget(button)
+        elif is_image and entry.payload_key is not None:
+            button = QPushButton(QIcon(':icons/icon_add.svg'), "图像可视化")
+            button.setToolTip("将该 out_processed 图像建立为新的 ProcessedData 并添加到画布")
+            button.clicked.connect(
+                lambda _checked=False, e=entry: self.emit_canvas_signal(e.source, e.payload_key)
+            )
+            layout.addWidget(button)
 
-            # 因为 QTreeWidget 是 ItemView，需要用 setItemWidget 将 Widget 放入单元格
-            self.tree.setItemWidget(item, 5, linear_widget)
-
-        elif is_image:
-            image_layout = QHBoxLayout()
-            if not is_father: # 不要父节点那些，只要参数字典里面的
-                image_btn = QPushButton(QIcon(':icons/icon_add.svg'),"数据可视化(图像)")
-                image_layout.addWidget(image_btn)
-                image_btn.setToolTip("点击会创建新画布呈现选中的数据，同时新增ProcessedData")
-                image_btn.clicked.connect(lambda _, data=original_obj, key=name: self.emit_canvas_signal(data, key))
-                # image_btn.setStyleSheet("padding: 0px;")
-                # image_btn.setMinimumHeight(14)
-            else:
-                name = None
-            export_btn = QPushButton(QIcon(':icons/icon_export.svg'),"数据直接导出")
-            # export_btn.setStyleSheet("padding: 0px;")
-            export_btn.clicked.connect(lambda _, data=original_obj, key=name: self.open_rawdata_export(data, key))
-            image_layout.addWidget(export_btn)
-            image_widget = QWidget()
-            image_widget.setLayout(image_layout)
-
-            self.tree.setItemWidget(item, 5, image_widget)
+        export = QPushButton(QIcon(':icons/icon_export.svg'), "直接导出")
+        export.setToolTip("打开原始数据导出窗口；不会修改当前数据")
+        export.clicked.connect(
+            lambda _checked=False, e=entry: self.open_rawdata_export(e.source, e.payload_key)
+        )
+        layout.addWidget(export)
+        widget = QWidget()
+        widget.setLayout(layout)
+        return widget
 
     def emit_plot_signal(self, data, name, obj):
-        """发射信号"""
         data = np.squeeze(data)
         logging.info(f"要呈现的数据: {name}, 大小: {data.shape}")
         self.sig_plot_request.emit(data, name, obj)
@@ -2218,19 +2017,17 @@ class DataTreeViewDialog(QDialog):
         logging.info(f"要呈现的数据: {data.name}-{key}")
         self.sig_canvas_signal.emit(data, key)
 
-    def event(self, e):
-        """拦截 ContextHelp 事件（即点击了标题栏的 ? 号）"""
-        if e.type() == QEvent.EnterWhatsThisMode:
+    def event(self, event):
+        if event.type() == QEvent.EnterWhatsThisMode:
             self.open_help_window()
-            e.accept()
+            event.accept()
             return True
-
-        return super().event(e)
+        return super().event(event)
 
     def open_help_window(self):
         """打开帮助界面"""
         QWhatsThis.leaveWhatsThisMode()
-        self.help_window = CustomHelpDialog("数据查看功能使用说明",["data_view"],)
+        self.help_window = CustomHelpDialog("数据查看功能使用说明", ["data_view"])
         self.help_window.show()
         self.help_window.raise_()
         self.help_window.activateWindow()
@@ -2244,11 +2041,10 @@ class DataTreeViewDialog(QDialog):
 
     @staticmethod
     def _format_array_size(array):
-        """格式化numpy数组大小"""
         if array is None:
             return " 0 bytes"
         size_bytes = array.nbytes
-        for unit in ['bytes', 'KB', 'MB', 'GB']:
+        for unit in ("bytes", "KB", "MB", "GB"):
             if size_bytes < 1024.0:
                 return f" {size_bytes:.1f} {unit}"
             size_bytes /= 1024.0
@@ -2256,17 +2052,11 @@ class DataTreeViewDialog(QDialog):
 
     @staticmethod
     def _shape_to_str(shape):
-        """将形状转换为 t×h×w 格式的字符串 """
-        if hasattr(shape, 'shape'):
-            # 如果传入的是numpy数组对象
+        if hasattr(shape, "shape"):
             shape = shape.shape
-
-        # 确保shape是可迭代的
-        if not hasattr(shape, '__iter__'):
+        if not hasattr(shape, "__iter__"):
             shape = (shape,)
-
-        # 将每个维度转换为字符串并用乘号连接
-        return '×'.join(str(dim) for dim in shape)
+        return "x".join(str(dim) for dim in shape)
 
 # 心跳分析模式弹窗
 class HeartBeatFrameSelectDialog(QDialog):

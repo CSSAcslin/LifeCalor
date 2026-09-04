@@ -35,15 +35,26 @@ def playback_interval_ms(fps, frame_count: int, default_total_ms: int = 15_000) 
 
 
 def timeline_label(frame: int, fps=None, time_point=None) -> str:
+    frame_index = int(frame)
     value = normalized_fps(fps)
+    axis = valid_time_axis(time_point)
+    if axis is not None and 0 <= frame_index < axis.size:
+        axis_value = axis[frame_index]
+        if value is None:
+            return str(axis_value)
+        try:
+            follows_fps_clock = np.isclose(
+                float(axis_value), frame_index / value, rtol=1e-7, atol=1e-12
+            )
+        except (TypeError, ValueError):
+            follows_fps_clock = False
+        if not follows_fps_clock:
+            return str(axis_value)
     if value is not None:
-        seconds = int(frame) / value
+        seconds = frame_index / value
         minutes = int(seconds // 60)
         remaining_seconds = int(seconds % 60)
         subframes = int(round((seconds - int(seconds)) * value))
         digits = max(1, len(str(max(1, int(round(value))))))
         return f"{minutes:02d}:{remaining_seconds:02d}:{subframes:0{digits}d}"
-    axis = valid_time_axis(time_point)
-    if axis is not None and 0 <= int(frame) < axis.size:
-        return str(axis[int(frame)])
-    return str(int(frame))
+    return str(frame_index)

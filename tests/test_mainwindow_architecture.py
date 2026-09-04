@@ -50,6 +50,19 @@ class MainWindowArchitectureTests(unittest.TestCase):
         export_source = (CORE / "exporting" / "controller.py").read_text(encoding="utf-8")
         self.assertIn("save_dataframe(", export_source)
 
+    def test_calculator_is_modeless_and_starts_without_implicit_source(self):
+        source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
+        block = source[source.index("    def process_math"):source.index("    def data_crop")]
+
+        self.assertIn("DataCalculatorDialog(", block)
+        self.assertIn("            [],", block)
+        self.assertIn("dialog.show()", block)
+        self.assertIn("dialog.execute_requested.connect", block)
+        self.assertNotIn("dialog.exec_()", block)
+        self.assertIn("self.task_coordinator.complete", block)
+        self.assertIn("TaskStatus.CANCELLING", block)
+        self.assertIn("return False", block)
+
     def test_selection_modules_live_in_selection_package(self):
         self.assertTrue((CORE / "selection" / "__init__.py").exists())
         self.assertTrue((CORE / "selection" / "policy.py").exists())

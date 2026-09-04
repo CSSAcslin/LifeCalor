@@ -18,6 +18,9 @@ class CalculationPlan:
     expression: str
     operands: list[OperandSpec]
     result_name: str = ""
+    metadata_source_alias: str = ""
+    metadata_overrides: dict = field(default_factory=dict)
+    metadata_defaults: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

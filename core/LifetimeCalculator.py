@@ -133,7 +133,7 @@ def _lifetime_fit_worker(
                                         r2 = 1 - (ss_res / ss_tot)
                                         if r2 > r_squared_min:
                                             lifetime = tau
-                            except:
+                            except (RuntimeError, ValueError, TypeError, FloatingPointError):
                                 pass  # 拟合失败 lifetime 保持 0
 
                     # 双指数 (略，结构类似，为了代码简洁先只写单指数，你需要的话可以把你的双指数逻辑拷进来)

@@ -18,6 +18,7 @@ import traceback
 from ResultDisplayWidget import HeartbeatDraw
 from diagnostics import AppError, format_exception_details
 from calculator import CalculationEngine, CalculationPlan
+from calculator.metadata import CalculationMetadataPolicy
 
 
 def get_unfolded_data(data):
@@ -487,6 +488,8 @@ class MassDataProcessor(QObject):
     """大型数据（EM-iSCAT）处理的线程解决"""
     processing_progress_signal = pyqtSignal(int, int) # 进度槽
     processed_result = pyqtSignal(object)
+    calculator_completed = pyqtSignal(object)
+    calculator_failed = pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
@@ -1684,51 +1687,41 @@ class MassDataProcessor(QObject):
             if result_data.ndim == 0:
                 result_data = result_data.reshape(1)
             primary = plan.operands[0].source
-            primary_time = getattr(primary, "time_point", None)
-            time_point = None
-            if primary_time is not None and result_data.ndim in (1, 3):
-                primary_time = np.asarray(primary_time).reshape(-1)
-                if result_data.shape[0] == primary_time.size:
-                    time_point = primary_time.copy()
-            sources = [
-                {
-                    "alias": item.alias,
-                    "name": getattr(item.source, "name", ""),
-                    "timestamp": getattr(item.source, "timestamp", None),
-                    "payload_key": item.payload_key,
-                    "slice": item.slice_text,
-                    "shape": tuple(CalculationEngine.source_info(item).shape),
-                }
-                for item in plan.operands
-            ]
-            trace = [
-                {
-                    "expression": step.expression,
-                    "input_shapes": step.input_shapes,
-                    "output_shape": step.output_shape,
-                    "dtype": step.dtype,
-                }
-                for step in validation.steps
-            ]
+            metadata = CalculationMetadataPolicy.build(plan, validation, result_data)
             result_name = plan.result_name or f"{getattr(primary, 'name', 'data')}@math"
-            self.processing_progress_signal.emit(1, 1)
-            self.processed_result.emit(ProcessedData(
+            processed = ProcessedData(
                 getattr(primary, "timestamp", 0.0),
                 result_name,
                 "Multi_data_math",
-                time_point=time_point,
+                time_point=metadata.time_point,
                 data_processed=result_data,
-                out_processed={
-                    "formula_used": plan.expression,
-                    "calculator_sources": sources,
-                    "shape_trace": trace,
-                    "estimated_bytes": validation.estimated_bytes,
-                },
-            ))
+                out_processed=metadata.out_processed,
+            )
+            processed.parameters.update(metadata.parameters)
+            processed._update_history()
+            self.processing_progress_signal.emit(1, 1)
+            self.processed_result.emit(processed)
+            self.calculator_completed.emit(processed)
             return True
         except Exception as exc:
             logging.exception("多数据运算失败", extra={"lifecalor_user_reported": True})
-            self.processed_result.emit({"type": "Multi_data_math", "error": str(exc)})
+            expression = getattr(plan, "expression", "")
+            operands = []
+            for item in getattr(plan, "operands", ()):
+                source = getattr(item, "source", None)
+                operands.append(
+                    f"{getattr(item, 'alias', '?')}: "
+                    f"name={getattr(source, 'name', '')}, "
+                    f"shape={getattr(source, 'datashape', None)}, "
+                    f"dtype={getattr(source, 'datatype', None)}, "
+                    f"slice={getattr(item, 'slice_text', '') or 'None'}"
+                )
+            details = format_exception_details(exc, "多数据运算")
+            details = f"expression: {expression}\n" + "\n".join(operands) + f"\n{details}"
+            self.calculator_failed.emit(AppError(
+                "多数据运算失败", str(exc), stage="多数据运算",
+                severity="error", details=details, original=exc,
+            ))
             return False
 
     # 4. 主分析流程

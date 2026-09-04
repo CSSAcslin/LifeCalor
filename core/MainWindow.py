@@ -76,7 +76,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         # 基本信息初始化
-        self.current_version = "1.0.8"  # 当前程序版本
+        self.current_version = "1.0.9"  # 当前程序版本
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = get_github_auth_header()
@@ -1425,6 +1425,7 @@ class MainWindow(QMainWindow):
         self.mass_data_processor = MassDataProcessor()
         self.mass_data_processor.moveToThread(self.avi_thread)
         self.mass_data_processor.processing_progress_signal.connect(self.update_progress)
+        self.mass_data_processor.processing_progress_signal.connect(self._calculator_progress)
         self.mass_data_processor.processed_result.connect(self.processed_result)
         self.pre_process_signal.connect(self.mass_data_processor.pre_process)
         self.stft_python_signal.connect(self.mass_data_processor.python_stft)
@@ -1438,6 +1439,8 @@ class MainWindow(QMainWindow):
         self.tDiFT_signal.connect(self.mass_data_processor.twoD_inverse_fourier_transform)
         self.heartbeat_signal.connect(self.mass_data_processor.heartbeat_movement)
         self.calculator_signal.connect(self.mass_data_processor.calculation_operation)
+        self.mass_data_processor.calculator_completed.connect(self._calculator_completed)
+        self.mass_data_processor.calculator_failed.connect(self._calculator_failed)
 
         # self.avi_thread.start()
 
@@ -2378,39 +2381,10 @@ class MainWindow(QMainWindow):
         if aim_data.ndim not in [2, 3]:
             logging.info("数据无法被处理，请重选数据")
             return False
+        self.ensure_task_thread_running("avi_thread", "em_processing")
         self.atam_signal.emit(aim_data)
         self.atam_btn.setEnabled(False)
         return True
-        # if self.processed_data is None:
-        #     if self.data.ndim not in [2,3]:
-        #         logging.info("数据无法被处理，请重选数据焦点")
-        #         return False
-        #     self.atam_signal.emit(self.data)
-        #     self.atam_btn.setEnabled(False)
-        #     logging.info(f"累计时间振幅图，对意料之外的数据{self.data.name}进行处理")
-        #     return False
-        # elif self.processed_data.type_processed == 'ROI_stft' or self.processed_data.type_processed =='ROI_cwt':
-        #     data = self.processed_data
-        # else:
-        #     data = next(
-        #         (data for data in reversed(self.processed_data.history) if
-        #          data.type_processed == "ROI_cwt" or data.type_processed == "ROI_stft"),
-        #         None)
-        # if data is not None:
-        #     if self.processed_data.ndim not in [2,3]:
-        #         logging.info("数据无法被处理，请重选数据焦点")
-        #         return False
-        #     self.atam_signal.emit(data)
-        #     self.atam_btn.setEnabled(False)
-        #     return True
-        # else:
-        #     if self.processed_data.ndim not in [2,3]:
-        #         logging.info("数据无法被处理，请重选数据焦点")
-        #         return False
-        #     self.atam_signal.emit(self.processed_data)
-        #     self.atam_btn.setEnabled(False)
-        #     logging.info(f"累计时间振幅图，对意料之外的数据{self.processed_data.name}进行处理")
-        #     return False
 
     def process_tDgf(self):
         """单通道二维高斯拟合以及信号显示"""
@@ -2501,18 +2475,97 @@ class MainWindow(QMainWindow):
         return sources
 
     def process_math(self):
-        """Open the validated multi-source calculation workspace."""
-        sources = self.calculator_sources()
-        if not sources:
-            report_warning(self, "数据计算器", "当前没有可用于运算的数据")
-            return False
-        dialog = DataCalculatorDialog(sources, self)
-        if dialog.exec_():
-            self.ensure_task_thread_running("avi_thread", "em_processing")
-            self.calculator_signal.emit(dialog.get_plan())
-            self.update_status("多数据运算中...", "working")
+        """Open or focus the non-modal multi-source calculation workspace."""
+        existing = getattr(self, "data_calculator", None)
+        if existing is not None:
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
             return True
-        return False
+
+        dialog = DataCalculatorDialog(
+            [],
+            self,
+            source_provider=self.calculator_sources,
+            import_callback=self.load_general_file,
+            metadata_defaults=self.basic_params,
+        )
+        self.data_calculator = dialog
+        dialog.execute_requested.connect(self._submit_calculator_plan)
+        dialog.closed.connect(self._calculator_closed)
+        self.imp_thread.import_finished.connect(dialog.handle_import_finished)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return True
+
+    def _calculator_closed(self):
+        dialog = getattr(self, "data_calculator", None)
+        if dialog is None:
+            return
+        try:
+            self.imp_thread.import_finished.disconnect(dialog.handle_import_finished)
+        except (TypeError, RuntimeError):
+            pass
+        self.data_calculator = None
+
+    def _submit_calculator_plan(self, plan):
+        active_id = getattr(self, "_calculator_task_id", None)
+        active = self.task_coordinator.registry.get(active_id) if active_id else None
+        if active is not None and active.status in {
+            TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLING,
+        }:
+            error = AppError(
+                "多数据运算正忙",
+                "已有一个多数据运算任务在执行，请等待完成后再提交",
+                stage="多数据运算提交",
+                severity="warning",
+            )
+            dialog = getattr(self, "data_calculator", None)
+            if dialog is not None:
+                dialog.set_execution_failed(error)
+            show_app_error(self, error)
+            return False
+        self.ensure_task_thread_running("avi_thread", "em_processing")
+        task = self.task_coordinator.create_task(
+            "多数据运算", "calculation", foreground=True, cancellable=False
+        )
+        self._calculator_task_id = task.task_id
+        self.task_coordinator.start(task.task_id, 1, "正在执行多数据运算")
+        self.update_status("多数据运算中...", "working")
+        self.calculator_signal.emit(plan)
+        return True
+
+    def _calculator_progress(self, current, total):
+        task_id = getattr(self, "_calculator_task_id", None)
+        if not task_id:
+            return
+        task = self.task_coordinator.registry.get(task_id)
+        if task is not None:
+            self.task_coordinator.progress(
+                task_id, current, total, "正在执行多数据运算"
+            )
+
+    def _calculator_completed(self, result):
+        task_id = getattr(self, "_calculator_task_id", None)
+        if task_id and self.task_coordinator.registry.get(task_id) is not None:
+            self.task_coordinator.complete(task_id, "多数据运算完成")
+        dialog = getattr(self, "data_calculator", None)
+        if dialog is not None:
+            dialog.set_execution_finished(result)
+        self._calculator_task_id = None
+        self.update_status("多数据运算完成", "idle")
+
+    def _calculator_failed(self, error):
+        task_id = getattr(self, "_calculator_task_id", None)
+        if task_id and self.task_coordinator.registry.get(task_id) is not None:
+            self.task_coordinator.fail(task_id, error.message)
+        self._calculator_task_id = None
+        dialog = getattr(self, "data_calculator", None)
+        if dialog is not None:
+            dialog.set_execution_failed(error)
+        show_app_error(self, error)
+        self.update_status("多数据运算失败", "error")
 
     def data_crop(self):
         """数据空间切片器"""
@@ -2664,7 +2717,7 @@ class MainWindow(QMainWindow):
                     if hasattr(draw_data,'type_processed') and draw_data.type_processed == 'Accumulated_time_amplitude_map':
                         try:
                             source_data = next(data for data in self.processed_data.history if data.timestamp == draw_data.timestamp_inherited)
-                        except: # 如果不行就从data里找
+                        except StopIteration: # 如果不行就从data里找
                             source_data = next(data for data in self.data.history if data.timestamp == draw_data.timestamp_inherited)
                         if isinstance(source_data, Data):
                             roi_data = source_data.data_origin[:,y:y+h,x:x+w]

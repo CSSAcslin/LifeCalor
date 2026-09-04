@@ -43,6 +43,12 @@ class CalculationEngine:
     UNARY = {ast.UAdd: lambda value: value, ast.USub: np.negative}
 
     @staticmethod
+    def _operation_dtype(function, *dtypes):
+        operands = [np.ones((), dtype=dtype) for dtype in dtypes]
+        with np.errstate(all="ignore"):
+            return np.asarray(function(*operands)).dtype
+
+    @staticmethod
     def source_array(spec: OperandSpec):
         source = spec.source
         if spec.payload_key:
@@ -150,9 +156,14 @@ class CalculationEngine:
                     raise CalculationError(f"数据别名重复: {alias}")
                 info = cls.source_info(spec)
                 if spec.slice_text.strip():
-                    index = cls.slice_tuple(cls._parse_slice(spec.slice_text), len(info.shape))
-                    output_shape = cls.sliced_shape(info.shape, index)
-                    steps.append(ShapeStep(f"{alias}[{spec.slice_text}]", (info.shape,), output_shape, str(info.dtype)))
+                    expression = f"{alias}[{spec.slice_text}]"
+                    try:
+                        index = cls.slice_tuple(cls._parse_slice(spec.slice_text), len(info.shape))
+                        output_shape = cls.sliced_shape(info.shape, index)
+                    except CalculationError as exc:
+                        cls._append_invalid(steps, expression, (info.shape,), str(exc))
+                        raise
+                    steps.append(ShapeStep(expression, (info.shape,), output_shape, str(info.dtype)))
                     info = _ArrayInfo(output_shape, info.dtype)
                 else:
                     steps.append(ShapeStep(alias, (), info.shape, str(info.dtype)))
@@ -167,7 +178,15 @@ class CalculationEngine:
                 warnings.append(f"预计结果占用 {estimated / 1024 ** 3:.2f} GB，将按缓存策略落盘")
             return ValidationResult(True, steps, info.shape, str(info.dtype), estimated, warnings=warnings)
         except (CalculationError, SyntaxError, ValueError, TypeError) as exc:
+            if not steps or steps[-1].status != "invalid":
+                cls._append_invalid(steps, plan.expression or "表达式", (), str(exc))
             return ValidationResult(False, steps, error=str(exc), warnings=warnings)
+
+    @staticmethod
+    def _append_invalid(steps, expression, input_shapes, message):
+        steps.append(ShapeStep(
+            expression, tuple(input_shapes), (), "", status="invalid", message=message,
+        ))
 
     @classmethod
     def _validate_node(cls, node, aliases, steps) -> _ArrayInfo:
@@ -176,7 +195,9 @@ class CalculationEngine:
                 return aliases[node.id]
             if node.id in cls.CONSTANTS:
                 return _ArrayInfo((), np.dtype(float))
-            raise CalculationError(f"未知数据或常量: {node.id}")
+            message = f"未知数据或常量: {node.id}"
+            cls._append_invalid(steps, node.id, (), message)
+            raise CalculationError(message)
         if isinstance(node, ast.Constant) and isinstance(node.value, (int, float, complex)):
             return _ArrayInfo((), np.asarray(node.value).dtype)
         if isinstance(node, ast.UnaryOp) and type(node.op) in cls.UNARY:
@@ -187,8 +208,15 @@ class CalculationEngine:
             try:
                 shape = np.broadcast_shapes(left.shape, right.shape)
             except ValueError as exc:
-                raise CalculationError(f"无法广播 {left.shape} 与 {right.shape}") from exc
-            dtype = np.result_type(left.dtype, right.dtype, float if isinstance(node.op, ast.Div) else left.dtype)
+                message = f"无法广播 {left.shape} 与 {right.shape}"
+                cls._append_invalid(steps, ast.unparse(node), (left.shape, right.shape), message)
+                raise CalculationError(message) from exc
+            try:
+                dtype = cls._operation_dtype(cls.BINARY[type(node.op)], left.dtype, right.dtype)
+            except (TypeError, ValueError) as exc:
+                message = f"数据类型不支持该运算: {left.dtype} 与 {right.dtype}"
+                cls._append_invalid(steps, ast.unparse(node), (left.shape, right.shape), message)
+                raise CalculationError(message) from exc
             steps.append(ShapeStep(ast.unparse(node), (left.shape, right.shape), shape, str(dtype)))
             return _ArrayInfo(shape, dtype)
         if isinstance(node, ast.Compare) and len(node.ops) == 1 and type(node.ops[0]) in cls.COMPARE:
@@ -197,18 +225,32 @@ class CalculationEngine:
             try:
                 shape = np.broadcast_shapes(left.shape, right.shape)
             except ValueError as exc:
-                raise CalculationError(f"无法广播 {left.shape} 与 {right.shape}") from exc
+                message = f"无法广播 {left.shape} 与 {right.shape}"
+                cls._append_invalid(steps, ast.unparse(node), (left.shape, right.shape), message)
+                raise CalculationError(message) from exc
             steps.append(ShapeStep(ast.unparse(node), (left.shape, right.shape), shape, "bool"))
             return _ArrayInfo(shape, np.dtype(bool))
         if isinstance(node, ast.Subscript):
             value = cls._validate_node(node.value, aliases, steps)
-            index = cls.slice_tuple(node.slice, len(value.shape))
-            shape = cls.sliced_shape(value.shape, index)
+            try:
+                index = cls.slice_tuple(node.slice, len(value.shape))
+                shape = cls.sliced_shape(value.shape, index)
+            except CalculationError as exc:
+                cls._append_invalid(steps, ast.unparse(node), (value.shape,), str(exc))
+                raise
             steps.append(ShapeStep(ast.unparse(node), (value.shape,), shape, str(value.dtype)))
             return _ArrayInfo(shape, value.dtype)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in cls.FUNCTIONS:
-            return cls._validate_call(node, aliases, steps)
-        raise CalculationError(f"不支持的表达式结构: {ast.unparse(node)}")
+            before = len(steps)
+            try:
+                return cls._validate_call(node, aliases, steps)
+            except (CalculationError, ValueError, TypeError) as exc:
+                if len(steps) == before or steps[-1].status != "invalid":
+                    cls._append_invalid(steps, ast.unparse(node), (), str(exc))
+                raise
+        message = f"不支持的表达式结构: {ast.unparse(node)}"
+        cls._append_invalid(steps, ast.unparse(node), (), message)
+        raise CalculationError(message)
 
     @classmethod
     def _validate_call(cls, node, aliases, steps):
@@ -216,57 +258,87 @@ class CalculationEngine:
         args = [cls._validate_node(arg, aliases, steps) for arg in node.args]
         if not args:
             raise CalculationError(f"{name} 至少需要一个参数")
+
+        keywords = {}
+        for keyword in node.keywords:
+            if keyword.arg is None:
+                raise CalculationError("不支持 **kwargs 参数")
+            if keyword.arg in keywords:
+                raise CalculationError(f"参数重复: {keyword.arg}")
+            try:
+                keywords[keyword.arg] = ast.literal_eval(keyword.value)
+            except (ValueError, TypeError, SyntaxError) as exc:
+                raise CalculationError(f"参数 {keyword.arg} 必须是常量") from exc
+
         if name in {"abs", "sqrt", "log"}:
-            result = _ArrayInfo(args[0].shape, np.result_type(args[0].dtype, float if name in {"sqrt", "log"} else args[0].dtype))
+            if len(args) != 1 or keywords:
+                raise CalculationError(f"{name} 仅接收一个数据参数")
+            function = {"abs": np.abs, "sqrt": np.sqrt, "log": np.log}[name]
+            dtype = cls._operation_dtype(function, args[0].dtype)
+            result = _ArrayInfo(args[0].shape, dtype)
         elif name == "clip":
-            if len(args) != 3:
-                raise CalculationError("clip 需要 data、min、max 三个参数")
+            if len(args) != 3 or keywords:
+                raise CalculationError("clip 需要 data、min、max 三个位置参数")
             shape = np.broadcast_shapes(*(item.shape for item in args))
-            result = _ArrayInfo(shape, np.result_type(*(item.dtype for item in args)))
+            dtype = cls._operation_dtype(np.clip, *(item.dtype for item in args))
+            result = _ArrayInfo(shape, dtype)
         elif name == "where":
-            if len(args) != 3:
-                raise CalculationError("where 需要 condition、x、y 三个参数")
+            if len(args) != 3 or keywords:
+                raise CalculationError("where 需要 condition、x、y 三个位置参数")
             shape = np.broadcast_shapes(*(item.shape for item in args))
-            result = _ArrayInfo(shape, np.result_type(args[1].dtype, args[2].dtype))
+            dtype = cls._operation_dtype(np.where, *(item.dtype for item in args))
+            result = _ArrayInfo(shape, dtype)
         elif name == "transpose":
-            if len(args) != 1:
-                raise CalculationError("transpose 仅接收一个数据参数")
-            axes = None
-            for keyword in node.keywords:
-                if keyword.arg != "axes":
-                    raise CalculationError(f"不支持参数: {keyword.arg}")
-                axes = tuple(ast.literal_eval(keyword.value))
+            if len(args) != 1 or set(keywords) - {"axes"}:
+                raise CalculationError("transpose 接收一个数据参数和可选 axes 参数")
+            axes = keywords.get("axes")
             if axes is None:
                 shape = tuple(reversed(args[0].shape))
             else:
+                if not isinstance(axes, (tuple, list)) or not all(
+                    isinstance(item, int) and not isinstance(item, bool) for item in axes
+                ):
+                    raise CalculationError("axes 必须是整数维度序列")
+                axes = tuple(axes)
                 if sorted(axes) != list(range(len(args[0].shape))):
                     raise CalculationError(f"axes={axes} 不是完整维度排列")
                 shape = tuple(args[0].shape[index] for index in axes)
             result = _ArrayInfo(shape, args[0].dtype)
         else:
-            axis = None
-            keepdims = False
-            for keyword in node.keywords:
-                if keyword.arg == "axis":
-                    axis = ast.literal_eval(keyword.value)
-                elif keyword.arg == "keepdims":
-                    keepdims = bool(ast.literal_eval(keyword.value))
-                else:
-                    raise CalculationError(f"不支持参数: {keyword.arg}")
+            if len(args) != 1:
+                raise CalculationError(f"{name} 仅接收一个数据位置参数；axis 和 keepdims 请使用关键字")
+            unknown = set(keywords) - {"axis", "keepdims"}
+            if unknown:
+                raise CalculationError(f"不支持参数: {sorted(unknown)[0]}")
+            axis = keywords.get("axis")
+            keepdims = keywords.get("keepdims", False)
+            if not isinstance(keepdims, bool):
+                raise CalculationError("keepdims 必须是 True 或 False")
             shape = list(args[0].shape)
             if axis is None:
                 shape = [1] * len(shape) if keepdims else []
             else:
-                axes = (axis,) if isinstance(axis, int) else tuple(axis)
-                normalized = sorted({item + len(shape) if item < 0 else item for item in axes}, reverse=True)
+                if isinstance(axis, bool) or not isinstance(axis, (int, tuple)):
+                    raise CalculationError("axis 必须是整数或整数元组")
+                axes = (axis,) if isinstance(axis, int) else axis
+                if not all(isinstance(item, int) and not isinstance(item, bool) for item in axes):
+                    raise CalculationError("axis 必须是整数或整数元组")
+                normalized = [item + len(shape) if item < 0 else item for item in axes]
+                if len(set(normalized)) != len(normalized):
+                    raise CalculationError(f"axis={axis} 包含重复维度")
                 if any(item < 0 or item >= len(shape) for item in normalized):
                     raise CalculationError(f"axis={axis} 超出数据维度 {len(shape)}")
-                for item in normalized:
+                for item in sorted(normalized, reverse=True):
                     if keepdims:
                         shape[item] = 1
                     else:
                         shape.pop(item)
-            dtype = np.result_type(args[0].dtype, float) if name in {"mean", "std"} else args[0].dtype
+            function = {
+                "mean": np.mean, "max": np.max, "min": np.min,
+                "sum": np.sum, "std": np.std,
+            }[name]
+            with np.errstate(all="ignore"):
+                dtype = np.asarray(function(np.ones((1,), dtype=args[0].dtype))).dtype
             result = _ArrayInfo(tuple(shape), dtype)
         steps.append(ShapeStep(ast.unparse(node), tuple(item.shape for item in args), result.shape, str(result.dtype)))
         return result

@@ -80,6 +80,35 @@ class CalculatorEngineTests(unittest.TestCase):
         self.assertEqual(validation.output_shape, (3, 2, 4))
         np.testing.assert_array_equal(result, np.transpose(a.data_origin, (1, 2, 0)))
 
+    def test_validation_rejects_function_calls_execution_would_reject(self):
+        a = self.data(np.ones((2, 3), dtype=np.float32), "A")
+        operands = [OperandSpec("A", a)]
+
+        for expression in (
+            "abs(A, 1)",
+            "mean(A, 0)",
+            "mean(A, axis=(0, 0))",
+            "clip(A, 0, 1, 2)",
+        ):
+            with self.subTest(expression=expression):
+                validation = CalculationEngine.validate(CalculationPlan(expression, operands))
+                self.assertFalse(validation.valid)
+
+    def test_validation_dtype_matches_numpy_execution(self):
+        float_data = self.data(np.ones((2, 3), dtype=np.float32), "float")
+        int_data = self.data(np.ones((2, 3), dtype=np.int16), "int")
+        cases = (
+            ("A / A", float_data),
+            ("sqrt(A)", float_data),
+            ("sum(A, axis=0)", int_data),
+        )
+
+        for expression, source in cases:
+            with self.subTest(expression=expression):
+                plan = CalculationPlan(expression, [OperandSpec("A", source)])
+                result, validation = CalculationEngine.execute(plan)
+                self.assertEqual(validation.output_dtype, str(result.dtype))
+
 
 if __name__ == "__main__":
     unittest.main()
