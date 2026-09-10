@@ -200,6 +200,7 @@ class HistoryController:
             new_directory = params["cache_directory"] or self.window.default_cache_directory()
             self.window.update_param("tool", "cache_directory", new_directory)
             self.window.update_param("tool", "cache_threshold_mb", params["cache_threshold_mb"])
+            self.window.update_param("tool", "memory_budget_mb", params["memory_budget_mb"])
             self.window.update_param("tool", "cache_cleanup_startup", params["cache_cleanup_startup"])
             self.window.apply_cache_settings()
             if Path(old_directory) != Path(new_directory):

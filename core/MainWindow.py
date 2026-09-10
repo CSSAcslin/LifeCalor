@@ -24,13 +24,11 @@ from calculator.dialog import DataCalculatorDialog
 from widget import TriStateSwitch
 from AppConfig import get_github_auth_header
 from settings import load_param_group
-from TaskState import TaskState
-from ThreadController import is_thread_active as thread_is_active, stop_thread as stop_qthread
+from ThreadController import is_thread_active as thread_is_active
 from exporting import ExportController
 from selection import SelectionController
 from history import HistoryController
 from history.manifest import HistoryManifestStore, array_refs_for_manifest
-from TaskController import ensure_thread_running
 from progress import normalize_progress
 from display.status import render_status_update
 from display.canvas_signals import CanvasSignalBinder, disconnect_canvas_signal as disconnect_display_canvas_signal
@@ -38,6 +36,12 @@ from display.canvas_controller import DisplayCanvasController
 from display.hover import format_hover_value
 from diagnostics import AppError, report_warning, show_app_error
 from tasks import TaskCoordinator, TaskStatus
+from app_bootstrap import configure_application, configure_high_dpi
+from processing import ProcessingController, ResultRouter
+from tasks.panel import TaskPanel
+from importing import choose_hdf5_dataset
+from memory import estimate_resident_bytes
+from dataio.classification import DataCategory, describe_source
 
 
 class MainWindow(QMainWindow):
@@ -100,8 +104,9 @@ class MainWindow(QMainWindow):
         self.task_coordinator = TaskCoordinator(self)
         self.task_coordinator.task_updated.connect(self._on_task_updated)
         self.task_coordinator.task_finished.connect(self._on_task_finished)
-        self._legacy_task_ids = {}
         self._displayed_task_id = None
+        self.processing_controller = ProcessingController(self, self.task_coordinator)
+        self.result_router = ResultRouter(self, self.processing_controller)
         self.selection_controller = SelectionController(self)
         self.export_controller = ExportController(self)
         self.history_controller = HistoryController(self)
@@ -110,6 +115,9 @@ class MainWindow(QMainWindow):
         self.canvas_signal_binder = CanvasSignalBinder(self)
         self.display_canvas_controller = DisplayCanvasController(self)
         self.log_file = self.get_log_path()
+        self.task_panel = TaskPanel(self.task_coordinator, self)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.task_panel)
+        self.task_panel.hide()
         self.setup_menus()
         self.setup_logging()
         self.help_dialog = None
@@ -123,12 +131,6 @@ class MainWindow(QMainWindow):
 
         # 状态控制
         self._is_calculating = False
-        self.task_states = {
-            "import": TaskState("import"),
-            "calculation": TaskState("calculation"),
-            "em_processing": TaskState("em_processing"),
-            "export": TaskState("export"),
-        }
         # 信号连接
         self.signal_connect()
         # 更新检查
@@ -219,6 +221,7 @@ class MainWindow(QMainWindow):
             'max_value': '',
             'cache_directory': self.default_cache_directory(),
             'cache_threshold_mb': 512,
+            'memory_budget_mb': 4096,
             'cache_cleanup_startup': True,
         })
         self.apply_cache_settings()
@@ -607,7 +610,7 @@ class MainWindow(QMainWindow):
         general_import_group = self.QGroupBoxCreator(style="inner")
         general_import_layout = QVBoxLayout()
         self.general_format_selector = QComboBox()
-        self.general_format_selector.addItems(["自动识别", "NumPy NPY", "TIFF 图像/堆栈"])
+        self.general_format_selector.addItems(["自动识别", "NumPy NPY", "TIFF / OME-TIFF", "视频 AVI/MP4", "Andor SIF", "HDF5 数据集"])
         self.general_color_policy = QComboBox()
         self.general_color_policy.addItems(["保留 TIFF 颜色显示", "转换为灰度显示"])
         self.general_time_basis = QComboBox()
@@ -1021,6 +1024,9 @@ class MainWindow(QMainWindow):
         view_menu = self.menu.addMenu("控制台")
         toggle_console = view_menu.addAction("显示/隐藏控制台")
         toggle_console.triggered.connect(lambda: self.console_dock.setVisible(not self.console_dock.isVisible()))
+        toggle_tasks = view_menu.addAction("显示/隐藏任务面板")
+        toggle_tasks.setToolTip("查看每个后台任务的独立进度、状态、耗时和取消入口")
+        toggle_tasks.triggered.connect(lambda: self.task_panel.setVisible(not self.task_panel.isVisible()))
 
         # 编辑菜单
         edit_menu = self.menu.addMenu("编辑")
@@ -1337,6 +1343,15 @@ class MainWindow(QMainWindow):
         self.task_coordinator.task_updated.emit(task)
         self.managed_export_signal.emit(data, output_dir, prefix, format_type, is_temporal, arg_dict)
 
+    def _data_manager_progress(self, current, total):
+        task_id = getattr(self, "_export_task_id", None)
+        task = self.task_coordinator.registry.get(task_id) if task_id else None
+        if task is not None and task.status in {
+            TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLING,
+        }:
+            self._export_progress(current, total)
+            return
+        self.processing_controller.progress("roi_processing", current, total, "ROI 处理")
     def _export_progress(self, current, total):
         task_id = getattr(self, "_export_task_id", None)
         if task_id and self.task_coordinator.registry.get(task_id) is not None:
@@ -1348,16 +1363,19 @@ class MainWindow(QMainWindow):
         task_id = getattr(self, "_export_task_id", None)
         if task_id:
             self.task_coordinator.complete(task_id, "数据导出完成")
+        self._export_task_id = None
 
     def _export_failed(self, message):
         task_id = getattr(self, "_export_task_id", None)
         if task_id:
             self.task_coordinator.fail(task_id, message)
+        self._export_task_id = None
 
     def _export_cancelled(self):
         task_id = getattr(self, "_export_task_id", None)
         if task_id:
             self.task_coordinator.cancelled(task_id, "数据导出已取消")
+        self._export_task_id = None
 
     def import_thread_open(self):
         """数据导入线程开启（.11.1版本加入）"""
@@ -1381,13 +1399,19 @@ class MainWindow(QMainWindow):
 
         self.image_display.image_export_signal.connect(self.start_managed_export)
         self.managed_export_signal.connect(self.dat_thread.export_data)
-        self.dat_thread.data_progress_signal.connect(self._export_progress)
+        self.dat_thread.data_progress_signal.connect(self._data_manager_progress)
         self.mass_export_signal.connect(self.start_managed_export)
         self.roi_processed_signal.connect(self.dat_thread.ROI_processed)
         self.dat_thread.processed_result.connect(self.processed_result)
         self.dat_thread.export_finished.connect(self._export_finished)
         self.dat_thread.export_failed.connect(self._export_failed)
         self.dat_thread.export_cancelled.connect(self._export_cancelled)
+        self.dat_thread.processing_error_signal.connect(
+            lambda error: self._handle_processing_error(error, "roi_processing")
+        )
+        self.dat_thread.processing_cancelled_signal.connect(
+            lambda: self.processing_controller.cancelled("roi_processing", "ROI 处理已取消")
+        )
 
         #
         self.process_thread = QThread()
@@ -1411,11 +1435,21 @@ class MainWindow(QMainWindow):
         self.start_dis_cal_signal.connect(self.cal_thread.distribution_analyze)
         self.start_heat_cal_signal.connect(self.cal_thread.heat_transfer_calculation)
         self.start_dif_cal_signal.connect(self.cal_thread.diffusion_calculation)
-        self.cal_thread.calculating_progress_signal.connect(self.update_progress)
+        self.cal_thread.calculating_progress_signal.connect(
+            lambda current, total: self.processing_controller.progress(
+                "calculation", current, total, "寿命计算"
+            )
+        )
         self.cal_thread.processed_result.connect(self.processed_result)
         # self.cal_thread.stop_thread_signal.connect(self.stop_thread)
         self.cal_thread.cal_running_status.connect(self.btn_safety)
         self.cal_thread.update_status.connect(self.update_status)
+        self.cal_thread.processing_error_signal.connect(
+            lambda error: self._handle_processing_error(error, "calculation")
+        )
+        self.cal_thread.processing_cancelled_signal.connect(
+            lambda: self.processing_controller.cancelled("calculation", "寿命计算已取消")
+        )
         self.easy_process.connect(self.cal_thread.easy_process)
 
     def EM_thread_open(self):
@@ -1424,8 +1458,7 @@ class MainWindow(QMainWindow):
         self.avi_thread = QThread()
         self.mass_data_processor = MassDataProcessor()
         self.mass_data_processor.moveToThread(self.avi_thread)
-        self.mass_data_processor.processing_progress_signal.connect(self.update_progress)
-        self.mass_data_processor.processing_progress_signal.connect(self._calculator_progress)
+        self.mass_data_processor.processing_progress_signal.connect(self._mass_processing_progress)
         self.mass_data_processor.processed_result.connect(self.processed_result)
         self.pre_process_signal.connect(self.mass_data_processor.pre_process)
         self.stft_python_signal.connect(self.mass_data_processor.python_stft)
@@ -1441,7 +1474,10 @@ class MainWindow(QMainWindow):
         self.calculator_signal.connect(self.mass_data_processor.calculation_operation)
         self.mass_data_processor.calculator_completed.connect(self._calculator_completed)
         self.mass_data_processor.calculator_failed.connect(self._calculator_failed)
-        self.mass_data_processor.processing_error_signal.connect(self._handle_processing_error)
+        self.mass_data_processor.processing_error_signal.connect(
+            lambda error: self._handle_processing_error(error, "em_processing")
+        )
+        self.mass_data_processor.processing_cancelled_signal.connect(self._mass_processing_cancelled)
 
         # self.avi_thread.start()
 
@@ -1499,8 +1535,6 @@ class MainWindow(QMainWindow):
         self.time_slider_vertical.valueChanged.connect(self.update_result_display)
         # # 连接控制台信号
         # self.command_processor.terminate_requested.connect(self.stop_calculation)
-        # self.command_processor.save_config_requested.connect(self.save_config)
-        # self.command_processor.load_config_requested.connect(self.load_config)
         # self.command_processor.clear_result_requested.connect(self.clear_result)
         # 结果区域信号
         self.result_display.tab_type_changed.connect(self._handle_result_tab)
@@ -1594,20 +1628,28 @@ class MainWindow(QMainWindow):
         task_id = getattr(self, "_import_task_id", None)
         if task_id and self.task_coordinator.registry.get(task_id) is not None:
             self.task_coordinator.fail(task_id, message)
+        self._import_task_id = None
 
     def _import_cancelled(self):
         task_id = getattr(self, "_import_task_id", None)
         if task_id and self.task_coordinator.registry.get(task_id) is not None:
             self.task_coordinator.cancelled(task_id, "数据导入已取消")
+        self._import_task_id = None
 
     def load_general_file(self):
         format_index = self.general_format_selector.currentIndex()
         filters = {
-            0: "支持的数据 (*.npy *.tif *.tiff);;所有文件 (*)",
+            0: "支持的数据 (*.npy *.tif *.tiff *.avi *.mp4 *.mov *.mkv *.sif *.h5 *.hdf5 *.hdf);;所有文件 (*)",
             1: "NumPy 数据 (*.npy);;所有文件 (*)",
-            2: "TIFF 图像 (*.tif *.tiff);;所有文件 (*)",
+            2: "TIFF / OME-TIFF (*.tif *.tiff);;所有文件 (*)",
+            3: "视频 (*.avi *.mp4 *.mov *.mkv);;所有文件 (*)",
+            4: "Andor SIF (*.sif);;所有文件 (*)",
+            5: "HDF5 (*.h5 *.hdf5 *.hdf);;所有文件 (*)",
         }
-        import_types = {0: "auto_file", 1: "npy", 2: "tiff_file"}
+        import_types = {
+            0: "auto_file", 1: "npy", 2: "tiff_file", 3: "avi_file",
+            4: "sif_file", 5: "hdf5_file",
+        }
         file_path, _ = QFileDialog.getOpenFileName(
             self, "选择数据文件", self.settings.value("last_folder", ""), filters[format_index]
         )
@@ -1618,10 +1660,18 @@ class MainWindow(QMainWindow):
             **self.basic_params,
             "time_basis": "fps" if self.general_time_basis.currentIndex() == 1 else "time_step",
             "color_policy": "preserve" if self.general_color_policy.currentIndex() == 0 else "grayscale",
+            "memory_budget_mb": self.tool_params.get("memory_budget_mb", 4096),
+            "resident_bytes": estimate_resident_bytes([*Data.history, *ProcessedData.history]),
         }
         if options["time_basis"] == "fps":
             options["fps"] = self.fps_input.value()
             options["time_unit"] = "s"
+        if Path(file_path).suffix.lower() in {".h5", ".hdf5", ".hdf"}:
+            dataset_path = choose_hdf5_dataset(file_path, self)
+            if not dataset_path:
+                logging.info("用户取消选择 HDF5 数据集")
+                return False
+            options["dataset_path"] = dataset_path
         self.dispatch_import(import_types[format_index], file_path, options)
         return True
 
@@ -1711,16 +1761,22 @@ class MainWindow(QMainWindow):
                 return
 
     def import_result(self, data):
-        """导入的数据放到这里来处理"""
+        """Store imported data and display only supported image/video shapes."""
         self.data = data
-        self.settings.setValue("last_folder", os.path.dirname(data.parameters['file_path']))
-        logging.info(f'成功加载{data.format_import}数据({data.name})')
+        self.settings.setValue("last_folder", os.path.dirname(data.parameters["file_path"]))
+        logging.info(f"成功加载{data.format_import}数据({data.name})")
         task_id = getattr(self, "_import_task_id", None)
         if task_id and self.task_coordinator.registry.get(task_id) is not None:
             self.task_coordinator.complete(task_id, "数据导入完成")
-        self.update_status("已加载文件", 'idle')
-        # 成像显示
-        self.load_image(origin_data=self.data)
+        self._import_task_id = None
+        descriptor = describe_source(data)
+        if descriptor.category in {DataCategory.IMAGE, DataCategory.VIDEO}:
+            self.update_status("已加载文件", "idle")
+            self.load_image(origin_data=self.data)
+        else:
+            message = f"已导入 {descriptor.label} {descriptor.shape}；请先切片为图片或视频后再显示"
+            logging.warning(message)
+            self.update_status(message, "warning")
 
     """画布设置相关"""
     def add_new_canvas(self, assign_data=None):
@@ -1948,23 +2004,25 @@ class MainWindow(QMainWindow):
                 self.update_progress(task.current, task.total)
 
     def _on_task_finished(self, task):
-        if self._displayed_task_id != task.task_id:
+        displayed = self._displayed_task_id == task.task_id
+        if task.status == TaskStatus.FAILED:
+            error = task.diagnostic or AppError(
+                "任务失败", task.error or task.name, stage=task.category,
+                severity="error", task_id=task.task_id,
+            )
+            if displayed:
+                self.update_status(f"任务失败: {task.name}", "error", record_log=False)
+            show_app_error(self, error)
+        if not displayed:
             return
         next_task = self.task_coordinator.registry.foreground()
         if next_task is not None and next_task.task_id != task.task_id:
             self._on_task_updated(next_task)
             return
         self._displayed_task_id = None
-        if task.status == TaskStatus.FAILED:
-            error = task.diagnostic or AppError(
-                "任务失败", task.error or task.name, stage=task.category,
-                severity="error", task_id=task.task_id,
-            )
-            self.update_status(f"任务失败: {task.name}", "error", record_log=False)
-            show_app_error(self, error)
-        elif task.status == TaskStatus.CANCELLED:
+        if task.status == TaskStatus.CANCELLED:
             self.update_status(f"已中断: {task.name}", "idle")
-        else:
+        elif task.status == TaskStatus.COMPLETED:
             self.update_status(task.message or f"任务完成: {task.name}", "idle")
         self.update_progress(-1)
 
@@ -1994,12 +2052,9 @@ class MainWindow(QMainWindow):
             original=exc_value,
         ))
 
-    def _handle_processing_error(self, error):
-        foreground = self.task_coordinator.registry.foreground()
-        if foreground is not None and foreground.category in {"calculation", "em_processing"}:
-            error.task_id = foreground.task_id
-            foreground.diagnostic = error
-            self.task_coordinator.fail(foreground.task_id, error.message)
+    def _handle_processing_error(self, error, category=None):
+        categories = (category,) if category else ("calculation", "em_processing", "roi_processing")
+        if self.processing_controller.fail(error, categories=categories) is not None:
             return
         self.update_progress(-1)
         self.update_status(error.message, "error", record_log=False)
@@ -2165,8 +2220,7 @@ class MainWindow(QMainWindow):
         # 如果线程没了，要创建
         if not self.is_thread_active("calc_thread"):
             self.cal_thread_open()
-        if not self.is_thread_active("calc_thread"):
-            self.cal_thread_open()
+
 
         self.ensure_task_thread_running("calc_thread", "calculation")
         self.update_status('计算进行中...', 'working')
@@ -2322,7 +2376,6 @@ class MainWindow(QMainWindow):
         aim_data = self.data_selection()
         if aim_data is None:
             return False
-        self.ensure_task_thread_running("avi_thread", "em_processing")
         self.ensure_task_thread_running("calc_thread", "calculation")
         self.update_status('计算进行中...', 'working')
         self.easy_process.emit(aim_data,'avg',None)
@@ -2534,9 +2587,12 @@ class MainWindow(QMainWindow):
                 dialog.set_execution_failed(error)
             show_app_error(self, error)
             return False
-        self.ensure_task_thread_running("avi_thread", "em_processing")
+        if not self.is_thread_active("avi_thread"):
+            self.avi_thread.start()
+        self.mass_data_processor.abortion = False
         task = self.task_coordinator.create_task(
-            "多数据运算", "calculation", foreground=True, cancellable=False
+            "多数据运算", "calculator", foreground=True, cancellable=True,
+            cancel_callback=self.mass_data_processor.stop,
         )
         self._calculator_task_id = task.task_id
         self.task_coordinator.start(task.task_id, 1, "正在执行多数据运算")
@@ -2544,6 +2600,32 @@ class MainWindow(QMainWindow):
         self.calculator_signal.emit(plan)
         return True
 
+    def _mass_processing_progress(self, current, total):
+        calculator_id = getattr(self, "_calculator_task_id", None)
+        calculator_task = self.task_coordinator.registry.get(calculator_id) if calculator_id else None
+        if calculator_task is not None and calculator_task.status in {
+            TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLING,
+        }:
+            self._calculator_progress(current, total)
+            return
+        self.processing_controller.progress("em_processing", current, total, "数据处理")
+    def _mass_processing_cancelled(self):
+        task_id = getattr(self, "_calculator_task_id", None)
+        task = self.task_coordinator.registry.get(task_id) if task_id else None
+        if task is not None and task.status in {
+            TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLING,
+        }:
+            self.task_coordinator.cancelled(task_id, "多数据运算已取消")
+            self._calculator_task_id = None
+            dialog = getattr(self, "data_calculator", None)
+            if dialog is not None:
+                dialog.set_execution_failed(AppError(
+                    "计算已取消", "多数据运算已由用户取消",
+                    stage="多数据运算", severity="warning",
+                ))
+            self.update_status("多数据运算已取消", "idle")
+            return
+        self.processing_controller.cancelled("em_processing", "数据处理已取消")
     def _calculator_progress(self, current, total):
         task_id = getattr(self, "_calculator_task_id", None)
         if not task_id:
@@ -2603,94 +2685,8 @@ class MainWindow(QMainWindow):
 
     """结果处理"""
     def processed_result(self, data):
-        """处理过后的数据都来这里重整再分配"""
-        if not isinstance(data, ProcessedData):
-            self.cwt_quality_btn.setEnabled(True)
-            self.stft_quality_btn.setEnabled(True)
-            self.stft_process_btn.setEnabled(True)
-            self.cwt_process_btn.setEnabled(True)
-            self.tDgf_btn.setEnabled(True)
-            self.sscs_btn.setEnabled(True)
-            error = AppError(
-                "处理结果类型无效",
-                f"收到无法分发的处理结果：{type(data).__name__}",
-                stage="结果分发",
-                severity="warning",
-                details=repr(data),
-            )
-            self._handle_processing_error(error)
-            return False
-        foreground_task = self.task_coordinator.registry.foreground()
-        if foreground_task is not None and foreground_task.category in {"calculation", "em_processing"}:
-            self.task_coordinator.complete(foreground_task.task_id, "数据处理完成")
-        self.processed_data = data
-        # 各处理后响应
-        process_type = self.processed_data.type_processed
-        match process_type:
-            case "ROI_lifetime":
-                self.result_display.display_lifetime_curve(self.processed_data,self.time_unit_combo.currentText())
-            case 'lifetime_distribution':
-                self.result_display.display_distribution_map(self.processed_data,'指数衰减寿命分布图')
-            # 中间还有一个取向量ROI的，先不管他
-            case 'diffusion':
-                self.result_display.display_diffusion_coefficient(self.processed_data)
-                pass
-            case 'heat_transfer':
-                self.result_display.display_distribution_map(self.processed_data,'传热系数分布图') # 临时之举
-                pass
-            case 'EM_pre_processed':
-                pass
-            case 'stft_quality':
-                self.stft_quality_btn.setEnabled(True)
-                self.result_display.quality_avg(self.processed_data)
-            case 'cwt_quality':
-                logging.info("请稍等，出图会有点慢")
-                self.cwt_quality_btn.setEnabled(True)
-                self.result_display.quality_avg(self.processed_data)
-            case 'ROI_stft':
-                result = self.processed_data.data_processed
-                self.stft_process_btn.setEnabled(True)
-                # if self.show_stft_check.isChecked():
-                #     self.data.image_import = (result - np.min(result)) / (np.max(result) - np.min(result)) # 要改
-                #     self.load_image()
-                pass
-            case 'ROI_cwt':
-                result = self.processed_data.data_processed
-                self.cwt_process_btn.setEnabled(True)
-                # if self.show_stft_check.isChecked():
-                #     self.data.image_import = (result - np.min(result)) / (np.max(result) - np.min(result))  # 要改
-                #     self.load_image()
-                pass
-            case 'Accumulated_time_amplitude_map':
-                self.atam_btn.setEnabled(True)
-                pass
-            case 'Single_channel_signal':
-                self.tDgf_btn.setEnabled(True)
-                self.sscs_btn.setEnabled(True)
-                if self.processed_data.out_processed['thr_known']:
-                    self.result_display.single_channel(self.processed_data,True)
-                else:
-                    thr = int(self.processed_data.out_processed['thr'])
-                    self.time_slider_vertical.setVisible(True)
-                    self.time_slider_vertical.setMaximum(int(self.processed_data.out_processed['mean_signal'].max()*10+21))
-                    # self.time_slider_vertical.setValue(thr*10)
-                    self.update_result_display(thr*10, reuse_current=False)
-            case '2D_Fourier_transform':
-                pass
-            case 'signal_average':
-                self.result_display.plot_time_series(data.time_point, data.data_processed[:,1])
-                self.graph_plot.plot_data(data.data_processed, name = data.name)
-                pass
-            case 'Roi_applied':
-                logging.info("ROI应用完成")
-            case 'Heartbeat':
-                logging.info("心肌细胞处理完成，开始作图")
-                self.result_display.display_heartbeat(self.processed_data)
-                logging.info("所有图绘制完成")
-            case 'Basic_math':
-                logging.info("对数据的基础运算完毕！")
-            case 'data_cropped':
-                logging.info("对数据的切片完成！")
+        """Route a completed ProcessedData through the shared result registry."""
+        return self.result_router.route(data)
 
     def draw_result(self,draw_type:str,canvas_id:int,result,roi_info = None):
         """canvas绘图结果处理"""
@@ -2720,6 +2716,7 @@ class MainWindow(QMainWindow):
                     bool_mask = np.zeros(draw_data.framesize, dtype=bool)
                     bool_mask[y:y + h, x:x + w] = True
                 if crop_roi:
+                    self.ensure_task_thread_running("data_thread", "roi_processing")
                     self.roi_processed_signal.emit(draw_data, bool_mask, dialog.reset_value.value(), crop_roi, dialog.zoom_check.isChecked(), dialog.zoom_factor.value())
                 if dialog.fast_check.isChecked():
                     if hasattr(draw_data,'type_processed') and draw_data.type_processed == 'Accumulated_time_amplitude_map':
@@ -2747,6 +2744,7 @@ class MainWindow(QMainWindow):
                 bool_mask = result[1]
                 if dialog.inverse_check.isChecked():
                     bool_mask = ~bool_mask
+                self.ensure_task_thread_running("data_thread", "roi_processing")
                 self.roi_processed_signal.emit(draw_data, bool_mask, dialog.reset_value.value(),crop_roi, dialog.zoom_check.isChecked(), dialog.zoom_factor.value())
             logging.info("ROI已确认选取")
         return None
@@ -2767,6 +2765,7 @@ class MainWindow(QMainWindow):
         if self.processed_data is not None and draw_data is None:
             draw_data = next(data for data in self.processed_data.history if data.timestamp == timestamp)
             # data_type = draw_data.type_processed
+        self.ensure_task_thread_running("data_thread", "roi_processing")
         self.roi_processed_signal.emit(draw_data, bool_mask, 1, True,
                                        False, 0)
         logging.info(f"像素roi已快速选取，数据名{draw_data.name}")
@@ -2795,42 +2794,9 @@ class MainWindow(QMainWindow):
         return thread_is_active(thread, expected_type=QThread, is_deleted=sip.isdeleted)
 
     def ensure_task_thread_running(self, thread_name: str, task_key: str) -> bool:
-        """启动兼容线程，并在统一任务注册表登记可取消的前台任务。"""
-        thread = getattr(self, thread_name, None)
-        worker_map = {
-            "import": getattr(self, "imp_thread", None),
-            "calculation": getattr(self, "cal_thread", None),
-            "em_processing": getattr(self, "mass_data_processor", None),
-            "export": getattr(self, "dat_thread", None),
-        }
-        worker = worker_map.get(task_key)
-        if worker is not None and hasattr(worker, "abortion"):
-            worker.abortion = False
-
-        def request_cancel():
-            if worker is not None:
-                if hasattr(worker, "abortion"):
-                    worker.abortion = True
-                stop_method = getattr(worker, "stop", None)
-                if callable(stop_method):
-                    stop_method()
-            if thread is not None and hasattr(thread, "requestInterruption"):
-                thread.requestInterruption()
-
-        task = self.task_coordinator.create_task(
-            name={"import": "导入数据", "calculation": "寿命计算", "em_processing": "数据处理", "export": "导出数据"}.get(task_key, task_key),
-            category=task_key,
-            cancel_callback=request_cancel,
-        )
-        task.start()
-        self._legacy_task_ids[task_key] = task.task_id
-        self.task_coordinator.task_updated.emit(task)
-        return ensure_thread_running(
-            thread,
-            self.task_states[task_key],
-            expected_type=QThread,
-            is_deleted=sip.isdeleted,
-        )
+        """Register one operation and ensure its persistent worker thread is running."""
+        self.processing_controller.begin(thread_name, task_key)
+        return True
 
     def btn_safety(self, cal_run=False):
         """关闭按钮的功能"""
@@ -2843,27 +2809,6 @@ class MainWindow(QMainWindow):
             self.analyze_region_btn.setEnabled(True)
             self.heat_transfer_btn.setEnabled(True)
         return
-
-    def stop_thread(self,type = 0):
-        """停止指定后台线程。"""
-        thread_map = {
-            0: ("calc_thread", "calculation", "计算线程关闭"),
-            1: ("avi_thread", "em_processing", "大数据处理线程关闭"),
-        }
-        if type not in thread_map:
-            logging.warning(f"未知线程类型: {type}")
-            return False
-        thread_name, task_key, success_message = thread_map[type]
-        try:
-            stopped = stop_qthread(getattr(self, thread_name, None), expected_type=QThread, is_deleted=sip.isdeleted)
-            if stopped:
-                self.task_states[task_key].complete()
-                logging.info(success_message)
-            return stopped
-        except Exception as e:
-            self.task_states[task_key].fail(str(e))
-            logging.error(f"线程退出错误{e}")
-            return False
 
     def export_image(self):
         """导出热图为图片"""
@@ -2910,14 +2855,6 @@ class MainWindow(QMainWindow):
         logging.warning("任务中断请求已接收")
         return self.cancel_active_task()
 
-    def save_config(self):
-        """保存当前配置(留空暂不实现)"""
-        logging.info("正在保存当前配置...")
-
-    def load_config(self, preset_name):
-        """加载预设参数(留空暂不实现)"""
-        logging.info(f"正在加载预设参数: {preset_name}")
-
     def clear_result(self):
         self.result_display.clear()
 
@@ -2963,7 +2900,9 @@ class StreamLogger(object):
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+    configure_high_dpi()
     app = QApplication([])
+    configure_application(app)
     QFontDatabase.addApplicationFont("C:/Windows/Fonts/NotoSansSC-VF.ttf")  # 如：思源黑体、阿里巴巴普惠体
     QFontDatabase.addApplicationFont("C:/Windows/Fonts/calibril.ttf")  # 如：Roboto、Fira Code
 
@@ -2982,12 +2921,6 @@ if __name__ == "__main__":
     # 应用全局样式
     app.setStyle('Fusion')
     app.setStyleSheet(read_qss_file("style.qss"))
-    app.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    app.setAttribute(Qt.AA_UseHighDpiPixmaps)
-    QCoreApplication.setOrganizationName("CSSA")
-    QCoreApplication.setApplicationName("LifeCalor")
-    os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
-    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     # app.setFont(QFont("Noto Sans"))
     app.setWindowIcon(QIcon(':/LifeCalor.ico'))
     window = MainWindow()

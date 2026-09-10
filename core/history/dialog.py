@@ -168,11 +168,19 @@ class HistoryCacheManagerDialog(QDialog):
         self.cache_threshold_spin.setValue(int(self.params.get("cache_threshold_mb", 512)))
         self.cache_threshold_spin.setSuffix(" MB")
 
+        self.memory_budget_spin = QSpinBox()
+        self.memory_budget_spin.setRange(256, 1024 * 1024)
+        self.memory_budget_spin.setValue(int(self.params.get("memory_budget_mb", 4096)))
+        self.memory_budget_spin.setSuffix(" MB")
+        self.memory_budget_spin.setToolTip(
+            "限制导入和处理中允许驻留内存的数据总量；超过预算时会在分配前给出提示。"
+        )
         self.cache_cleanup_startup_check = QCheckBox()
         self.cache_cleanup_startup_check.setChecked(bool(self.params.get("cache_cleanup_startup", True)))
 
         settings_layout.addRow(QLabel("缓存目录:"), directory_layout)
         settings_layout.addRow(QLabel("写入阈值:"), self.cache_threshold_spin)
+        settings_layout.addRow(QLabel("内存预算:"), self.memory_budget_spin)
         settings_layout.addRow(QLabel("启动清理临时缓存:"), self.cache_cleanup_startup_check)
         settings_group.setLayout(settings_layout)
         layout.addWidget(settings_group)
@@ -198,6 +206,7 @@ class HistoryCacheManagerDialog(QDialog):
         params = dict(self.params)
         params["cache_directory"] = self.cache_directory_edit.text().strip()
         params["cache_threshold_mb"] = self.cache_threshold_spin.value()
+        params["memory_budget_mb"] = self.memory_budget_spin.value()
         params["cache_cleanup_startup"] = self.cache_cleanup_startup_check.isChecked()
         return params
 

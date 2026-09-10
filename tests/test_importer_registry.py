@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
+import h5py
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE = ROOT / "core"
@@ -75,6 +76,65 @@ class ImporterRegistryTests(unittest.TestCase):
             self.assertFalse(payload.parameters["scientific_values_reconstructed"])
             self.assertIn("亮度", payload.parameters["import_warning"])
 
+    def test_color_tiff_stack_preserves_time_and_color_axes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "color-stack.tif"
+            source = np.zeros((2, 3, 4, 3), dtype=np.uint8)
+            source[1, ..., 1] = 200
+            tifffile.imwrite(path, source, photometric="rgb", metadata={"axes": "TYXC"})
+
+            probe = self.registry.probe("tiff", path)
+            payload = self.registry.read("tiff", path, {"time_step": 0.25, "color_policy": "preserve"})
+
+            self.assertEqual(probe.axes, "TYXC")
+            self.assertEqual(payload.data.shape, (2, 3, 4))
+            self.assertEqual(payload.display_data.shape, source.shape)
+            self.assertEqual(payload.parameters["scientific_axes"], "TYX")
+            self.assertEqual(payload.parameters["display_axes"], "TYXC")
+            np.testing.assert_allclose(payload.time_point, [0.0, 0.25])
+
+    def test_ome_tiff_preserves_physical_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "physical.ome.tif"
+            source = np.arange(24, dtype=np.uint16).reshape(2, 3, 4)
+            tifffile.imwrite(
+                path, source, ome=True, photometric="minisblack",
+                metadata={
+                    "axes": "TYX", "PhysicalSizeX": 0.2, "PhysicalSizeXUnit": "um",
+                    "PhysicalSizeY": 0.3, "PhysicalSizeYUnit": "um",
+                    "TimeIncrement": 0.5, "TimeIncrementUnit": "s",
+                },
+            )
+
+            payload = self.registry.read("tiff", path, {"time_step": 1.0})
+            physical = payload.parameters["ome_physical_metadata"]
+
+            self.assertTrue(payload.parameters["is_ome"])
+            self.assertEqual(payload.parameters["source_axes"], "TYX")
+            self.assertEqual(physical["PhysicalSizeX"], "0.2")
+            self.assertEqual(physical["TimeIncrement"], "0.5")
+            self.assertEqual(physical["TimeIncrementUnit"], "s")
+    def test_hdf5_dataset_import_preserves_axes_and_reports_progress(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sample.h5"
+            source = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+            with h5py.File(path, "w") as handle:
+                dataset = handle.create_dataset("images", data=source)
+                dataset.attrs["axes"] = "TYX"
+            updates = []
+            options = {"dataset_path": "/images", "time_step": 0.5}
+
+            probe = self.registry.probe("hdf5", path, options)
+            payload = self.registry.read(
+                "hdf5", path, options,
+                progress=lambda current, total, message: updates.append((current, total, message)),
+            )
+
+            self.assertEqual(probe.axes, "TYX")
+            np.testing.assert_array_equal(payload.data, source)
+            np.testing.assert_allclose(payload.time_point, [0.0, 0.5])
+            self.assertEqual(updates[-1][0], source.size)
+            self.assertEqual(updates[-1][1], source.size)
     def test_explicit_format_rejects_wrong_extension(self):
         with self.assertRaisesRegex(ValueError, "扩展名"):
             self.registry.probe("npy", "sample.tif")

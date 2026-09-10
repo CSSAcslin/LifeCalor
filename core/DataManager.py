@@ -32,6 +32,7 @@ from ArrayCache import (
 from display.source import DisplaySourceFactory
 from display.renderer import FrameRenderParams, FrameRenderer
 from tasks.model import CancellationToken, TaskCancelled
+from diagnostics import AppError, format_exception_details
 _ARRAY_CACHE_CONFIG = ArrayCacheConfig(cache_dir=Path.cwd() / ".lifecalor_cache", threshold_bytes=512 * 1024 * 1024)
 _ARRAY_CACHE_PROGRESS_CALLBACK = None
 
@@ -312,6 +313,8 @@ class DataManager(QObject):
     export_finished = pyqtSignal(object)
     export_failed = pyqtSignal(str)
     export_cancelled = pyqtSignal()
+    processing_error_signal = pyqtSignal(object)
+    processing_cancelled_signal = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -645,8 +648,25 @@ class DataManager(QObject):
         return created_files
 
     @pyqtSlot(object, np.ndarray, float, bool, bool, float)
-    def ROI_processed(self, data, mask, multiply_factor, is_crop=False,is_zoom=False,zoom_factor=1.0):
-        """ROI处理方法"""
+    def ROI_processed(self, data, mask, multiply_factor, is_crop=False, is_zoom=False, zoom_factor=1.0):
+        """Run ROI processing with the shared cancellation and diagnostic contract."""
+        try:
+            return self._roi_processed_impl(data, mask, multiply_factor, is_crop, is_zoom, zoom_factor)
+        except TaskCancelled:
+            self.processing_cancelled_signal.emit()
+            return False
+        except Exception as exc:
+            logging.exception("ROI 处理失败")
+            self.processing_error_signal.emit(AppError(
+                "ROI 处理失败", str(exc), stage="ROI 处理", severity="error",
+                original=exc, details=format_exception_details(exc, "ROI 处理", data),
+                context={"data": data},
+            ))
+            return False
+
+    def _roi_processed_impl(self, data, mask, multiply_factor, is_crop=False, is_zoom=False, zoom_factor=1.0):
+        """Apply an ROI transform; called only by ROI_processed."""
+        self._check_cancelled()
         data_roi = []
         if isinstance(data, Data):
             aim_data = data.data_origin.copy()
@@ -679,6 +699,7 @@ class DataManager(QObject):
             else: # shape=3
                 aim_data = aim_data[:,min_y:max_y + 1, min_x:max_x + 1]
                 for i, frame in enumerate(aim_data):
+                    self._check_cancelled()
                     processed_frame = np.where(
                         mask,
                         frame * multiply_factor,
@@ -701,6 +722,7 @@ class DataManager(QObject):
                 data_roi.append(processed_frame)
             else:
                 for i, frame in enumerate(aim_data):
+                    self._check_cancelled()
                     processed_frame = np.where(
                         mask,
                         frame * multiply_factor,
@@ -728,6 +750,31 @@ class DataManager(QObject):
         self.data_progress_signal.emit(total_frames + 1, total_frames)
 
 
+
+def _array_layout(shape, metadata=None, time_point=None):
+    shape = tuple(int(value) for value in shape)
+    ndim = len(shape)
+    metadata = metadata or {}
+    axes = str(metadata.get("scientific_axes") or metadata.get("source_axes") or "").upper()
+    if len(axes) != ndim:
+        axes = ""
+    if "T" in axes:
+        timelength = shape[axes.index("T")]
+    elif ndim == 3:
+        timelength = shape[0]
+    else:
+        timelength = 1
+    h_axis = axes.find("H") if "H" in axes else axes.find("Y")
+    w_axis = axes.find("W") if "W" in axes else axes.find("X")
+    if h_axis >= 0 and w_axis >= 0:
+        framesize = (shape[h_axis], shape[w_axis])
+    elif ndim >= 2:
+        framesize = (shape[-2], shape[-1])
+    elif ndim == 1:
+        framesize = (shape[0], 1)
+    else:
+        framesize = (1, 1)
+    return timelength, framesize
 @dataclass
 class Data:
     """
@@ -790,14 +837,15 @@ class Data:
         Data.history.append(self._history_snapshot())  # 实例存储
 
     def _recalculate(self):
-        self.datashape = self.data_origin.shape
-        self.timelength = self.datashape[0] if self.data_origin.ndim == 3 else 1  # 默认不存在单像素点数据
-        self.framesize = (self.datashape[1], self.datashape[2]) if self.data_origin.ndim == 3 else (self.datashape[0],
-                                                                                                    self.datashape[1])
-        self.datatype = self.data_origin.dtype
-        self.datamax = self.data_origin.max()
-        self.datamin = self.data_origin.min()
-        self.ndim = self.data_origin.ndim
+        array = self.data_origin
+        self.datashape = array.shape
+        self.timelength, self.framesize = _array_layout(
+            self.datashape, self.parameters, self.time_point
+        )
+        self.datatype = array.dtype
+        self.datamax = array.max()
+        self.datamin = array.min()
+        self.ndim = array.ndim
 
     def get_data_mean(self):
         return self.data_origin.mean()
@@ -1132,19 +1180,16 @@ class ProcessedData:
         self.serial_number = Data._counter  # 生成序号
 
         if self.data_processed is not None:
-            self.datashape = self.data_processed.shape if self.data_processed is not None else None
-            self.timelength = self.datashape[0] if self.data_processed.ndim == 3 else 1  # 默认不存在单像素点数据
-            if self.data_processed.ndim == 3:
-                self.framesize = (self.datashape[1], self.datashape[2])
-            elif self.data_processed.ndim == 2:
-                self.framesize = (self.datashape[0], self.datashape[1])
-            elif self.data_processed.ndim == 1:
-                self.framesize = (self.datashape[0])
-            self.datamin = self.data_processed.min()
-            self.datamax = self.data_processed.max()
-            self.datatype = self.data_processed.dtype
-            self.datamean = self.data_processed.mean()
-            self.ndim = self.data_processed.ndim
+            array = self.data_processed
+            self.datashape = array.shape
+            self.timelength, self.framesize = _array_layout(
+                self.datashape, self.out_processed, self.time_point
+            )
+            self.datamin = array.min()
+            self.datamax = array.max()
+            self.datatype = array.dtype
+            self.datamean = array.mean()
+            self.ndim = array.ndim
 
         # 加序列号
         self.name = f"{self.name}-{self.serial_number}"

@@ -487,6 +487,7 @@ class MassDataProcessor(QObject):
     processing_progress_signal = pyqtSignal(int, int) # 进度槽
     processed_result = pyqtSignal(object)
     processing_error_signal = pyqtSignal(object)
+    processing_cancelled_signal = pyqtSignal()
     calculator_completed = pyqtSignal(object)
     calculator_failed = pyqtSignal(object)
 
@@ -508,6 +509,9 @@ class MassDataProcessor(QObject):
         ))
         return False
 
+    def _emit_cancelled(self):
+        self.processing_cancelled_signal.emit()
+        return False
     @pyqtSlot(object,int,bool)
     def pre_process(self,data,bg_num = 360,unfold=True):
         """数据预处理，包含背景去除，数组展开"""
@@ -545,7 +549,7 @@ class MassDataProcessor(QObject):
             processed_data = np.empty_like(data_origin)
             for i in range(total_frames):
                 if self.abortion:
-                    return None
+                    return self._emit_cancelled()
 
                 # 减去背景帧
                 processed_data[i] = (data_origin[i] - bg_frame_safe ) / bg_frame_safe
@@ -769,7 +773,7 @@ class MassDataProcessor(QObject):
                     # 检查中止信号
                     if self.abortion:
                         pool.terminate()
-                        return False
+                        return self._emit_cancelled()
 
                     # 尝试从队列获取进度更新
                     # 每次取一点，避免死锁
@@ -826,7 +830,10 @@ class MassDataProcessor(QObject):
             finally:
                 # --- 7. 清理资源 (至关重要) ---
                 if pool:
-                    pool.close()
+                    try:
+                        pool.close()
+                    except ValueError:
+                        pass
                     pool.join()
 
                 # 必须手动释放共享内存，否则会造成内存泄漏直到重启电脑
@@ -889,7 +896,7 @@ class MassDataProcessor(QObject):
                 # 对每个像素执行STFT
                 for i in range(total_pixels):
                     if self.abortion:
-                        return
+                        return self._emit_cancelled()
 
                     pixel_signal = unfolded_data[i, :]
 
@@ -1037,7 +1044,7 @@ class MassDataProcessor(QObject):
             # 对每个像素执行cwt
             for i in range(total_pixels):
                 if self.abortion:
-                    return
+                    return self._emit_cancelled()
 
                 pixel_signal = unfolded_data[i, :]
 

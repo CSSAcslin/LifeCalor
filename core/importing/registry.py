@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .model import ImportRequest
-from .readers import NpyImporter, TiffImporter
+from .readers import AviImporter, Hdf5Importer, NpyImporter, SifImporter, TiffImporter
 
 
 class ImporterRegistry:
@@ -41,4 +41,4 @@ class ImporterRegistry:
 
 
 def default_importer_registry():
-    return ImporterRegistry((NpyImporter(), TiffImporter()))
+    return ImporterRegistry((NpyImporter(), TiffImporter(), AviImporter(), SifImporter(), Hdf5Importer()))

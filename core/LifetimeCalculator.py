@@ -1,4 +1,5 @@
 import math
+import logging
 import numpy as np
 from PyQt5.QtWidgets import QMessageBox
 from scipy.ndimage import convolve
@@ -8,6 +9,9 @@ from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QElapsedTimer
 from DataManager import *
 from multiprocessing import shared_memory, Pool
 import traceback
+
+from diagnostics import AppError, format_exception_details
+from tasks import CancellationToken, TaskCancelled
 
 
 # --- 必须放在类外的 Worker 函数 ---
@@ -505,12 +509,35 @@ class CalculationThread(QObject):
     calculating_progress_signal = pyqtSignal(int, int)
     stop_thread_signal = pyqtSignal()
     update_status = pyqtSignal(str,str)
+    processing_error_signal = pyqtSignal(object)
+    processing_cancelled_signal = pyqtSignal()
 
 
     def __init__(self):
         super().__init__()
         logging.info('计算线程已载入')
         self._is_calculating = False
+        self.cancellation_token = CancellationToken()
+
+    def set_cancellation_token(self, token):
+        self.cancellation_token = token or CancellationToken()
+        self._is_calculating = True
+
+    def cancel(self):
+        self._is_calculating = False
+        self.cancellation_token.cancel()
+
+    def _raise_if_cancelled(self):
+        self.cancellation_token.raise_if_cancelled()
+        if not self._is_calculating:
+            raise TaskCancelled("寿命计算已取消")
+
+    def _report_failure(self, title, stage, exc, data=None):
+        self.processing_error_signal.emit(AppError(
+            title, str(exc), stage=stage, severity="error", original=exc,
+            details=format_exception_details(exc, stage, data),
+            context={"data": data} if data is not None else {},
+        ))
 
     @pyqtSlot(object, float, np.ndarray, str)
     def region_analyze(self,data,time_unit,mask,model_type):
@@ -541,8 +568,10 @@ class CalculationThread(QObject):
                                                                       **(data.out_processed if isinstance(data,ProcessedData) else data.parameters)}))
             logging.info("计算完成!")
             self.calculating_progress_signal.emit(3, 3)
+        except TaskCancelled:
+            self.processing_cancelled_signal.emit()
         except Exception as e:
-            self.update_status.emit(f'区域数据拟合出错:{e}','error')
+            self._report_failure("寿命计算失败", "寿命计算", e, data)
         finally:
             self._is_calculating = False
             self.cal_running_status.emit(False)
@@ -562,6 +591,7 @@ class CalculationThread(QObject):
 
             if pre_cov is not None:
                 for t in range(T):
+                    self._raise_if_cancelled()
                     frame = aim_data[t, :, :]
                     smoothed_frame = LifetimeCalculator.apply_custom_kernel(frame, kernel_type=pre_cov,half_size=pre_size)
                     aim_data[t, :, :] = smoothed_frame
@@ -592,8 +622,10 @@ class CalculationThread(QObject):
                                                      out_processed={'lifetime_map': lifetime_map_cov,
                                                                     'r_squared_map': r_squared_map,
                                                                     **(data.out_processed if isinstance(data,ProcessedData) else data.parameters)}))
+        except TaskCancelled:
+            self.processing_cancelled_signal.emit()
         except Exception as e:
-            self.update_status.emit(f'区域数据拟合出错:{e}','error')
+            self._report_failure("寿命计算失败", "寿命计算", e, data)
         finally:
             self._is_calculating = False
             self.cal_running_status.emit(False)
@@ -613,6 +645,9 @@ class CalculationThread(QObject):
         signal_series = []
         if self._is_calculating:  # 线程关闭控制（目前仅针对循环计算）
             for i, (frame_idx, data) in enumerate(frame_data.items()):
+                if self.cancellation_token.is_cancelled or not self._is_calculating:
+                    self.processing_cancelled_signal.emit()
+                    return False
                 positions = data[:, 0] * space_unit # 此处合并单位长度
                 intensities = data[:, 1]
 
@@ -687,6 +722,7 @@ class CalculationThread(QObject):
 
             if pre_cov is not None:
                 for t in range(T):
+                    self._raise_if_cancelled()
                     frame = aim_data[t, :, :]
                     smoothed_frame = LifetimeCalculator.apply_custom_kernel(frame, kernel_type=pre_cov,half_size=pre_size)
                     aim_data[t, :, :] = smoothed_frame
@@ -722,8 +758,10 @@ class CalculationThread(QObject):
                                                      data_processed=heat_transfer_cov,
                                                      out_processed={'heat_transfer_map': heat_transfer_cov,
                                                                     'r_squared_map':r_squared_map}))
+        except TaskCancelled:
+            self.processing_cancelled_signal.emit()
         except Exception as e:
-            self.update_status.emit(f'传热计算出错:{e}', 'error')
+            self._report_failure("传热计算失败", "传热计算", e, data)
         finally:
             self._is_calculating = False
             self.cal_running_status.emit(False)
@@ -765,6 +803,7 @@ class CalculationThread(QObject):
             loading_bar_value = 0  # 进度条
             total_l = height * width
             for i in range(height):
+                self._raise_if_cancelled()
                 if self._is_calculating:  # 线程关闭控制（目前仅针对长时计算）
                     for j in range(width):
                         time_series = aim_data[:, i, j]
@@ -880,9 +919,9 @@ class CalculationThread(QObject):
             # 由于拟合非常耗时，且这里没法像STFT那样精确数像素(因为在C里循环)，
             # 我们可以做一个简单的等待动画
             while not result_async.ready():
-                if not self._is_calculating:  # 支持中途取消
+                if self.cancellation_token.is_cancelled or not self._is_calculating:
                     pool.terminate()
-                    return None
+                    raise TaskCancelled("寿命计算已取消")
                 QThread.msleep(100)
                 # 可以在这里发信号让进度条滚来滚去
 
@@ -899,7 +938,11 @@ class CalculationThread(QObject):
         finally:
             self.calculating_progress_signal.emit(100, 100)
             if pool:
-                pool.close()
+                try:
+                    pool.close()
+                except ValueError:
+                    # terminate() already moved the pool out of the running state.
+                    pass
                 pool.join()
             if shm_in:
                 shm_in.close()

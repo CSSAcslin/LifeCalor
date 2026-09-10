@@ -524,3 +524,26 @@ axes 的读取优先级：
 5. 计算器、缓存恢复、显示和导出没有行为回归。
 
 阶段 4-6 属于后续架构完善，不应阻塞前三项新需求交付，但应沿用同一数据 descriptor、ErrorBroker 和 TaskCoordinator 契约。
+
+## 16. 阶段 4-6 实施状态（2026-09-10）
+
+### 已完成
+
+- 阶段 4：`TaskCoordinator/TaskRegistry` 已成为主流程唯一任务状态来源；寿命计算、EM、STFT/CWT、傅里叶、ROI、导入、导出、缓存和计算器均采用非阻塞取消；新增可隐藏的逐任务面板。
+- 阶段 4：长循环检查取消标志，多进程 STFT/寿命计算在取消后可靠 join，并清理共享内存；错误按明确任务类别绑定 task ID。
+- 阶段 5：新增 `ProcessingController` 和 `ResultRouter`，移除 MainWindow 中旧 TaskState 编排、大型结果 match、旧缓存对话框和无调用配置空壳。
+- 阶段 6：AVI、SIF、NPY、TIFF/OME-TIFF、HDF5 接入 ImporterRegistry；支持彩色时序 TIFF、OME 物理 metadata、HDF5 数据集读取前选择和高维数据显式分类。
+- 阶段 6：缓存管理增加可设置的全局导入内存预算；预检按 dtype、当前驻留数组和格式转换瞬时副本估算。
+- 阶段 6：新增固定 small/medium/large 数据路径 benchmark，记录 NPY 导入、缓存写入/恢复、首帧/换帧渲染、STFT/CWT 样本和 TIFF 导出。
+- DPI：高 DPI 属性在 QApplication 创建前设置，应用与 QDialog 使用稳定点字号，避免分辨率或缩放改变后对话框按钮/提示文字异常缩小。
+
+### 自动验证
+
+- 完整 unittest 回归集通过。
+- `py_compile`、`git diff --check` 和 small benchmark 通过。
+
+### 仍需真实环境验收
+
+- Windows 打包 EXE 在 100%、125%、150% 缩放以及切换屏幕分辨率后的对话框字体。
+- 真实 AVI/SIF、OME-TIFF、彩色时序 TIFF、HDF5 4D 数据导入和取消。
+- 大数据并行操作时的内存预算提示、任务面板独立进度与多进程取消后的系统资源回收。

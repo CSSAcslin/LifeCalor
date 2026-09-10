@@ -53,7 +53,7 @@ class DisplaySource:
         return self.array.shape[1:]
 
     def get_frame(self, index: int = 0) -> np.ndarray:
-        if self.is_color or self.array.ndim <= 2:
+        if "T" not in self.axes and (self.is_color or self.array.ndim <= 2):
             if index not in (0, -1):
                 raise IndexError(f"frame index {index} out of range for single-frame source")
             return self.array
@@ -61,6 +61,8 @@ class DisplaySource:
             index += self.frame_count
         if index < 0 or index >= self.frame_count:
             raise IndexError(f"frame index {index} out of range for {self.frame_count} frames")
+        if "T" in self.axes:
+            return np.take(self.array, index, axis=self.axes.index("T"))
         return self.array[index]
 
 

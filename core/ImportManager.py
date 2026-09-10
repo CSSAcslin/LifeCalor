@@ -16,6 +16,8 @@ from typing import List, Union, Optional, Callable
 from DataManager import *
 from importing import default_importer_registry
 from tasks.model import CancellationToken, TaskCancelled
+from memory import MemoryBudget, array_nbytes
+from performance import PerformanceRecorder
 
 from PyQt5.QtCore import QObject
 
@@ -38,6 +40,9 @@ class ImportManager(QObject):
             'npy': self.load_npy,
             'tiff_file': self.load_tiff_file,
             'auto_file': self.load_auto_file,
+            'avi_file': self.load_registered_avi,
+            'sif_file': self.load_registered_sif,
+            'hdf5_file': self.load_hdf5_file,
         }
         self.importer_registry = default_importer_registry()
         self.abortion = False
@@ -58,11 +63,22 @@ class ImportManager(QObject):
         self.cancellation_token.raise_if_cancelled()
 
     def _load_registered_file(self, format_id, filepath, **options):
-        payload = self.importer_registry.read(
-            format_id, filepath, options,
-            progress=lambda current, total, _message: self.processing_progress_signal.emit(current, total),
-            token=self.cancellation_token,
+        probe = self.importer_registry.probe(format_id, filepath, options)
+        expected = array_nbytes(probe.shape, probe.dtype)
+        if probe.color_mode in {"rgb", "color_stack", "palette"}:
+            expected *= 3
+        elif probe.format_id == "avi":
+            # OpenCV frame collection and final np.stack coexist briefly.
+            expected *= 2
+        MemoryBudget.from_megabytes(options.get("memory_budget_mb", 4096)).ensure(
+            expected, options.get("resident_bytes", 0), operation="数据导入"
         )
+        with PerformanceRecorder(f"import:{probe.format_id}", output_bytes=expected):
+            payload = self.importer_registry.read(
+                format_id, filepath, options,
+                progress=lambda current, total, _message: self.processing_progress_signal.emit(current, total),
+                token=self.cancellation_token,
+            )
         self._raise_if_cancelled()
         warning = payload.parameters.get("import_warning")
         if warning:
@@ -87,6 +103,14 @@ class ImportManager(QObject):
     def load_auto_file(self, filepath, **options):
         return self._load_registered_file("auto", filepath, **options)
 
+    def load_registered_avi(self, filepath, **options):
+        return self._load_registered_file("avi", filepath, **options)
+
+    def load_registered_sif(self, filepath, **options):
+        return self._load_registered_file("sif", filepath, **options)
+
+    def load_hdf5_file(self, filepath, **options):
+        return self._load_registered_file("hdf5", filepath, **options)
     @pyqtSlot(str,str,dict)
     def import_dispatch(self,import_type:str, filepath:str, kwargs_dict: Dict[str, Any]):
 

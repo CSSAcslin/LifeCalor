@@ -379,6 +379,7 @@ QDialog {
     background-color: white;
     border: 2px solid #C8E6C9;
     border-radius: 6px;
+    font-size: 10pt;
 }
 
 QDialog QLabel {
@@ -389,6 +390,10 @@ QDialog QLabel {
 QDialog QPushButton {
     min-width: 80px;
     margin: 0 4px;
+}
+
+QMessageBox, QToolTip {
+    font-size: 10pt;
 }
 
 /* ========== QTabWidget 样式 ========== */
