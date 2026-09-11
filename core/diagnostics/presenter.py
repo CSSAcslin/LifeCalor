@@ -66,12 +66,16 @@ class ErrorPresenter(QObject):
             )
         elif button is log_button:
             target = parent
+            log_file = None
             while target is not None:
                 log_file = getattr(target, "log_file", None)
                 if log_file:
-                    QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(log_file)))
                     break
                 target = target.parent() if callable(getattr(target, "parent", None)) else None
+            if not log_file:
+                log_file = error.context.get("log_file")
+            if log_file:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(str(log_file))))
 
     def _finished(self, _result):
         active = self._active

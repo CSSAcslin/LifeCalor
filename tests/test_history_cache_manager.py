@@ -1,5 +1,7 @@
 import json
+import os
 from collections import deque
+from datetime import datetime
 import sys
 import tempfile
 import types
@@ -8,12 +10,18 @@ from pathlib import Path
 
 import numpy as np
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 ROOT = Path(__file__).resolve().parents[1]
 CORE = ROOT / "core"
 if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))
 
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QApplication
+
 from ArrayCache import ArrayCacheConfig, ArrayRef, ArrayStore
+from history.dialog import HistoryCacheManagerDialog, format_timestamp
 from history.manifest import (
     array_ref_to_dict,
     array_refs_for_manifest,
@@ -22,6 +30,51 @@ from history.manifest import (
     cache_status_for_history_item,
     restore_history_item,
 )
+
+
+class HistoryTimestampDisplayTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_timestamp_is_displayed_as_local_date_time(self):
+        timestamp = 1723456789.125
+        self.assertEqual(
+            format_timestamp(timestamp),
+            datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+    def test_invalid_timestamp_remains_readable(self):
+        self.assertEqual(format_timestamp("legacy-value"), "legacy-value")
+        self.assertEqual(format_timestamp(None), "")
+
+    def test_history_trees_show_date_time_but_keep_raw_identity(self):
+        timestamp = 1723456789.125
+        expected = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+        dialog = HistoryCacheManagerDialog(
+            params={},
+            current_items=[{
+                "kind": "Data",
+                "name": "raw",
+                "timestamp": timestamp,
+            }],
+            manifest_items=[{
+                "id": "Data:1",
+                "kind": "Data",
+                "name": "cached",
+                "saved_at": timestamp,
+                "file_status": {"ok": True},
+            }],
+        )
+
+        current = dialog.current_tree.topLevelItem(0)
+        manifest = dialog.manifest_tree.topLevelItem(0)
+        self.assertEqual(dialog.current_tree.headerItem().text(7), "时间")
+        self.assertEqual(current.text(7), expected)
+        self.assertEqual(current.data(0, Qt.UserRole), ("Data", timestamp))
+        self.assertEqual(manifest.text(7), expected)
+        self.assertEqual(manifest.data(0, Qt.UserRole), "Data:1")
+        dialog.close()
 
 
 class HistoryCacheManagerTests(unittest.TestCase):

@@ -39,7 +39,9 @@ class ImageDisplayWindow(QMainWindow):
     def __init__(self, params,parent=None):
         super().__init__(parent)
         self.display_canvas = []
-        self.cursor_id = 0
+        self.cursor_id = -1
+        self._retiring_canvases = {}
+        self._retiring_layout_keys = {}
         self.current_tool = None
         self.anchor_active = False
         self.actions_all = {}
@@ -56,8 +58,8 @@ class ImageDisplayWindow(QMainWindow):
         Canvas_bar.addAction(add_canvas)
 
         del_canvas = QAction(QIcon(":icons/icon_del.svg"),'Del', self)
-        del_canvas.setStatusTip("Delete the latest canvas")
-        del_canvas.triggered.connect(self.del_canvas)
+        del_canvas.setStatusTip("Delete the current canvas")
+        del_canvas.triggered.connect(self.delete_current_canvas)
         Canvas_bar.addAction(del_canvas)
 
         cursor = QAction(QIcon(":icons/icon_cursor.svg"),'Cursor', self)
@@ -280,78 +282,200 @@ class ImageDisplayWindow(QMainWindow):
         self.dialog.raise_()
         self.dialog.activateWindow()
 
-    @pyqtSlot(int)
-    def set_cursor_id(self,cursor_id):
-        self.cursor_id = cursor_id
-        if not self.display_canvas:
-            logging.warning("请先创建图像画板")
-            return
-        # if self.current_tool is not None:
-        #     self.display_canvas[self.cursor_id].set_drawing_tool(self.current_tool)
-        if self.anchor_active:
-            self.display_canvas[self.cursor_id].set_anchor_mode(True)
+    def canvas_by_id(self, canvas_id):
+        for canvas in self.display_canvas:
+            if canvas.id == canvas_id:
+                return canvas
+        return None
 
-    """画布控制"""
-    def add_canvas(self,data):
-        """新增图像显示画布"""
+    def current_canvas(self):
+        return self.canvas_by_id(self.cursor_id)
+
+    def _allocate_layout_key(self):
+        used = {canvas.layout_key for canvas in self.display_canvas}
+        for slot in range(4):
+            key = f"canvas_slot_{slot}"
+            if key not in used:
+                return key
+        return None
+
+    def _set_focus_visual(self, focused_canvas):
+        for canvas in self.display_canvas:
+            canvas.set_focus_state(canvas is focused_canvas)
+
+    def handle_canvas_hidden(self, hidden_canvas):
+        if hidden_canvas._is_closing or self.current_canvas() is not hidden_canvas:
+            return
+        visible = [
+            canvas
+            for canvas in self.display_canvas
+            if canvas is not hidden_canvas and canvas.isVisible() and not canvas._is_closing
+        ]
+        hidden_canvas.set_focus_state(False)
+        if visible:
+            self.set_cursor_id(visible[0].id)
+        else:
+            self.cursor_id = -1
+            if self.parent is not None:
+                self.parent.focus_canvas = None
+
+    @pyqtSlot(int)
+    def set_cursor_id(self, cursor_id):
+        canvas = self.canvas_by_id(cursor_id)
+        if canvas is None:
+            if self.display_canvas:
+                logging.warning("目标画布不存在: %s", cursor_id)
+            return False
+        self.cursor_id = canvas.id
+        if self.parent is not None:
+            self.parent.focus_canvas = canvas.id
+        self._set_focus_visual(canvas)
+        if self.anchor_active:
+            canvas.set_anchor_mode(True)
+        return True
+
+    def _create_canvas(self, data, canvas_id, layout_key):
+        data.canvas_num = canvas_id
+        canvas = SubImageDisplayWidget(
+            name=f"{canvas_id}-{data.source_name}",
+            canvas_id=canvas_id,
+            layout_key=layout_key,
+            data=data,
+            args_dict=self.tool_parameters,
+            parent=self,
+        )
+        canvas.render_status_signal.connect(self.render_status_signal.emit)
+        return canvas
+
+    def _sync_canvas_identities(self):
+        for canvas_id, canvas in enumerate(self.display_canvas):
+            canvas.id = canvas_id
+            canvas.data.canvas_num = canvas_id
+            canvas.setWindowTitle(f"{canvas_id}-{canvas.data.source_name}")
+
+    def _notify_canvas_change(self):
+        if self.parent is not None:
+            callback = getattr(self.parent, "canvas_signal_connect", None)
+            if callable(callback):
+                callback()
+
+    def add_canvas(self, data):
+        """Add a canvas with a stable layout slot and a compatible contiguous ID."""
         if len(self.display_canvas) >= 4:
             logging.warning("已达到最大显示区域数量 (4)")
             return False
+        layout_key = self._allocate_layout_key()
         canvas_id = len(self.display_canvas)
-        self.cursor_id = canvas_id
-        # self.display_data.append(data)
-        data.canvas_num = canvas_id
-        new_canvas = SubImageDisplayWidget(name=f'{canvas_id}-{data.source_name}',canvas_id=canvas_id,data=data,args_dict=self.tool_parameters,parent=self)
-        new_canvas.render_status_signal.connect(self.render_status_signal.emit)
+        new_canvas = self._create_canvas(data, canvas_id, layout_key)
         self.display_canvas.append(new_canvas)
-        self.add_dock(self.display_canvas[-1])
-        # self.addDockWidget(Qt.LeftDockWidgetArea, self.display_canvas[-1])
+        self.add_dock(new_canvas)
+        self.set_cursor_id(canvas_id)
+        return new_canvas
+
+    def _finish_canvas_retirement(self, canvas):
+        self._retiring_canvases.pop(id(canvas), None)
+        layout_key = canvas.layout_key
+        remaining = self._retiring_layout_keys.get(layout_key, 0) - 1
+        if remaining > 0:
+            self._retiring_layout_keys[layout_key] = remaining
+        else:
+            self._retiring_layout_keys.pop(layout_key, None)
+        canvas.deleteLater()
+
+    def _retire_canvas(self, canvas):
+        key = id(canvas)
+        if key in self._retiring_canvases:
+            return
+        self._retiring_canvases[key] = canvas
+        self._retiring_layout_keys[canvas.layout_key] = (
+            self._retiring_layout_keys.get(canvas.layout_key, 0) + 1
+        )
+        canvas._is_closing = True
+        canvas.setObjectName(f"retiring_{canvas.layout_key}_{id(canvas)}")
+        canvas.hide()
+        self.removeDockWidget(canvas)
+        canvas.prepare_for_removal(
+            lambda target=canvas: self._finish_canvas_retirement(target)
+        )
 
     def _remove_single_canvas(self, canvas_id):
-        """删除单个画布"""
-        # 从布局中移除并删除DockWidget
-        for dock in self.findChildren(QDockWidget):
-            if hasattr(dock, 'id') and dock.id == canvas_id:
-                if hasattr(dock, 'prepare_for_removal'):
-                    dock.prepare_for_removal()
-                self.removeDockWidget(dock)
-                dock.deleteLater()
-                break
+        canvas = self.canvas_by_id(canvas_id)
+        if canvas is None:
+            return False
+        previous_focus = self.current_canvas()
+        removed_index = self.display_canvas.index(canvas)
+        self.display_canvas.remove(canvas)
+        self._retire_canvas(canvas)
+        self._sync_canvas_identities()
 
-        # 从display_canvas列表中移除
-        for i, canvas in enumerate(self.display_canvas):
-            if canvas.id == canvas_id:
-                del self.display_canvas[i]
-                break
-
+        if self.display_canvas:
+            if previous_focus is canvas or previous_focus not in self.display_canvas:
+                previous_focus = self.display_canvas[min(removed_index, len(self.display_canvas) - 1)]
+            self.set_cursor_id(previous_focus.id)
+        else:
+            self.cursor_id = -1
+            if self.parent is not None:
+                self.parent.focus_canvas = None
         return True
 
-    def del_canvas(self,canvas_id = False):
-        """删除画布
-             None - 删除最后一个画布
-              int - 删除指定ID的画布
-               -1 - 删除所有画布
-        """
-        if not self.display_canvas:
+    def delete_current_canvas(self):
+        canvas = self.current_canvas()
+        if canvas is None:
+            logging.warning("当前没有可删除的画布")
             return False
-        # 删除最后添加的画布
-        if canvas_id is False: # 不能改为not 否则0也会被判定
-            canvas_id = self.display_canvas[-1].id
-        # 删除所有画布
-        elif canvas_id == -1: # 全部清除
-            all_ids = [c.id for c in self.display_canvas]
-            for cid in all_ids:
-                self._remove_single_canvas(cid)
-            self.parent.canvas_signal_connect()
+        return self.del_canvas(canvas.id)
+
+    def del_canvas(self, canvas_id=False):
+        """Delete the current/specified canvas; -1 deletes all active canvases."""
+        if not self.display_canvas:
+            self.cursor_id = -1
+            if self.parent is not None:
+                self.parent.focus_canvas = None
+            return False
+        if canvas_id is False:
+            canvas_id = self.cursor_id if self.current_canvas() is not None else self.display_canvas[-1].id
+        if canvas_id == -1:
+            for canvas in list(self.display_canvas):
+                self._retire_canvas(canvas)
+            self.display_canvas.clear()
+            self.cursor_id = -1
+            if self.parent is not None:
+                self.parent.focus_canvas = None
+            self._notify_canvas_change()
             return True
 
-        # 删除单个canvas_id画布
-        self._remove_single_canvas(canvas_id)
-        for i, canvas in enumerate(self.display_canvas):
-            if canvas.id > canvas_id:
-                canvas.id -= 1
-        self.parent.canvas_signal_connect()
-        return True
+        removed = self._remove_single_canvas(canvas_id)
+        if removed:
+            self._notify_canvas_change()
+        return removed
+
+    def replace_canvas(self, canvas_id, data):
+        """Replace one canvas in place while its previous renderer retires asynchronously."""
+        old_canvas = self.canvas_by_id(canvas_id)
+        if old_canvas is None:
+            return False
+        layout_key = old_canvas.layout_key
+        if self._retiring_layout_keys.get(layout_key, 0):
+            logging.warning("画布 %s 的上一渲染任务仍在释放，请稍后再覆盖", canvas_id)
+            return False
+
+        index = self.display_canvas.index(old_canvas)
+        layout_state = self.saveState()
+        dock_area = self.dockWidgetArea(old_canvas)
+        new_canvas = self._create_canvas(data, canvas_id, layout_key)
+        old_canvas.setObjectName(f"retiring_{layout_key}_{id(old_canvas)}")
+        self.display_canvas[index] = new_canvas
+
+        self.removeDockWidget(old_canvas)
+        area = dock_area if dock_area != Qt.NoDockWidgetArea else Qt.LeftDockWidgetArea
+        self.addDockWidget(area, new_canvas)
+        if not self.restoreState(layout_state):
+            logging.warning("画布 %s 的原布局恢复失败，已放回原停靠区域", canvas_id)
+        self._retire_canvas(old_canvas)
+        self._sync_canvas_identities()
+        self.set_cursor_id(new_canvas.id)
+        self._notify_canvas_change()
+        return new_canvas
 
     def add_dock(self, dock):
         """根据区域数量更新布局"""
@@ -401,15 +525,15 @@ class ImageDisplayWindow(QMainWindow):
     @pyqtSlot(float,int)
     def on_canvas_sync_progress(self, ratio, source_id):
         """将滑动进度同步给其他开启了同步的画布"""
-        for canvas_id, canvas in enumerate(self.display_canvas):
-            if canvas_id != source_id:  # 不要同步给发送者自己
+        for canvas in self.display_canvas:
+            if canvas.id != source_id:  # 不要同步给发送者自己
                 canvas.set_sync_progress(ratio)
 
     @pyqtSlot(str, int)
     def on_canvas_sync_playback(self, action, source_id):
         """将播放控制同步给其他开启了同步的画布"""
-        for canvas_id, canvas in enumerate(self.display_canvas):
-            if canvas_id != source_id:
+        for canvas in self.display_canvas:
+            if canvas.id != source_id:
                 canvas.execute_sync_playback(action)
 
     """工具响应"""
@@ -430,22 +554,23 @@ class ImageDisplayWindow(QMainWindow):
             self.anchor_active = False
 
     def cursor(self):
-        if not self.display_canvas:
-            self.display_canvas[self.cursor_id].set_drawing_tool(None)
-            self.anchor_active = False
-                # 清除所有画板的十字标
-            for canvas in self.display_canvas:
-                canvas.set_anchor_mode(self.anchor_active)
+        self.anchor_active = False
+        for canvas in self.display_canvas:
+            canvas.set_drawing_tool(None)
+            canvas.set_anchor_mode(False)
         for action in self.actions_all.values():
             action.setChecked(False)
 
-    def get_draw_roi(self,canvas_id = None):
-        """获取绘制的roi"""
+    def get_draw_roi(self, canvas_id=None):
+        """获取绘制的 ROI。"""
         if canvas_id is None:
             canvas_id = self.cursor_id
-        draw_layer = self.display_canvas[canvas_id].draw_roi
-        bool_mask = draw_layer >0
-
+        canvas = self.canvas_by_id(canvas_id)
+        if canvas is None:
+            logging.warning("当前没有可用画布")
+            return None, None
+        draw_layer = canvas.draw_roi
+        bool_mask = draw_layer > 0
         return draw_layer.copy(), bool_mask
 
     def get_all_canvas_info(self):
@@ -615,10 +740,21 @@ class SubImageDisplayWidget(QDockWidget):
     frame_render_requested = pyqtSignal(int, object, int, object)
     render_status_signal = pyqtSignal(str, str)
 
-    def __init__(self, parent=None,canvas_id = None,name = None, data :ImagingData = None, args_dict :dict = None):
+    def __init__(
+        self,
+        parent=None,
+        canvas_id=None,
+        name=None,
+        data: ImagingData = None,
+        args_dict: dict = None,
+        layout_key=None,
+    ):
         super().__init__(name, parent)
         self.parent_window = parent
         self.id = canvas_id
+        self.layout_key = layout_key or f"canvas_slot_{canvas_id}"
+        self.setObjectName(self.layout_key)
+        self.setProperty("canvasFocused", False)
         self.data = data
         self.current_image = None
         self.mouse_pos = None
@@ -648,6 +784,8 @@ class SubImageDisplayWidget(QDockWidget):
         self.render_status = 'idle'
         self._initial_display_scheduled = False
         self._is_closing = False
+        self._close_requested = False
+        self._removal_prepared = False
         self.data_details_dialog = None
         self._start_frame_render_worker()
         self.colormap = None
@@ -946,7 +1084,10 @@ class SubImageDisplayWidget(QDockWidget):
 
     def mouse_press_event(self, event):
         """鼠标点击事件处理"""
-        if not hasattr(self, 'current_image'):
+        if event.button() in (Qt.LeftButton, Qt.RightButton):
+            self.current_canvas_signal.emit(self.id)
+        if self.current_image is None:
+            QGraphicsView.mousePressEvent(self.graphics_view, event)
             return
         if self.drawing_tool == 'V-rect' and event.button() == Qt.LeftButton:
             item = self.graphics_view.itemAt(event.pos())
@@ -1336,14 +1477,45 @@ class SubImageDisplayWidget(QDockWidget):
     def _start_frame_render_worker(self):
         return self.render_controller.start_worker()
 
-    def stop_frame_render_worker(self, wait_ms=5000):
-        return self.render_controller.stop_worker(wait_ms)
-
-    def prepare_for_removal(self):
-        if self._is_closing:
+    def set_focus_state(self, focused):
+        focused = bool(focused)
+        if bool(self.property("canvasFocused")) == focused:
             return
+        self.setProperty("canvasFocused", focused)
+        style = self.style()
+        style.unpolish(self)
+        style.polish(self)
+        self.update()
+
+    def stop_frame_render_worker(self, wait_ms=None, on_finished=None):
+        return self.render_controller.stop_worker(wait_ms, on_finished=on_finished)
+
+    def _disconnect_interaction_signals(self):
+        for signal in (
+            self.mouse_position_signal,
+            self.mouse_clicked_signal,
+            self.current_canvas_signal,
+            self.draw_result_signal,
+            self.get_fast_selection,
+            self.get_value_distribution,
+            self.sync_progress_signal,
+            self.sync_playback_signal,
+            self.render_status_signal,
+        ):
+            self._safe_disconnect(signal)
+
+    def prepare_for_removal(self, on_finished=None):
+        """Stop interaction immediately and retire rendering without blocking the GUI."""
         self._is_closing = True
-        self.stop_frame_render_worker()
+        if not self._removal_prepared:
+            self._removal_prepared = True
+            self.play_timer.stop()
+            self.is_playing = False
+            if self.data_details_dialog is not None:
+                self.data_details_dialog.close()
+                self.data_details_dialog = None
+            self._disconnect_interaction_signals()
+        return self.stop_frame_render_worker(on_finished=on_finished)
 
     def render_params_for_display(self):
         if self.use_colormap:
@@ -1359,14 +1531,29 @@ class SubImageDisplayWidget(QDockWidget):
     def request_frame_render(self, idx):
         return self.render_controller.request_frame_render(idx)
 
+    def mousePressEvent(self, event):
+        if event.button() in (Qt.LeftButton, Qt.RightButton) and not self._is_closing:
+            self.current_canvas_signal.emit(self.id)
+        super().mousePressEvent(event)
+
+    def _request_titlebar_delete(self):
+        if self._is_closing:
+            return
+        for canvas in self.parent_window.display_canvas:
+            if canvas is self:
+                self.parent_window.del_canvas(canvas.id)
+                return
+
     def closeEvent(self, event):
-        """重写关闭事件"""
-        if self.data_details_dialog is not None:
-            self.data_details_dialog.close()
-        if not self._is_closing:
-            self.prepare_for_removal()
-            self.parent_window.del_canvas(self.id)
-        super().closeEvent(event)
+        """Treat the title-bar close button as deletion, not an invisible occupied slot."""
+        if self._is_closing:
+            event.accept()
+            return
+        event.ignore()
+        if self._close_requested:
+            return
+        self._close_requested = True
+        QTimer.singleShot(0, self._request_titlebar_delete)
 
     """下面是播放和图像更新的设置"""
     def start_auto_play(self, sync_call=False):
@@ -2429,5 +2616,3 @@ class AnchorSelectDialog(QDialog):
         self.parent.params_update_signal.emit(self.param)
         self.parent.tool_parameters = self.param
         self.close()
-
-

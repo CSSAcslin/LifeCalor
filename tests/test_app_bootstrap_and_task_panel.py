@@ -31,10 +31,19 @@ class ApplicationBootstrapTests(unittest.TestCase):
         self.assertGreaterEqual(button.font().pointSizeF(), 10.0)
 
     def test_high_dpi_configuration_precedes_qapplication_creation(self):
+        source = (CORE / "launcher.py").read_text(encoding="utf-8")
+        self.assertLess(source.index("configure_high_dpi()"), source.index("QApplication(sys.argv)"))
+        self.assertLess(source.index("QApplication(sys.argv)"), source.index("configure_application(app)"))
+
+    def test_webengine_context_sharing_is_configured_before_application(self):
+        bootstrap = (CORE / "app_bootstrap.py").read_text(encoding="utf-8")
+        launcher = (CORE / "launcher.py").read_text(encoding="utf-8")
+        self.assertIn("Qt.AA_ShareOpenGLContexts", bootstrap)
+        self.assertLess(launcher.index("configure_high_dpi()"), launcher.index("QApplication(sys.argv)"))
+
+    def test_legacy_mainwindow_entry_redirects_before_heavy_imports(self):
         source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
-        entry = source[source.index('if __name__ == "__main__":'):]
-        self.assertLess(entry.index("configure_high_dpi()"), entry.index("app = QApplication([])"))
-        self.assertLess(entry.index("app = QApplication([])"), entry.index("configure_application(app)"))
+        self.assertLess(source.index("from launcher import main"), source.index("import resources_rc"))
 
 
 class TaskPanelTests(unittest.TestCase):
@@ -70,6 +79,14 @@ class TaskPanelTests(unittest.TestCase):
         self.assertTrue(task.token.is_cancelled)
         self.assertEqual(callback_calls, [True])
         panel.close()
+
+    def test_mainwindow_places_tasks_in_the_console_activity_tabs(self):
+        source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
+
+        self.assertIn('self._add_activity_panel(self.console_dock, "控制台")', source)
+        self.assertIn('self._add_activity_panel(self.task_panel, "任务")', source)
+        self.assertIn("result_splitter.addWidget(self.activity_tabs)", source)
+        self.assertNotIn("self.addDockWidget(Qt.BottomDockWidgetArea, self.task_panel)", source)
 
 
 if __name__ == "__main__":

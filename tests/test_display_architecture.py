@@ -96,12 +96,14 @@ class DisplayArchitectureTests(unittest.TestCase):
         self.assertIn("render_status_signal.connect(self.handle_render_status)", main_source)
         self.assertIn("def handle_render_status", main_source)
 
-    def test_canvas_removal_stops_render_worker_before_delete_later(self):
+    def test_canvas_removal_retires_render_worker_before_deferred_delete(self):
         source = (CORE / "ImageDisplayWindow.py").read_text(encoding="utf-8")
-        remove_block = source[source.index("def _remove_single_canvas"):source.index("def del_canvas")]
-        self.assertIn("prepare_for_removal", remove_block)
-        self.assertLess(remove_block.index("prepare_for_removal"), remove_block.index("deleteLater"))
-
+        render_source = (CORE / "display" / "render_controller.py").read_text(encoding="utf-8")
+        retire_block = source[source.index("def _retire_canvas"):source.index("def _remove_single_canvas")]
+        self.assertIn("prepare_for_removal", retire_block)
+        self.assertIn("_retiring_canvases", retire_block)
+        self.assertNotIn(".wait(", render_source)
+        self.assertIn("thread.finished.connect(self._finish_retirement)", render_source)
     def test_frame_render_requests_are_coalesced_to_latest_frame(self):
         source = (CORE / "display" / "render_controller.py").read_text(encoding="utf-8")
         self.assertIn("render_in_flight", source)

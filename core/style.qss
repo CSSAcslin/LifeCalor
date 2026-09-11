@@ -61,6 +61,14 @@ QDockWidget {
     border-radius: 4px;
 }
 
+QDockWidget[canvasFocused="true"] {
+    border: 2px solid #1B7F3A;
+}
+
+QDockWidget[canvasFocused="true"]::title {
+    background-color: #9FD8A8;
+}
+
 /* 标题栏样式 */
 QDockWidget::title {
     background-color: #C8E6C9;

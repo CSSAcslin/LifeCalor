@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QUrl, pyqtSignal
@@ -24,6 +25,17 @@ from PyQt5.QtWidgets import (
 )
 
 SORT_ROLE = Qt.UserRole + 1
+
+
+def format_timestamp(value) -> str:
+    """Format a Unix timestamp for display while callers retain the numeric identity."""
+    if value in (None, ""):
+        return ""
+    try:
+        timestamp = float(value)
+        return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+    except (OverflowError, OSError, TypeError, ValueError):
+        return str(value)
 
 
 def format_bytes(num_bytes: int) -> str:
@@ -88,7 +100,7 @@ class HistoryCacheManagerDialog(QDialog):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         self.current_tree = QTreeWidget()
-        self.current_tree.setHeaderLabels(["类型", "名称", "形状", "dtype", "缓存", "缓存体积", "内存体积", "时间戳"])
+        self.current_tree.setHeaderLabels(["类型", "名称", "形状", "dtype", "缓存", "缓存体积", "内存体积", "时间"])
         self.current_tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.current_tree.setRootIsDecorated(False)
         self.current_tree.setSortingEnabled(True)
@@ -223,7 +235,7 @@ class HistoryCacheManagerDialog(QDialog):
                 item.get("cache_state", ""),
                 format_bytes(item.get("cached_bytes", 0)),
                 format_bytes(item.get("memory_bytes", 0)),
-                str(item.get("timestamp", "")),
+                format_timestamp(item.get("timestamp")),
             ])
             tree_item.setData(0, Qt.UserRole, (item.get("kind"), item.get("timestamp")))
             for column, value in {5: item.get("cached_bytes", 0), 6: item.get("memory_bytes", 0), 7: float(item.get("timestamp") or 0)}.items():
@@ -250,7 +262,7 @@ class HistoryCacheManagerDialog(QDialog):
                 str(len(arrays)),
                 format_bytes(cache_bytes),
                 "可用" if status.get("ok", True) else "缺失",
-                f"{saved_at:.3f}" if saved_at else "",
+                format_timestamp(saved_at),
             ])
             tree_item.setData(0, Qt.UserRole, item.get("id", ""))
             for column, value in {4: len(arrays), 5: cache_bytes, 6: 0 if status.get("ok", True) else 1, 7: saved_at}.items():

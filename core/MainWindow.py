@@ -1,11 +1,14 @@
-import multiprocessing
+if __name__ == "__main__":
+    from launcher import main as _launch_main
+
+    raise SystemExit(_launch_main())
 from pathlib import Path
 
 import resources_rc # 重要不能删
-from logging.handlers import RotatingFileHandler
 from PyQt5 import sip
-from PyQt5.QtGui import QFontDatabase, QDesktopServices
-from PyQt5.QtWidgets import (QStackedWidget, QStatusBar, QFrame, QSplitter, QDesktopWidget, QSizePolicy
+from PyQt5.QtGui import QDesktopServices
+from PyQt5.QtWidgets import (QStackedWidget, QStatusBar, QFrame, QSplitter, QDesktopWidget, QSizePolicy,
+                             QTabWidget
                              )
 from PyQt5.QtCore import QElapsedTimer, QSettings, QCoreApplication, QUrl, QStandardPaths
 
@@ -36,12 +39,13 @@ from display.canvas_controller import DisplayCanvasController
 from display.hover import format_hover_value
 from diagnostics import AppError, report_warning, show_app_error
 from tasks import TaskCoordinator, TaskStatus
-from app_bootstrap import configure_application, configure_high_dpi
 from processing import ProcessingController, ResultRouter
 from tasks.panel import TaskPanel
 from importing import choose_hdf5_dataset
 from memory import estimate_resident_bytes
 from dataio.classification import DataCategory, describe_source
+from app_metadata import APP_VERSION
+from startup.logging_setup import ensure_file_logging, resolve_log_path, take_startup_messages
 
 
 class MainWindow(QMainWindow):
@@ -77,10 +81,15 @@ class MainWindow(QMainWindow):
     roi_processed_signal = pyqtSignal(object,np.ndarray,float,bool,bool,float)
     cache_progress_signal = pyqtSignal(object, object, str)
 
-    def __init__(self):
+    def __init__(self, startup_reporter=None):
         super().__init__()
+        self._startup_reporter = startup_reporter
+        self._deferred_services_started = False
+        if startup_reporter is not None:
+            startup_reporter.attach_window(self)
+
         # 基本信息初始化
-        self.current_version = "1.0.11"  # 当前程序版本
+        self.current_version = APP_VERSION
         self.repo_owner = "CSSAcslin"  # 程序作者
         self.repo_name = "Carrier-Lifetime-Calculator"  # 程序仓库名
         self.PAT = get_github_auth_header()
@@ -97,10 +106,13 @@ class MainWindow(QMainWindow):
         self.vector_array = None
         self.focus_canvas = None
         self.cache_progress_signal.connect(self.cache_progress_update)
+        self._startup_step("正在读取设置", 1)
         self.init_params()
 
         # 界面加载
+        self._startup_step("正在装配主界面", 2)
         self.init_ui()
+        self._startup_step("正在连接控制器", 3)
         self.task_coordinator = TaskCoordinator(self)
         self.task_coordinator.task_updated.connect(self._on_task_updated)
         self.task_coordinator.task_finished.connect(self._on_task_finished)
@@ -110,41 +122,55 @@ class MainWindow(QMainWindow):
         self.selection_controller = SelectionController(self)
         self.export_controller = ExportController(self)
         self.history_controller = HistoryController(self)
-        if self._cleanup_cache_on_startup:
-            QTimer.singleShot(0, self.history_controller.cleanup_orphans)
         self.canvas_signal_binder = CanvasSignalBinder(self)
         self.display_canvas_controller = DisplayCanvasController(self)
         self.log_file = self.get_log_path()
         self.task_panel = TaskPanel(self.task_coordinator, self)
-        self.addDockWidget(Qt.BottomDockWidgetArea, self.task_panel)
-        self.task_panel.hide()
+        self._add_activity_panel(self.task_panel, "任务")
+
+        self._startup_step("正在初始化日志与菜单", 4)
         self.setup_menus()
         self.setup_logging()
         self.help_dialog = None
 
         # 进度条与计时器
         self.elapsed_timer = QElapsedTimer()
-        self.last_time = 0 # 记录运算的时间
-        self.last_progress = 0 # 记录进度
-        self.last_percent = -1 # 记录百分比进度
-        self.cached_remaining = "计算中..." # 记录剩余时长
+        self.last_time = 0  # 记录运算的时间
+        self.last_progress = 0  # 记录进度
+        self.last_percent = -1  # 记录百分比进度
+        self.cached_remaining = "计算中..."  # 记录剩余时长
 
         # 状态控制
         self._is_calculating = False
-        # 信号连接
+        self._startup_step("正在连接界面信号", 5)
         self.signal_connect()
-        # 更新检查
-        self.auto_update_check()
-        # 线程开启（默认不关闭的线程
+
+        self._startup_step("正在启动数据服务", 6)
         self.import_thread_open()
         self.import_thread.start()
         self.data_thread_open()
         self.data_thread.start()
         self.process_thread.start()
+
+        self._startup_step("正在启动计算服务", 7)
         self.cal_thread_open()
         self.EM_thread_open()
         self.log_startup_message()
 
+    def _startup_step(self, text, current):
+        reporter = self._startup_reporter
+        if reporter is not None:
+            reporter.step(text, current)
+
+    def start_deferred_services(self):
+        """Start nonessential work only after the workspace is visible."""
+        if self._deferred_services_started:
+            return
+        self._deferred_services_started = True
+        if self._cleanup_cache_on_startup:
+            QTimer.singleShot(0, self.history_controller.cleanup_orphans)
+        self.auto_update_check()
+        logging.info("主窗口后台服务已启动")
     """参数配置相关功能"""
     def init_params(self):
         """初始化参数库"""
@@ -443,7 +469,12 @@ class MainWindow(QMainWindow):
         plot_splitter.setSizes([1000, 1000])
 
         result_splitter.addWidget(plot_splitter)
-        result_splitter.addWidget(self.console_dock)
+        self.activity_tabs = QTabWidget(self)
+        self.activity_tabs.setObjectName("ActivityTabs")
+        self.activity_tabs.setDocumentMode(True)
+        self.activity_tabs.setTabPosition(QTabWidget.South)
+        self._add_activity_panel(self.console_dock, "控制台")
+        result_splitter.addWidget(self.activity_tabs)
         result_splitter.setSizes([2000, 300])
 
         self.setCentralWidget(main_splitter)
@@ -1023,10 +1054,10 @@ class MainWindow(QMainWindow):
         # 控制台
         view_menu = self.menu.addMenu("控制台")
         toggle_console = view_menu.addAction("显示/隐藏控制台")
-        toggle_console.triggered.connect(lambda: self.console_dock.setVisible(not self.console_dock.isVisible()))
+        toggle_console.triggered.connect(lambda: self._toggle_activity_panel(self.console_dock))
         toggle_tasks = view_menu.addAction("显示/隐藏任务面板")
         toggle_tasks.setToolTip("查看每个后台任务的独立进度、状态、耗时和取消入口")
-        toggle_tasks.triggered.connect(lambda: self.task_panel.setVisible(not self.task_panel.isVisible()))
+        toggle_tasks.triggered.connect(lambda: self._toggle_activity_panel(self.task_panel))
 
         # 编辑菜单
         edit_menu = self.menu.addMenu("编辑")
@@ -1183,48 +1214,46 @@ class MainWindow(QMainWindow):
 
         # self.console_dock.setVisible(False)
 
+    def _add_activity_panel(self, panel, title):
+        """Embed a dock-like panel in the shared console/task tab area."""
+        panel.setFeatures(QDockWidget.NoDockWidgetFeatures)
+        panel.setTitleBarWidget(QWidget(panel))
+        return self.activity_tabs.addTab(panel, title)
+
+    def _toggle_activity_panel(self, panel):
+        """Show, select, or collapse a panel in the shared activity area."""
+        index = self.activity_tabs.indexOf(panel)
+        if index < 0:
+            return
+        if self.activity_tabs.isVisible() and self.activity_tabs.currentIndex() == index:
+            self.activity_tabs.hide()
+            return
+        panel.show()
+        self.activity_tabs.show()
+        self.activity_tabs.setCurrentIndex(index)
+
     def get_log_path(self):
-        """生成配置文件地址"""
-        if hasattr(sys, '_MEIPASS'):  # 检测是否在PyInstaller打包环境中运行
-            # 使用os.environ获取标准路径
-            appdata_local = os.environ.get('LOCALAPPDATA')
-            appdata_local = os.path.join(appdata_local, 'LifeCalor')
-        else:  # 开发环境
-            appdata_local = os.path.dirname(os.path.abspath(__file__))
-
-        os.makedirs(appdata_local, exist_ok=True)
-
-        # 设置日志文件路径
-        return os.path.join(appdata_local, "carrier_lifetime.log")
+        """返回开发环境或打包环境的统一日志路径。"""
+        return str(resolve_log_path())
 
     def setup_logging(self):
-        """配置日志系统"""
-        # 确保日志目录存在
-        log_dir = os.path.dirname(self.log_file)
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-
-        # 设置轮转文件处理器 (每个文件最大5MB，保留3个备份)
-        file_handler = RotatingFileHandler(
-            self.log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8'
-        )
-        file_handler.setFormatter(logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(message)s'
-        ))
-
-        # 设置控制台处理器
-        console_handler = ConsoleHandler(self)
-
-        # 配置根日志记录器
+        """Connect early file logging to the in-app console without duplicates."""
         logger = logging.getLogger()
         logger.setLevel(logging.INFO)
-        logger.handlers.clear()  # 清除现有处理器
-        logger.addHandler(file_handler)
+        ensure_file_logging(self.log_file)
+
+        for handler in list(logger.handlers):
+            if isinstance(handler, ConsoleHandler):
+                logger.removeHandler(handler)
+                handler.close()
+
+        console_handler = ConsoleHandler(self)
         logger.addHandler(console_handler)
+        for message in take_startup_messages():
+            self.log_to_console(message)
 
         sys.stdout = StreamLogger(logging.INFO)
         sys.stderr = StreamLogger(logging.ERROR)
-
     def log_to_console(self, message):
         """将消息输出到控制台"""
         self.console_widget.console_output.append(message)
@@ -2165,7 +2194,11 @@ class MainWindow(QMainWindow):
         size = self.region_size_input.value()
         model_type = 'single' if self.model_combo.currentText() == "单指数衰减" else 'double'
         mask = PublicEasyMethod.quick_mask(aim_data.framesize, center = center, shape = shape,size = size)
-        self.image_display.display_canvas[self.focus_canvas].add_fast_selection(*center,mask)
+        focus_canvas = self.image_display.current_canvas()
+        if focus_canvas is None:
+            report_warning(self, "图像错误", "请先显示并选中一个画布")
+            return False
+        focus_canvas.add_fast_selection(*center, mask)
         self.start_reg_cal_signal.emit(aim_data,self.time_step,mask,model_type)
         return None
 
@@ -2690,7 +2723,11 @@ class MainWindow(QMainWindow):
 
     def draw_result(self,draw_type:str,canvas_id:int,result,roi_info = None):
         """canvas绘图结果处理"""
-        timestamp = self.image_display.display_canvas[canvas_id].data.timestamp_inherited
+        canvas = self.image_display.canvas_by_id(canvas_id)
+        if canvas is None:
+            report_warning(self, "图像错误", "目标画布已不存在")
+            return None
+        timestamp = canvas.data.timestamp_inherited
         draw_data = None
         data_type = None
         bool_mask = None
@@ -2750,12 +2787,18 @@ class MainWindow(QMainWindow):
         return None
 
     def fast_roi_result(self):
-        """roi快速选取，仅支持pixel_roi"""
+        """roi快速选取，仅支持 pixel_roi。"""
         canvas_id = self.roi_pick.currentIndex()
+        canvas = self.image_display.canvas_by_id(canvas_id)
+        if canvas is None:
+            report_warning(self, "图像错误", "请先选择一个有效画布")
+            return False
         _, bool_mask = self.image_display.get_draw_roi(canvas_id)
-        if bool_mask is None: # 不再赋给 self.bool_mask
+        if bool_mask is None or not np.any(bool_mask):
             logging.warning("没有有效蒙版")
-        timestamp = self.image_display.display_canvas[canvas_id].data.timestamp_inherited
+            return False
+
+        timestamp = canvas.data.timestamp_inherited
         draw_data = None
         if self.data is not None:
             for data in self.data.history:
@@ -2763,13 +2806,18 @@ class MainWindow(QMainWindow):
                     draw_data = data
                     break
         if self.processed_data is not None and draw_data is None:
-            draw_data = next(data for data in self.processed_data.history if data.timestamp == timestamp)
-            # data_type = draw_data.type_processed
-        self.ensure_task_thread_running("data_thread", "roi_processing")
-        self.roi_processed_signal.emit(draw_data, bool_mask, 1, True,
-                                       False, 0)
-        logging.info(f"像素roi已快速选取，数据名{draw_data.name}")
+            draw_data = next(
+                (data for data in self.processed_data.history if data.timestamp == timestamp),
+                None,
+            )
+        if draw_data is None:
+            report_warning(self, "数据错误", "无法找到该画布对应的源数据")
+            return False
 
+        self.ensure_task_thread_running("data_thread", "roi_processing")
+        self.roi_processed_signal.emit(draw_data, bool_mask, 1, True, False, 0)
+        logging.info("像素 ROI 已快速选取，数据名 %s", draw_data.name)
+        return True
     def data_plot_add(self):
         """选取数据送入结果显示（graphplot驱动）"""
         self.data_plot_selector = DataTreeViewDialog(self)
@@ -2896,34 +2944,3 @@ class StreamLogger(object):
                 extra={"ui_silent": True, "lifecalor_user_reported": True},
             )
         self.linebuf = ""
-
-
-if __name__ == "__main__":
-    multiprocessing.freeze_support()
-    configure_high_dpi()
-    app = QApplication([])
-    configure_application(app)
-    QFontDatabase.addApplicationFont("C:/Windows/Fonts/NotoSansSC-VF.ttf")  # 如：思源黑体、阿里巴巴普惠体
-    QFontDatabase.addApplicationFont("C:/Windows/Fonts/calibril.ttf")  # 如：Roboto、Fira Code
-
-    def read_qss_file(qss_file_name):
-        if hasattr(sys, '_MEIPASS'):
-            # 如果是，基础路径是临时解压目录
-            base_path = sys._MEIPASS
-        else:
-            # 如果不是（开发环境），基础路径是当前脚本所在目录
-            base_path = os.path.dirname(os.path.abspath(__file__))
-
-            # 拼接出QSS文件的完整绝对路径
-        qss_path = os.path.join(base_path, qss_file_name)
-        with open(qss_path, 'r', encoding='UTF-8') as file:
-            return file.read()
-    # 应用全局样式
-    app.setStyle('Fusion')
-    app.setStyleSheet(read_qss_file("style.qss"))
-    # app.setFont(QFont("Noto Sans"))
-    app.setWindowIcon(QIcon(':/LifeCalor.ico'))
-    window = MainWindow()
-    window.setWindowIcon(QIcon(':/LifeCalor.ico'))
-    window.show()
-    app.exec_()
