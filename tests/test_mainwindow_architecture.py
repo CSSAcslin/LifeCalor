@@ -58,6 +58,12 @@ class MainWindowArchitectureTests(unittest.TestCase):
         self.assertIn("cancel_callback=self.mass_data_processor.stop", block)
         self.assertNotIn('ensure_task_thread_running("avi_thread", "em_processing")', block)
 
+    def test_canvas_tool_parameters_are_persisted_immediately(self):
+        self.assertIn("self.image_display.params_update_signal.connect(self.update_tool_params)", self.source)
+        block = self.source[self.source.index("    def update_tool_params"):self.source.index("    def update_param")]
+        self.assertIn('self._save_param_group("tool", self.tool_params)', block)
+        self.assertIn("self.settings.sync()", block)
+
     def test_controller_packages_exist(self):
         expected = [
             "selection/controller.py", "exporting/controller.py", "history/controller.py",

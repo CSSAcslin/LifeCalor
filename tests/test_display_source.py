@@ -1,5 +1,4 @@
 import sys
-import types
 import unittest
 from pathlib import Path
 
@@ -10,32 +9,6 @@ CORE = ROOT / "core"
 if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))
 
-
-def _install_missing_dependency_stubs():
-    optional_modules = [
-        "sif_parser", "cv2", "tifffile", "matplotlib", "matplotlib.cm", "matplotlib.colors",
-        "matplotlib.pyplot", "PIL", "PIL.Image", "scipy", "scipy.ndimage", "scipy.ndimage.interpolation",
-    ]
-    for name in optional_modules:
-        sys.modules.setdefault(name, types.ModuleType(name))
-    colors = sys.modules["matplotlib.colors"]
-    if not hasattr(colors, "LinearSegmentedColormap"):
-        colors.LinearSegmentedColormap = type("LinearSegmentedColormap", (), {})
-    scipy_interp = sys.modules["scipy.ndimage.interpolation"]
-    if not hasattr(scipy_interp, "zoom"):
-        scipy_interp.zoom = lambda data, *args, **kwargs: data
-    qtcore = types.ModuleType("PyQt5.QtCore")
-    qtcore.QObject = object
-    qtcore.QThread = object
-    qtcore.pyqtSignal = lambda *args, **kwargs: None
-    qtcore.pyqtSlot = lambda *args, **kwargs: (lambda func: func)
-    pyqt5 = types.ModuleType("PyQt5")
-    pyqt5.QtCore = qtcore
-    sys.modules.setdefault("PyQt5", pyqt5)
-    sys.modules.setdefault("PyQt5.QtCore", qtcore)
-
-
-_install_missing_dependency_stubs()
 from DataManager import Data, ProcessedData
 from display.source import DisplaySourceFactory
 

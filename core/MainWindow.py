@@ -317,6 +317,12 @@ class MainWindow(QMainWindow):
 
         self.settings.endGroup()
 
+    def update_tool_params(self, params):
+        """Apply and immediately persist canvas tool settings."""
+        self.tool_params.update(params)
+        self._save_param_group("tool", self.tool_params)
+        self.settings.sync()
+
     def update_param(self, group_name, key, value):
         """更新单个参数"""
         if group_name == 'basic':
@@ -1557,7 +1563,7 @@ class MainWindow(QMainWindow):
         # 成像绘制信号
         self.image_display.add_canvas_signal.connect(self.add_new_canvas)
         self.image_display.draw_result_signal.connect(self.draw_result)
-        self.image_display.params_update_signal.connect(lambda params : self.tool_params.update(params))
+        self.image_display.params_update_signal.connect(self.update_tool_params)
         self.image_display.render_status_signal.connect(self.handle_render_status)
         # 时间滑块
         # self.time_slider.valueChanged.connect(self.image_display.update_time_slice)

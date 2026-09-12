@@ -21,8 +21,10 @@ from DataManager import ImagingData, ColorMapManager, PublicEasyMethod
 from display.renderer import FrameRenderParams, FrameRenderer
 from display.service import FrameRenderService
 from display.render_controller import RenderController
+from display.layout_manager import CanvasLayoutManager
 from display.playback_policy import playback_interval_ms
 from display.data_details import CanvasDataDetailsDialog
+from display.hover import format_hover_value
 from ExtraDialog import ROIInfoDialog, ColorMapDialog, DataExportDialog, ParamsResetDialog
 from widget.AdvancedTimeline import AdvancedTimeline
 from diagnostics import report_exception, report_warning
@@ -36,6 +38,34 @@ class ImageDisplayWindow(QMainWindow):
     params_update_signal = pyqtSignal(dict)
     image_export_signal = pyqtSignal(object, str, str, str, bool, dict)
     render_status_signal = pyqtSignal(str, str)
+
+    @staticmethod
+    def _as_bool(value):
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    @staticmethod
+    def _finite_number(value, fallback=None):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        return number if np.isfinite(number) else fallback
+
+    @classmethod
+    def _normalize_colormap_parameters(cls, params):
+        params["use_colormap"] = cls._as_bool(params.get("use_colormap", False))
+        params["auto_boundary_set"] = cls._as_bool(params.get("auto_boundary_set", True))
+        params["colormap"] = params.get("colormap") or "Jet"
+        if params["auto_boundary_set"]:
+            params["min_value"] = None
+            params["max_value"] = None
+        else:
+            params["min_value"] = cls._finite_number(params.get("min_value"))
+            params["max_value"] = cls._finite_number(params.get("max_value"))
+        return params
+
     def __init__(self, params,parent=None):
         super().__init__(parent)
         self.display_canvas = []
@@ -46,12 +76,16 @@ class ImageDisplayWindow(QMainWindow):
         self.anchor_active = False
         self.actions_all = {}
         self.tool_parameters = params
+        self._normalize_colormap_parameters(self.tool_parameters)
         self.parent = parent
 
+        self.layout_manager = CanvasLayoutManager(self)
         self.init_tool_bars()
 
     def init_tool_bars(self):
-        Canvas_bar = QToolBar('Canvas')
+        self.Canvas_bar = QToolBar('Canvas')
+        self.Canvas_bar.setObjectName("CanvasToolbar")
+        Canvas_bar = self.Canvas_bar
         add_canvas = QAction(QIcon(":icons/icon_add.svg"),'Add', self)
         add_canvas.setStatusTip("Add new canvas")
         add_canvas.triggered.connect(lambda: self.add_canvas_signal.emit())
@@ -67,10 +101,43 @@ class ImageDisplayWindow(QMainWindow):
         cursor.triggered.connect(self.cursor)
         Canvas_bar.addAction(cursor)
 
+        Canvas_bar.addSeparator()
+        self.layout_button = QToolButton(self)
+        self.layout_button.setObjectName("CanvasLayoutButton")
+        self.layout_button.setIcon(self.style().standardIcon(QStyle.SP_TitleBarNormalButton))
+        self.layout_button.setToolTip("排列、聚焦或恢复图像画布")
+        self.layout_button.setPopupMode(QToolButton.InstantPopup)
+        self.layout_menu = QMenu(self.layout_button)
+        self.auto_layout_action = self.layout_menu.addAction("自动排列")
+        self.auto_layout_action.setToolTip("根据当前画布数量自动采用单画布、左右、三画布或四象限布局")
+        self.horizontal_layout_action = self.layout_menu.addAction("左右等分")
+        self.horizontal_layout_action.setToolTip("两张画布左右等宽排列")
+        self.vertical_layout_action = self.layout_menu.addAction("上下等分")
+        self.vertical_layout_action.setToolTip("两张画布上下等高排列")
+        self.quad_layout_action = self.layout_menu.addAction("四象限")
+        self.quad_layout_action.setToolTip("四张画布按 2×2 等分排列")
+        self.layout_menu.addSeparator()
+        self.focus_layout_action = self.layout_menu.addAction("聚焦当前画布")
+        self.focus_layout_action.setToolTip("临时隐藏其他画布；不会删除数据或改变画布内容")
+        self.restore_layout_action = self.layout_menu.addAction("恢复聚焦前布局")
+        self.restore_layout_action.setToolTip("恢复聚焦前的停靠、浮动和可见状态")
+        self.reset_layout_action = self.layout_menu.addAction("重置布局")
+        self.reset_layout_action.setToolTip("收回浮动画布并按当前画布数量重新排列")
+        self.auto_layout_action.triggered.connect(lambda: self.layout_manager.arrange("auto"))
+        self.horizontal_layout_action.triggered.connect(lambda: self.layout_manager.arrange("horizontal"))
+        self.vertical_layout_action.triggered.connect(lambda: self.layout_manager.arrange("vertical"))
+        self.quad_layout_action.triggered.connect(lambda: self.layout_manager.arrange("quad"))
+        self.focus_layout_action.triggered.connect(self.layout_manager.focus_current)
+        self.restore_layout_action.triggered.connect(self.layout_manager.restore_focus)
+        self.reset_layout_action.triggered.connect(self.layout_manager.reset_layout)
+        self.layout_menu.aboutToShow.connect(self._update_layout_actions)
+        self.layout_button.setMenu(self.layout_menu)
+        Canvas_bar.addWidget(self.layout_button)
         Canvas_bar.setIconSize(QSize(36, 36))
         self.addToolBar(Canvas_bar)
 
         self.Drawing_bar = QToolBar('Drawing')
+        self.Drawing_bar.setObjectName("DrawingToolbar")
         self.drawing_action_group = QActionGroup(self)
         self.drawing_action_group.setExclusive(True)
         self.Drawing_bar.setIconSize(QSize(36, 36)) # 已经在样式表设置,样式表设置不管用
@@ -97,6 +164,16 @@ class ImageDisplayWindow(QMainWindow):
         # # 添加默认选中项（可选）
         # draw_pen.setChecked(True)
         self.addToolBar(self.Drawing_bar)
+
+    def _update_layout_actions(self):
+        count = len(self.display_canvas)
+        self.auto_layout_action.setEnabled(count > 0)
+        self.horizontal_layout_action.setEnabled(count == 2)
+        self.vertical_layout_action.setEnabled(count == 2)
+        self.quad_layout_action.setEnabled(count == 4)
+        self.focus_layout_action.setEnabled(count > 1 and self.current_canvas() is not None)
+        self.restore_layout_action.setEnabled(self.layout_manager.is_focused)
+        self.reset_layout_action.setEnabled(count > 0)
 
     """工具栏初始化"""
     def create_drawing_action(self, toolbar, name, statustip,tooltip, slot = None):
@@ -326,6 +403,11 @@ class ImageDisplayWindow(QMainWindow):
             if self.display_canvas:
                 logging.warning("目标画布不存在: %s", cursor_id)
             return False
+        if (
+            self.layout_manager.is_focused
+            and self.layout_manager.focused_layout_key != canvas.layout_key
+        ):
+            self.layout_manager.restore_focus()
         self.cursor_id = canvas.id
         if self.parent is not None:
             self.parent.focus_canvas = canvas.id
@@ -344,14 +426,24 @@ class ImageDisplayWindow(QMainWindow):
             args_dict=self.tool_parameters,
             parent=self,
         )
+        self._apply_canvas_identity(canvas, canvas_id)
         canvas.render_status_signal.connect(self.render_status_signal.emit)
         return canvas
 
+    @staticmethod
+    def _apply_canvas_identity(canvas, canvas_id):
+        source_name = str(canvas.data.source_name).replace("\n", " ")
+        short_name = source_name if len(source_name) <= 36 else f"{source_name[:33]}..."
+        canvas.setWindowTitle(f"{canvas_id}-{short_name}")
+        canvas.setToolTip(
+            f"画布 {canvas_id}\n数据: {source_name}\n"
+            f"Shape: {getattr(canvas.data, 'imageshape', '')}"
+        )
     def _sync_canvas_identities(self):
         for canvas_id, canvas in enumerate(self.display_canvas):
             canvas.id = canvas_id
             canvas.data.canvas_num = canvas_id
-            canvas.setWindowTitle(f"{canvas_id}-{canvas.data.source_name}")
+            self._apply_canvas_identity(canvas, canvas_id)
 
     def _notify_canvas_change(self):
         if self.parent is not None:
@@ -364,6 +456,7 @@ class ImageDisplayWindow(QMainWindow):
         if len(self.display_canvas) >= 4:
             logging.warning("已达到最大显示区域数量 (4)")
             return False
+        self.layout_manager.before_structure_change()
         layout_key = self._allocate_layout_key()
         canvas_id = len(self.display_canvas)
         new_canvas = self._create_canvas(data, canvas_id, layout_key)
@@ -432,6 +525,7 @@ class ImageDisplayWindow(QMainWindow):
             if self.parent is not None:
                 self.parent.focus_canvas = None
             return False
+        self.layout_manager.before_structure_change()
         if canvas_id is False:
             canvas_id = self.cursor_id if self.current_canvas() is not None else self.display_canvas[-1].id
         if canvas_id == -1:
@@ -441,16 +535,19 @@ class ImageDisplayWindow(QMainWindow):
             self.cursor_id = -1
             if self.parent is not None:
                 self.parent.focus_canvas = None
+            self.layout_manager.update_empty_state()
             self._notify_canvas_change()
             return True
 
         removed = self._remove_single_canvas(canvas_id)
         if removed:
+            self.layout_manager.canvas_set_changed()
             self._notify_canvas_change()
         return removed
 
     def replace_canvas(self, canvas_id, data):
         """Replace one canvas in place while its previous renderer retires asynchronously."""
+        self.layout_manager.before_structure_change()
         old_canvas = self.canvas_by_id(canvas_id)
         if old_canvas is None:
             return False
@@ -478,37 +575,8 @@ class ImageDisplayWindow(QMainWindow):
         return new_canvas
 
     def add_dock(self, dock):
-        """根据区域数量更新布局"""
-        # 获取所有DockWidget并按id排序
-
-        dock_count = len(self.display_canvas)
-
-            # 根据目标DockWidget数量重新布局
-        if dock_count == 1:
-            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
-
-        elif dock_count == 2:
-            self.addDockWidget(Qt.RightDockWidgetArea, dock)
-
-        elif dock_count == 3:
-            # 创建左侧区域
-            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
-            # # 垂直分割左侧区域
-            self.splitDockWidget(self.display_canvas[0], dock, Qt.Vertical)
-            # # 添加右侧区域
-            # self.addDockWidget(Qt.RightDockWidgetArea, target_docks[2])
-
-        elif dock_count >= 4:
-            # 只处理前4个
-            # docks = target_docks[:4]
-            # # 创建左侧区域
-            # self.addDockWidget(Qt.LeftDockWidgetArea, docks[0])
-            # # 垂直分割左侧区域
-            # self.splitDockWidget(docks[0], docks[1], Qt.Vertical)
-            # 添加右侧区域
-            self.addDockWidget(Qt.RightDockWidgetArea, dock)
-            # # 垂直分割右侧区域
-            # self.splitDockWidget(docks[2], docks[3], Qt.Vertical)
+        """Arrange the active canvas set after a canvas is added."""
+        self.layout_manager.canvas_set_changed()
 
     def reset_all_canvas(self):
         if not self.display_canvas:
@@ -658,7 +726,10 @@ class ImageDisplayWindow(QMainWindow):
         dialog = ColorMapDialog(self,ColorMapManager().get_colormap_names(),info,params = self.tool_parameters)
         if dialog.exec_() == QDialog.Accepted:
             tool_dict = self.tool_parameters.copy()
-            tool_dict.update(dialog.get_value())
+            dialog_values = dialog.get_value()
+            dialog_values["colormap"] = dialog.colormap_selector.currentText() or tool_dict.get("colormap")
+            tool_dict.update(dialog_values)
+            self._normalize_colormap_parameters(tool_dict)
             canvas = dialog.canvas_index
             if canvas == -1:
                 self.tool_parameters.update(tool_dict) # 水平
@@ -754,6 +825,12 @@ class SubImageDisplayWidget(QDockWidget):
         self.id = canvas_id
         self.layout_key = layout_key or f"canvas_slot_{canvas_id}"
         self.setObjectName(self.layout_key)
+        self.setAllowedAreas(Qt.AllDockWidgetAreas)
+        self.setFeatures(
+            QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+            | QDockWidget.DockWidgetClosable
+        )
         self.setProperty("canvasFocused", False)
         self.data = data
         self.current_image = None
@@ -854,17 +931,21 @@ class SubImageDisplayWidget(QDockWidget):
         self.graphics_view.mouseReleaseEvent = self.mouse_release_event
 
         slider_layout = QHBoxLayout()
+        slider_layout.setContentsMargins(0, 0, 0, 0)
+        slider_layout.setSpacing(3)
         # 自动播放按钮
         self.start_button = QPushButton()
         self.start_button.setIcon(QIcon(QApplication.style().standardIcon(QStyle.SP_MediaPlay)))
         self.start_button.setIconSize(QSize(12, 12))
         self.start_button.setFixedSize(16,16)
+        self.start_button.setToolTip("播放")
         self.start_button.clicked.connect(self.start_auto_play)
         # 暂停播放按钮
         self.pause_button = QPushButton()
         self.pause_button.setIcon(QIcon(QApplication.style().standardIcon(QStyle.SP_MediaPause)))
         self.pause_button.setIconSize(QSize(12, 12))
         self.pause_button.setFixedSize(16, 16)
+        self.pause_button.setToolTip("暂停")
         self.pause_button.clicked.connect(self.pause_auto_play)
         self.pause_button.setEnabled(False)  # 初始不可用
         # 重置播放按钮
@@ -872,13 +953,16 @@ class SubImageDisplayWidget(QDockWidget):
         self.reset_button.setIcon(QIcon(QApplication.style().standardIcon(QStyle.SP_MediaSkipBackward)))
         self.reset_button.setIconSize(QSize(12, 12))
         self.reset_button.setFixedSize(16, 16)
+        self.reset_button.setToolTip("回到第一帧")
         self.reset_button.clicked.connect(self.reset_auto_play)
         self.reset_button.setEnabled(False)  # 初始不可用
 
         # 全新时间轴
         self.time_slider = AdvancedTimeline(total_frames=self.max_time_idx,fps=self.data.fps,time_point=self.data.time_point)
+        self.time_slider.setMinimumWidth(60)
         self.time_slider.rightClicked.connect(self.on_timeline_right_click)
         self.time_label = QLabel(f"{self.current_time_idx}/{self.max_time_idx-1}")
+        self.time_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         slider_layout.addWidget(self.start_button)
         slider_layout.addWidget(self.pause_button)
         slider_layout.addWidget(self.reset_button)
@@ -890,35 +974,6 @@ class SubImageDisplayWidget(QDockWidget):
         widget.setLayout(layout)
         self.setWidget(widget)
 
-        self.add_overlay_label("请移动鼠标")
-
-    def add_overlay_label(self, text):
-        """添加覆盖文本标签"""
-        # 如果已有标签，先删除
-        if hasattr(self, 'overlay_label') and self.overlay_label:
-            self.remove_overlay_label()
-
-        # 创建新标签
-        self.overlay_label = QLabel(text, self.graphics_view)
-        self.overlay_label.setAlignment(Qt.AlignCenter)
-        self.overlay_label.setStyleSheet("""
-            QLabel {
-                background-color: transparent;
-                color: rgba(100, 100, 100, 180);
-                font: Noto Sans;
-                font-size: 60px;
-                font-weight: bold;
-            }
-        """)
-        self.overlay_label.setGeometry(10, 10, 350, 300)
-        self.overlay_label.setAttribute(Qt.WA_TransparentForMouseEvents)  # 允许鼠标穿透
-        self.overlay_label.show()
-
-    def remove_overlay_label(self):
-        """移除覆盖标签"""
-        if hasattr(self, 'overlay_label') and self.overlay_label:
-            self.overlay_label.deleteLater()
-            self.overlay_label = None
 
     def schedule_initial_display(self):
         """Schedule the first frame after the dock widget has a viewport."""
@@ -932,7 +987,6 @@ class SubImageDisplayWidget(QDockWidget):
             return
         try:
             self.display_image()
-            self.remove_overlay_label()
         except Exception as exc:
             message = f'首帧渲染失败: {exc}'
             logging.exception(message)
@@ -969,13 +1023,14 @@ class SubImageDisplayWidget(QDockWidget):
         self.angle_step = args_dict["angle_step"]
         self.vector_width = args_dict["vector_width"]
         if update_display_style:
-            self.colormap = args_dict["colormap"]  # 默认伪彩色方案
-            self.use_colormap = args_dict["use_colormap"]  # 是否使用伪彩色
-            self.min_value = args_dict["min_value"]  # 伪彩色最小值
-            self.max_value = args_dict["max_value"]  # 伪彩色最大值
-            self.auto_boundary_set = args_dict["auto_boundary_set"]
+            self.colormap = args_dict.get("colormap") or "Jet"
+            self.use_colormap = ImageDisplayWindow._as_bool(args_dict.get("use_colormap", False))
+            self.auto_boundary_set = ImageDisplayWindow._as_bool(args_dict.get("auto_boundary_set", True))
             if self.auto_boundary_set:
                 self.auto_colormap_range()
+            else:
+                self.min_value = ImageDisplayWindow._finite_number(args_dict.get("min_value"), float(self.data.imagemin))
+                self.max_value = ImageDisplayWindow._finite_number(args_dict.get("max_value"), float(self.data.imagemax))
             self.update_after_set()
 
     def update_after_set(self):
@@ -2003,11 +2058,11 @@ class SubImageDisplayWidget(QDockWidget):
             font.setPointSize(size)
             font.setLetterSpacing(QFont.AbsoluteSpacing, -0.2)
             # 最小值标签
-            self.min_label = self.scene.addText(f"min={self.min_value:.1f}",font=font)
+            self.min_label = self.scene.addText(f"min={format_hover_value(self.min_value)}", font=font)
             self.min_label.setPos(w_point + width-8, h_point+ height-6+size)
             self.min_label.setDefaultTextColor(Qt.black)
             # 最大值标签
-            self.max_label = self.scene.addText(f"max={self.max_value:.1f}",font=font)
+            self.max_label = self.scene.addText(f"max={format_hover_value(self.max_value)}", font=font)
             self.max_label.setPos(w_point + width-8, h_point -5-size)
             self.max_label.setDefaultTextColor(Qt.black)
 

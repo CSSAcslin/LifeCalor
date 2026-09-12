@@ -1788,6 +1788,7 @@ class ColorMapDialog(QDialog):
 
         self.setLayout(layout)
 
+        self._handle_canvas_change()
         self._handle_colormap_toggle()
         self._handle_boundary_set()
 
