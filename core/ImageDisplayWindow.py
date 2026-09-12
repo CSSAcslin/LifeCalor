@@ -79,7 +79,7 @@ class ImageDisplayWindow(QMainWindow):
         self._normalize_colormap_parameters(self.tool_parameters)
         self.parent = parent
 
-        self.layout_manager = CanvasLayoutManager(self)
+        self.layout_manager = CanvasLayoutManager(self, settings=getattr(parent, "settings", None))
         self.init_tool_bars()
 
     def init_tool_bars(self):
@@ -860,6 +860,9 @@ class SubImageDisplayWidget(QDockWidget):
         self.render_controller = RenderController(self)
         self.render_status = 'idle'
         self._initial_display_scheduled = False
+        self._resize_fit_scheduled = False
+        self._auto_fit_view = True
+        self.map_view = False
         self._is_closing = False
         self._close_requested = False
         self._removal_prepared = False
@@ -898,12 +901,13 @@ class SubImageDisplayWidget(QDockWidget):
         self._is_syncing = False  # 防止信号死循环的标志
 
         self.init_ui()
-        self.map_view = False
         self.schedule_initial_display()
 
     def init_ui(self):
         widget = QWidget(self)
-        layout = QVBoxLayout(self)
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
 
         # 创建图形视图和场景
         self.graphics_view = QGraphicsView()
@@ -915,7 +919,7 @@ class SubImageDisplayWidget(QDockWidget):
         self.scene.addItem(self.data_layer)
         self.scene.addItem(self.draw_layer)
 
-        layout.addWidget(self.graphics_view)
+        layout.addWidget(self.graphics_view, 1)
 
         # 视图设置
         self.graphics_view.setMouseTracking(True)
@@ -971,8 +975,36 @@ class SubImageDisplayWidget(QDockWidget):
         if self.data.is_temporary :
             layout.addLayout(slider_layout)
             self.time_slider.positionChanged.connect(self.update_time_slice)
-        widget.setLayout(layout)
         self.setWidget(widget)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.schedule_view_fit()
+
+    def schedule_view_fit(self):
+        if self._resize_fit_scheduled or not self.map_view:
+            return
+        self._resize_fit_scheduled = True
+        QTimer.singleShot(0, self._fit_view_after_resize)
+
+    def _fit_view_after_resize(self):
+        self._resize_fit_scheduled = False
+        if self._is_closing or not self.map_view or self.data_layer is None:
+            return
+        current_scale = self.graphics_view.transform().m11()
+        if self.last_scale is not None and not np.isclose(current_scale, self.last_scale):
+            self._auto_fit_view = False
+        if self._auto_fit_view:
+            self.fit_view_to_image()
+
+    def fit_view_to_image(self):
+        if self.data_layer is None or self.data_layer.pixmap().isNull():
+            return False
+        self.graphics_view.resetTransform()
+        self.graphics_view.fitInView(self.data_layer, Qt.KeepAspectRatio)
+        self.last_scale = self.graphics_view.transform().m11()
+        self.initial_scale = self.last_scale
+        return True
 
 
     def schedule_initial_display(self):
@@ -1038,9 +1070,7 @@ class SubImageDisplayWidget(QDockWidget):
         if self.use_colormap and hasattr(self,'graphics_view'):
             self.update_time_slice(self.current_time_idx)
             self.add_colorbar()
-            self.graphics_view.resize(self.width(), self.height())
-            # self.graphics_view.resetTransform()
-            # self.graphics_view.fitInView(self.data_layer, Qt.KeepAspectRatio)
+            self.schedule_view_fit()
         elif not self.use_colormap and hasattr(self,'graphics_view'):
             self.update_time_slice(self.current_time_idx)
             # logging.info("若未更新，滑动时间轴即可更新")
@@ -1049,9 +1079,7 @@ class SubImageDisplayWidget(QDockWidget):
                 self.colorbar_item = None
                 self.scene.removeItem(self.min_label)
                 self.scene.removeItem(self.max_label)
-            self.graphics_view.resize(self.width(), self.height())
-            # self.graphics_view.resetTransform()
-            # self.graphics_view.fitInView(self.data_layer, Qt.KeepAspectRatio)
+            self.schedule_view_fit()
 
     def auto_colormap_range(self):
         """自动设置伪彩色范围"""
@@ -1123,6 +1151,7 @@ class SubImageDisplayWidget(QDockWidget):
         # 应用新缩放因子
         self.graphics_view.setTransform(QTransform.fromScale(new_scale, new_scale))
         self.last_scale = new_scale  # 必须更新缩放因子记录
+        self._auto_fit_view = False
 
         # 仅在放大时调整视口位置
         if new_scale > self.initial_scale:
@@ -1960,17 +1989,12 @@ class SubImageDisplayWidget(QDockWidget):
         raise ValueError(f'unsupported display image shape: {image_data.shape}')
 
     def initialize_display_scene(self, image_data):
-        self.graphics_view.resize(self.width(), self.height())
         self.scene.clear()
         self.current_time_idx = 0
         image_data, qimage, width, height = self.display_array_to_qimage(image_data)
         pixmap = QPixmap.fromImage(qimage)
         self.current_image = image_data
         self.data_layer = self.scene.addPixmap(pixmap)
-        self.graphics_view.resetTransform()
-        self.graphics_view.fitInView(self.data_layer, Qt.KeepAspectRatio)
-        self.last_scale = self.graphics_view.transform().m11()
-        self.initial_scale = self.graphics_view.transform().m11()
         self.map_view = True
         self.top_pixmap = QPixmap(width, height)
         self.top_pixmap.fill(Qt.transparent)
@@ -1978,6 +2002,8 @@ class SubImageDisplayWidget(QDockWidget):
         self.draw_layer.setOpacity(self.draw_layer_opacity)
         self.draw_layer.setZValue(1)
         self.add_colorbar()
+        self._auto_fit_view = True
+        self.fit_view_to_image()
 
     def display_image(self):
         """显示图像数据 (使用QPixmap)，记录当前时间点数据
@@ -2149,9 +2175,8 @@ class SubImageDisplayWidget(QDockWidget):
 
     def reset_view(self):
         """手动重置视图（缩放和平移）"""
-        self.graphics_view.resetTransform()
-        self.graphics_view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
-        self.last_scale = self.graphics_view.transform().m11()
+        self._auto_fit_view = True
+        self.fit_view_to_image()
 
 
 class Handle(Enum):

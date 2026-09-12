@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -13,7 +14,7 @@ CORE = ROOT / "core"
 if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))
 
-from PyQt5.QtCore import QEventLoop, Qt
+from PyQt5.QtCore import QByteArray, QEventLoop, QSettings, Qt
 from PyQt5.QtWidgets import QApplication, QDockWidget, QMainWindow
 
 from DataManager import Data, ImagingData
@@ -41,9 +42,10 @@ TOOL_PARAMS = {
 
 
 class HostWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, settings=None):
         super().__init__()
         self.focus_canvas = None
+        self.settings = settings
 
     def canvas_signal_connect(self):
         pass
@@ -118,6 +120,36 @@ class CanvasWorkspaceTests(unittest.TestCase):
         self.assertGreater(second.geometry().y(), first.geometry().y())
         self.assert_near(first.height(), second.height())
         self.assertEqual(self.display.layout_manager.two_canvas_orientation, Qt.Vertical)
+
+    def test_canvas_refits_image_when_layout_reduces_viewport(self):
+        first = self.add_canvases(1)[0]
+        initial_scale = first.graphics_view.transform().m11()
+
+        self.add_canvases(1)
+        self._settle()
+
+        resized_scale = first.graphics_view.transform().m11()
+        self.assertLess(resized_scale, initial_scale)
+        self.assertAlmostEqual(resized_scale, first.last_scale)
+
+    def test_timeline_occupies_stable_space_before_playback(self):
+        canvas = self.add_canvases(1)[0]
+        root_layout = canvas.widget().layout()
+        before_view = root_layout.itemAt(0).geometry()
+        before_timeline = root_layout.itemAt(1).geometry()
+
+        self.assertLessEqual(before_view.bottom(), before_timeline.top())
+        try:
+            canvas.start_auto_play()
+            self.assertTrue(canvas.is_playing)
+            self._settle()
+        finally:
+            canvas.pause_auto_play()
+
+        after_view = root_layout.itemAt(0).geometry()
+        after_timeline = root_layout.itemAt(1).geometry()
+        self.assertLessEqual(after_view.bottom(), after_timeline.top())
+        self.assertEqual(after_timeline, before_timeline)
 
     def test_three_canvas_layout_uses_one_full_height_and_two_stacked_docks(self):
         first, second, third = self.add_canvases(3)
@@ -277,6 +309,139 @@ class CanvasWorkspaceTests(unittest.TestCase):
         self.assertLessEqual(len(canvas.windowTitle()), 38)
         self.assertIn(long_name, canvas.toolTip())
         self.assertEqual(canvas.objectName(), "canvas_slot_0")
+
+class CanvasWorkspacePersistenceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.settings = QSettings(str(Path(self.temp_dir.name) / "workspace.ini"), QSettings.IniFormat)
+        self.settings.clear()
+        self.host = None
+        self.display = None
+        self._create_display()
+
+    def tearDown(self):
+        self._destroy_display()
+        self.settings.clear()
+        self.settings.sync()
+        self.temp_dir.cleanup()
+
+    def _settle(self, rounds=8):
+        for _ in range(rounds):
+            self.app.processEvents(QEventLoop.AllEvents, 50)
+
+    def _create_display(self):
+        self.host = HostWindow(self.settings)
+        self.display = ImageDisplayWindow(dict(TOOL_PARAMS), self.host)
+        self.display.resize(1000, 720)
+        self.display.show()
+        self._settle()
+
+    def _destroy_display(self):
+        if self.display is None:
+            return
+        self.display.del_canvas(-1)
+        deadline = time.perf_counter() + 2.0
+        while self.display._retiring_canvases and time.perf_counter() < deadline:
+            self._settle()
+        self.display.close()
+        self.host.close()
+        self._settle()
+        self.display = None
+        self.host = None
+
+    def _recreate_display(self):
+        self._destroy_display()
+        self._create_display()
+
+    def _add_canvases(self, count):
+        canvases = [self.display.add_canvas(make_image(f"saved-{index}", index)) for index in range(count)]
+        self._settle()
+        return canvases
+
+    def test_matching_canvas_signature_restores_saved_orientation(self):
+        self._add_canvases(2)
+        self.assertTrue(self.display.layout_manager.arrange("vertical"))
+        self._settle()
+        self.assertTrue(self.display.layout_manager.flush_save())
+
+        self._recreate_display()
+        first, second = self._add_canvases(2)
+
+        self.assertGreater(second.geometry().y(), first.geometry().y())
+        self.assertEqual(self.display.layout_manager.two_canvas_orientation, Qt.Vertical)
+
+    def test_unmatched_canvas_signature_uses_default_layout(self):
+        self._add_canvases(2)
+        self.display.layout_manager.arrange("vertical")
+        self._settle()
+        self.display.layout_manager.flush_save()
+
+        self._recreate_display()
+        first, second, third = self._add_canvases(3)
+
+        self.assertGreater(second.geometry().x(), first.geometry().x())
+        self.assertEqual(second.geometry().x(), third.geometry().x())
+        self.assertGreater(third.geometry().y(), second.geometry().y())
+
+    def test_corrupt_saved_state_falls_back_to_default_layout(self):
+        signature = "canvas_slot_0+canvas_slot_1"
+        prefix = f"canvas_workspace/layouts/{signature}"
+        self.settings.setValue("canvas_workspace/schema_version", 1)
+        self.settings.setValue(f"{prefix}/state", QByteArray(b"invalid-state"))
+        self.settings.sync()
+
+        first, second = self._add_canvases(2)
+
+        self.assertGreater(second.geometry().x(), first.geometry().x())
+        self.assertFalse(self.display.layout_manager.is_focused)
+
+    def test_flush_during_focus_saves_pre_focus_visibility_and_layout(self):
+        first, second = self._add_canvases(2)
+        self.display.layout_manager.arrange("vertical")
+        self._settle()
+        self.display.set_cursor_id(second.id)
+        self.assertTrue(self.display.layout_manager.focus_current())
+        self.assertTrue(self.display.layout_manager.flush_save())
+
+        self._recreate_display()
+        restored_first, restored_second = self._add_canvases(2)
+
+        self.assertTrue(restored_first.isVisible())
+        self.assertTrue(restored_second.isVisible())
+        self.assertGreater(restored_second.geometry().y(), restored_first.geometry().y())
+
+    def test_reset_layout_clears_saved_preferences(self):
+        first, second = self._add_canvases(2)
+        self.display.layout_manager.arrange("vertical")
+        self._settle()
+        self.display.layout_manager.flush_save()
+        self.assertIsNotNone(self.settings.value("canvas_workspace/schema_version"))
+
+        self.assertTrue(self.display.layout_manager.reset_layout())
+        self._settle()
+
+        self.assertIsNone(self.settings.value("canvas_workspace/schema_version"))
+        self.assertGreater(second.geometry().x(), first.geometry().x())
+
+    def test_offscreen_floating_canvas_is_moved_to_an_available_screen(self):
+        first, second = self._add_canvases(2)
+        second.setFloating(True)
+        second.setGeometry(-20000, -20000, 420, 300)
+        self._settle()
+        self.display.layout_manager.flush_save()
+
+        self._recreate_display()
+        self._add_canvases(2)
+        self._settle()
+        restored = self.display.display_canvas[1]
+        available = [screen.availableGeometry() for screen in QApplication.screens()]
+
+        self.assertTrue(restored.isFloating())
+        self.assertTrue(any(screen.intersects(restored.frameGeometry()) for screen in available))
 
 if __name__ == "__main__":
     unittest.main()

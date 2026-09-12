@@ -1763,11 +1763,11 @@ class ColorMapDialog(QDialog):
         self.boundary_set.currentIndexChanged.connect(self._handle_boundary_set)
 
         self.up_boundary_set = QDoubleSpinBox()
-        self.up_boundary_set.setRange(-999999,999999)
-        self.up_boundary_set.setDecimals(3)
+        self.up_boundary_set.setRange(-9999999,9999999)
+        self.up_boundary_set.setDecimals(6)
         self.low_boundary_set = QDoubleSpinBox()
-        self.low_boundary_set.setRange(-999999,999999)
-        self.low_boundary_set.setDecimals(3)
+        self.low_boundary_set.setRange(-9999999,9999999)
+        self.low_boundary_set.setDecimals(6)
 
         # 添加到布局
         self.colormap_control_layout.addRow(QLabel("应用区域:"),self.canvas_selector)
