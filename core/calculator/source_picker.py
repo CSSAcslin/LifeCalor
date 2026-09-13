@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
+    QComboBox, QDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
 )
 
 from DataManager import Data, ProcessedData
 from widget.DataTreeWidget import DataHistoryTreeWidget, DataTreeEntry
+from widget.DataFilterControls import TagFilterButton, style_filter_controls
 
 
 class CalculatorSourcePicker(QDialog):
@@ -31,10 +32,18 @@ class CalculatorSourcePicker(QDialog):
         self.search.setToolTip("只过滤当前列表，不会删除或修改历史数据")
         self.search.textChanged.connect(self._filter)
         header.addWidget(self.search, 1)
+        self.category_filter = QComboBox()
+        self.category_filter.setToolTip("按数据形态筛选；不会读取数组内容")
+        self.category_filter.currentIndexChanged.connect(self._filter)
+        header.addWidget(self.category_filter)
+        self.tag_filter = TagFilterButton()
+        self.tag_filter.filterChanged.connect(self._filter)
+        header.addWidget(self.tag_filter)
         refresh = QPushButton("刷新")
         refresh.setToolTip("重新读取当前 Data 和 ProcessedData 历史")
         refresh.clicked.connect(self.refresh_sources)
         header.addWidget(refresh)
+        style_filter_controls(self.search, self.category_filter, self.tag_filter, refresh)
         layout.addLayout(header)
 
         self.tree = DataHistoryTreeWidget(self, self._action_factory, action_title="加入运算")
@@ -55,6 +64,17 @@ class CalculatorSourcePicker(QDialog):
         data = [source for source in sources if isinstance(source, Data)]
         processed = [source for source in sources if isinstance(source, ProcessedData)]
         self.tree.refresh_data(data, processed)
+        categories, tags = self.tree.available_filter_values()
+        selected_category = self.category_filter.currentData() if self.category_filter.count() else ""
+        self.category_filter.blockSignals(True)
+        self.category_filter.clear()
+        self.category_filter.addItem("全部类型", "")
+        for category in categories:
+            self.category_filter.addItem(category, category)
+        index = self.category_filter.findData(selected_category)
+        self.category_filter.setCurrentIndex(max(0, index))
+        self.category_filter.blockSignals(False)
+        self.tag_filter.set_tags(tags)
         self._filter(self.search.text())
 
     def _action_factory(self, _tree, _item, entry: DataTreeEntry):
@@ -75,6 +95,11 @@ class CalculatorSourcePicker(QDialog):
         self.selected_entry = entry
         self.accept()
 
-    def _filter(self, text):
-        self.tree.filter_text(text)
+    def _filter(self, _value=None):
+        self.tree.filter_entries(
+            query=self.search.text(),
+            category=self.category_filter.currentData() or "",
+            tags=self.tag_filter.selected_tags(),
+            untagged=self.tag_filter.untagged_selected(),
+        )
 

@@ -12,6 +12,11 @@ from PyQt5.QtWidgets import QHeaderView, QTreeWidget, QTreeWidgetItem, QWidget
 from ArrayCache import ArrayRef
 from DataManager import Data, ProcessedData
 from dataio.classification import DataCategory, DataDescriptor, describe_source, describe_value
+from history.annotations import display_name_for, history_identity, tags_for
+from widget.DataFilterControls import metadata_matches
+
+
+FILTER_ROLE = Qt.UserRole + 3
 
 
 @dataclass(frozen=True)
@@ -24,6 +29,9 @@ class DataTreeEntry:
     payload_key: Optional[str] = None
     selectable: bool = False
     descriptor: Optional[DataDescriptor] = None
+    original_label: str = ""
+    field_path: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
 
     def resolve(self):
         if self.payload_key is not None:
@@ -49,13 +57,14 @@ class DataHistoryTreeWidget(QTreeWidget):
         super().__init__(parent)
         self.action_factory = action_factory
         self.node_map = {}
-        self.setColumnCount(7)
-        self.setHeaderLabels(["名称 / Key", "来源", "数据类型", "尺寸 & 大小", "数值范围", "创建时间 / 值", action_title])
+        self.action_column = 7
+        self.setColumnCount(8)
+        self.setHeaderLabels(["名称 / Key", "标签", "来源", "数据类型", "尺寸 & 大小", "数值范围", "创建时间 / 值", action_title])
         header = self.header()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
-        for column in (1, 2, 3):
+        for column in (1, 2, 3, 4):
             header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
-        for column in (4, 5, 6):
+        for column in (5, 6, self.action_column):
             header.setSectionResizeMode(column, QHeaderView.Interactive)
         self.setColumnWidth(0, 300)
         self.setAlternatingRowColors(True)
@@ -64,6 +73,7 @@ class DataHistoryTreeWidget(QTreeWidget):
         self.itemDoubleClicked.connect(self._emit_entry)
 
     def refresh_data(self, data_history=None, processed_history=None):
+        state = self._capture_view_state()
         self.clear()
         self.node_map = {}
         data_history = list(Data.get_history_list() if data_history is None else data_history)
@@ -72,8 +82,10 @@ class DataHistoryTreeWidget(QTreeWidget):
         for data_obj in data_history:
             item = QTreeWidgetItem(self)
             entry = DataTreeEntry(
-                data_obj, data_obj.name, f"原始 ({data_obj.format_import})",
+                data_obj, display_name_for(data_obj), f"原始 ({data_obj.format_import})",
                 tuple(data_obj.datashape), str(data_obj.datatype), selectable=True,
+                original_label=data_obj.name,
+                tags=tuple(tags_for(data_obj)),
             )
             self._configure_entry(item, entry, data_obj.datamin, data_obj.datamax, data_obj.timestamp)
             if data_obj.parameters:
@@ -96,6 +108,58 @@ class DataHistoryTreeWidget(QTreeWidget):
                 self._add_processed(root, proc_obj)
             root.setExpanded(True)
         self.expandToDepth(0)
+        self._restore_view_state(state)
+
+    def _item_state_key(self, item):
+        entry = item.data(0, Qt.UserRole)
+        if isinstance(entry, DataTreeEntry):
+            return (
+                "entry",
+                history_identity(entry.source),
+                tuple(entry.field_path),
+                entry.payload_key,
+            )
+        parent = item.parent()
+        parent_key = self._item_state_key(parent) if parent is not None else ("root",)
+        return ("group", parent_key, item.text(0))
+
+    def _capture_view_state(self):
+        if self.topLevelItemCount() == 0:
+            return None
+        expanded = set()
+        selected = set()
+
+        def visit(item):
+            key = self._item_state_key(item)
+            if item.isExpanded():
+                expanded.add(key)
+            if item.isSelected():
+                selected.add(key)
+            for index in range(item.childCount()):
+                visit(item.child(index))
+
+        for index in range(self.topLevelItemCount()):
+            visit(self.topLevelItem(index))
+        return {
+            "expanded": expanded,
+            "selected": selected,
+            "scroll": self.verticalScrollBar().value(),
+        }
+
+    def _restore_view_state(self, state):
+        if not state:
+            return
+
+        def visit(item):
+            key = self._item_state_key(item)
+            item.setExpanded(key in state["expanded"])
+            item.setSelected(key in state["selected"])
+            for index in range(item.childCount()):
+                visit(item.child(index))
+
+        for index in range(self.topLevelItemCount()):
+            visit(self.topLevelItem(index))
+        self.verticalScrollBar().setValue(state["scroll"])
 
     def _find_parent(self, timestamp):
         if timestamp is None:
@@ -112,7 +176,11 @@ class DataHistoryTreeWidget(QTreeWidget):
         item = QTreeWidgetItem(parent)
         shape = tuple(getattr(proc_obj, "datashape", ()) or ())
         dtype = str(getattr(proc_obj, "datatype", "")) if shape else ""
-        entry = DataTreeEntry(proc_obj, proc_obj.name, proc_obj.type_processed, shape, dtype, selectable=bool(shape))
+        entry = DataTreeEntry(
+            proc_obj, display_name_for(proc_obj), proc_obj.type_processed, shape, dtype,
+            selectable=bool(shape), original_label=proc_obj.name,
+            tags=tuple(tags_for(proc_obj)),
+        )
         self._configure_entry(
             item, entry,
             getattr(proc_obj, "datamin", None), getattr(proc_obj, "datamax", None), proc_obj.timestamp,
@@ -131,46 +199,60 @@ class DataHistoryTreeWidget(QTreeWidget):
             if isinstance(value, (ArrayRef, np.ndarray)):
                 shape, dtype = tuple(value.shape), str(value.dtype)
                 descriptor = describe_source(source, str(key))
+                field_path = ("out_processed", str(key))
                 entry = DataTreeEntry(
-                    source, str(key), type(value).__name__, shape, dtype,
-                    str(key), selectable_arrays, descriptor,
+                    source, display_name_for(source, field_path), type(value).__name__, shape, dtype,
+                    str(key), selectable_arrays, descriptor, str(key), field_path,
+                    tuple(tags_for(source, field_path)),
                 )
                 self._configure_entry(item, entry, None, None, None)
             elif isinstance(value, dict):
                 item.setText(0, str(key))
-                item.setText(1, "dict")
-                item.setText(2, DataCategory.STRUCTURED.value)
-                item.setText(5, self._format_value(value))
+                item.setText(2, "dict")
+                item.setText(3, DataCategory.STRUCTURED.value)
+                item.setText(6, self._format_value(value))
                 self._set_tooltips(item)
                 self._add_mapping(item, "内容", value, source, selectable_arrays=False)
             else:
                 descriptor = describe_value(value, semantic_hint=str(key))
                 item.setText(0, str(key))
-                item.setText(1, type(value).__name__)
-                item.setText(2, descriptor.label)
-                item.setText(3, self._shape_text(descriptor.shape, descriptor.dtype))
-                item.setText(5, self._format_value(value))
+                item.setText(2, type(value).__name__)
+                item.setText(3, descriptor.label)
+                item.setText(4, self._shape_text(descriptor.shape, descriptor.dtype))
+                item.setText(6, self._format_value(value))
                 self._set_tooltips(item)
 
     def _configure_entry(self, item, entry, minimum, maximum, timestamp):
         item.setData(0, Qt.UserRole, entry)
+        item.setData(0, Qt.UserRole + 2, history_identity(entry.source))
         item.setText(0, entry.label)
-        item.setText(1, entry.kind)
+        item.setText(1, " ".join(entry.tags))
+        item.setText(2, entry.kind)
         descriptor = entry.descriptor or describe_source(entry.source, entry.payload_key)
-        item.setText(2, descriptor.label)
-        item.setText(3, self._shape_text(entry.shape, entry.dtype))
-        item.setText(4, self._range_text(minimum, maximum))
-        item.setToolTip(2, descriptor.reason)
+        item.setText(3, descriptor.label)
+        item.setText(4, self._shape_text(entry.shape, entry.dtype))
+        item.setText(5, self._range_text(minimum, maximum))
+        item.setToolTip(0, f"显示名称：{entry.label}\n原始名称：{entry.original_label or entry.label}")
+        item.setToolTip(1, " ".join(entry.tags) if entry.tags else "无标签")
+        item.setToolTip(3, descriptor.reason)
+        item.setData(0, FILTER_ROLE, {
+            "display_name": entry.label,
+            "original_name": entry.original_label or entry.label,
+            "source_name": getattr(entry.source, "name", ""),
+            "payload_key": entry.payload_key or "",
+            "category": descriptor.label,
+            "tags": tuple(entry.tags),
+        })
         if timestamp is not None:
             try:
-                item.setText(5, time.strftime("%y/%m/%d %H:%M:%S", time.localtime(float(timestamp))))
+                item.setText(6, time.strftime("%y/%m/%d %H:%M:%S", time.localtime(float(timestamp))))
             except (TypeError, ValueError, OverflowError, OSError):
-                item.setText(5, str(timestamp))
+                item.setText(6, str(timestamp))
         self._set_tooltips(item)
         if entry.selectable and self.action_factory is not None:
             widget = self.action_factory(self, item, entry)
             if widget is not None:
-                self.setItemWidget(item, 6, widget)
+                self.setItemWidget(item, self.action_column, widget)
 
     @staticmethod
     def _shape_text(shape, dtype):
@@ -214,23 +296,49 @@ class DataHistoryTreeWidget(QTreeWidget):
     @staticmethod
     def _set_tooltips(item):
         for column in range(item.columnCount()):
-            item.setToolTip(column, item.text(column))
+            if not item.toolTip(column):
+                item.setToolTip(column, item.text(column))
 
     def selected_entry(self):
         item = self.currentItem()
         return item.data(0, Qt.UserRole) if item is not None else None
 
-    def filter_text(self, text):
-        query = (text or "").strip().lower()
+    def available_filter_values(self):
+        categories = set()
+        tags = []
 
         def visit(item):
-            own = any(query in item.text(column).lower() for column in range(min(6, item.columnCount())))
+            metadata = item.data(0, FILTER_ROLE)
+            if metadata:
+                if metadata.get("category"):
+                    categories.add(metadata["category"])
+                for tag in metadata.get("tags", ()):
+                    if tag not in tags:
+                        tags.append(tag)
+            for index in range(item.childCount()):
+                visit(item.child(index))
+
+        root = self.invisibleRootItem()
+        for index in range(root.childCount()):
+            visit(root.child(index))
+        return sorted(categories), tags
+
+    def filter_text(self, text):
+        self.filter_entries(query=text)
+
+    def filter_entries(self, query="", category="", tags=(), untagged=False):
+        query = (query or "").strip()
+
+        def visit(item, ancestor_match=False):
+            metadata = item.data(0, FILTER_ROLE)
+            own = bool(metadata) and metadata_matches(metadata, query, category, tags, untagged)
             child_match = False
             for index in range(item.childCount()):
-                child_match = visit(item.child(index)) or child_match
-            visible = not query or own or child_match
+                child_match = visit(item.child(index), ancestor_match or own) or child_match
+            no_filter = not query and not category and not tags and not untagged
+            visible = no_filter or ancestor_match or own or child_match
             item.setHidden(not visible)
-            if query and child_match:
+            if not no_filter and child_match:
                 item.setExpanded(True)
             return visible
 

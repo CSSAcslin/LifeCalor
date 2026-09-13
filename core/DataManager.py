@@ -33,6 +33,13 @@ from display.source import DisplaySourceFactory
 from display.renderer import FrameRenderParams, FrameRenderer
 from tasks.model import CancellationToken, TaskCancelled
 from diagnostics import AppError, format_exception_details
+from history.annotations import (
+    copy_annotations,
+    display_name_for,
+    empty_annotations,
+    same_history_identity,
+    tags_for,
+)
 _ARRAY_CACHE_CONFIG = ArrayCacheConfig(cache_dir=Path.cwd() / ".lifecalor_cache", threshold_bytes=512 * 1024 * 1024)
 _ARRAY_CACHE_PROGRESS_CALLBACK = None
 
@@ -803,6 +810,7 @@ class Data:
     image_import: np.ndarray
     parameters: dict = field(default_factory=dict)
     name: str = None
+    annotations: dict = field(init=False, default_factory=empty_annotations)
     out_processed : dict = field(init=False,default_factory=dict)
     timestamp: float = field(init=False, default_factory=time.time)
     ROI_applied: bool = field(init=False, default=False)
@@ -812,6 +820,8 @@ class Data:
     _amend_counter: int = field(init=False, default=0)
     _data_origin_storage: object = field(init=False, repr=False, default=None)
     _image_import_storage: object = field(init=False, repr=False, default=None)
+    _history_manifest_dir: str = field(init=False, repr=False, default=None)
+    _history_manifest_id: str = field(init=False, repr=False, default=None)
 
     def __getattribute__(self, name):
         if name in {"data_origin", "image_import"}:
@@ -1096,6 +1106,7 @@ class Data:
     def _history_snapshot(self):
         """Create a history snapshot that caches large primary arrays by reference."""
         snapshot = copy.copy(self)
+        snapshot.annotations = copy_annotations(self.annotations)
         store = get_array_store()
         owner_id = str(self.timestamp)
         data_origin = self.data_origin
@@ -1114,7 +1125,7 @@ class Data:
         """更新历史记录中的当前实例"""
         # 查找历史记录中的当前实例
         for i, record in enumerate(Data.history):
-            if record.serial_number == self.serial_number:
+            if same_history_identity(record, self):
                 # 更新历史记录中的实例
                 Data.history[i] = self._history_snapshot()
                 break
@@ -1152,6 +1163,7 @@ class ProcessedData:
     time_point: np.ndarray = None
     data_processed: np.ndarray = None
     out_processed: dict = field(default_factory=dict)
+    annotations: dict = field(init=False, default_factory=empty_annotations)
     parameters: dict = field(init=False, default_factory=dict)
     timestamp: float = field(init=False, default_factory=time.time)
     ROI_applied: bool = False
@@ -1160,6 +1172,8 @@ class ProcessedData:
     _counter: int = field(init=False, repr=False, default=0)
     history: ClassVar[deque] = deque(maxlen=30)
     _data_processed_storage: object = field(init=False, repr=False, default=None)
+    _history_manifest_dir: str = field(init=False, repr=False, default=None)
+    _history_manifest_id: str = field(init=False, repr=False, default=None)
 
     def __getattribute__(self, name):
         if name == "data_processed":
@@ -1307,6 +1321,7 @@ class ProcessedData:
     def _history_snapshot(self):
         """Create a history snapshot that caches large result arrays by reference."""
         snapshot = copy.copy(self)
+        snapshot.annotations = copy_annotations(self.annotations)
         store = get_array_store()
         owner_id = str(self.timestamp)
         data_processed = self.data_processed
@@ -1327,7 +1342,7 @@ class ProcessedData:
         """更新历史记录中的当前实例"""
         # 查找历史记录中的当前实例
         for i, record in enumerate(ProcessedData.history):
-            if record.serial_number == self.serial_number:
+            if same_history_identity(record, self):
                 # 更新历史记录中的实例
                 ProcessedData.history[i] = self._history_snapshot()
                 break
@@ -1498,7 +1513,9 @@ class ImagingData:
             instance.image_backup = instance.display_source.array
             instance.timestamp_inherited = data_obj.timestamp
             instance.source_type = "Data"
-            instance.source_name = data_obj.name
+            instance.source_name = display_name_for(data_obj)
+            instance.source_original_name = data_obj.name
+            instance.source_tags = tags_for(data_obj)
             instance.source_format = data_obj.format_import
             # instance.fps = getattr(data_obj, 'parameters', {}).get('fps', 10) # 优雅
             instance.fps = (getattr(data_obj, 'parameters') or {}).get('fps')
@@ -1512,7 +1529,9 @@ class ImagingData:
                 instance.image_backup = instance.display_source.array
             instance.timestamp_inherited = data_obj.timestamp
             instance.source_type = "ProcessedData"
-            instance.source_name = data_obj.name
+            instance.source_name = display_name_for(data_obj)
+            instance.source_original_name = data_obj.name
+            instance.source_tags = tags_for(data_obj)
             instance.source_format = data_obj.type_processed
             instance.fps = (getattr(data_obj, 'out_processed') or {}).get('fps')
             if data_obj.ROI_applied:

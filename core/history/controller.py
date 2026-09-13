@@ -3,15 +3,26 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QObject, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import QMessageBox
 
 from DataManager import ArrayLoadWorker, Data, ProcessedData, clear_array_cache, collect_array_refs, force_cache_arrays, get_array_store
 from ExtraDialog import DataViewAndSelectPop
+from widget.DataTagEditor import BatchTagEditorDialog, DataTagEditorDialog
 from .dialog import HistoryCacheManagerDialog
 from .manifest import HistoryManifestStore, array_refs_for_manifest, build_manifest_item, cache_status_for_history_item, restore_history_item
+from .annotations import (
+    assign_annotations,
+    bind_manifest_source,
+    display_name_for,
+    history_identity,
+    same_history_identity,
+    tags_for,
+    updated_annotations,
+)
 from diagnostics import AppError, report_exception, report_warning, show_app_error
 from tasks.model import CancellationToken, TaskCancelled
+from dataio.classification import describe_source
 
 
 class CachePersistWorker(QObject):
@@ -81,25 +92,26 @@ class HistoryController:
         self.cache_write_thread = None
         self.cache_write_worker = None
         self.cache_maintenance_threads = {}
+        self._batch_cache_state = None
 
     def data_history_view(self):
-        if self.window.data is None:
+        if not Data.history:
             logging.warning("暂无导入数据历史")
             return
         dialog = DataViewAndSelectPop(datadict=self.window.get_data_all())
         if dialog.exec_():
-            selected_timestamp, _ = dialog.get_selected_timestamp()
-            selected_data = self.window.data.find_history(selected_timestamp)
+            selected_identity, _ = dialog.get_selected_identity()
+            selected_data, _ = self.find_history_item(selected_identity)
             self.load_cached_history_async(selected_data, 'data')
 
     def process_history_view(self):
-        if self.window.processed_data is None:
+        if not ProcessedData.history:
             logging.warning("暂无处理数据历史")
             return
         dialog = DataViewAndSelectPop(processed_datadict=self.window.get_processed_data_all())
         if dialog.exec_():
-            selected_timestamp, _ = dialog.get_selected_timestamp()
-            selected_data = self.window.processed_data.find_history(selected_timestamp)
+            selected_identity, _ = dialog.get_selected_identity()
+            selected_data, _ = self.find_history_item(selected_identity)
             self.load_cached_history_async(selected_data, 'processed_data')
 
     def load_cached_history_async(self, target, attr_name):
@@ -193,6 +205,14 @@ class HistoryController:
         dialog.delete_manifest_requested.connect(self.delete_manifest_item)
         dialog.refresh_requested.connect(self.refresh_cache_dialog)
         dialog.cancel_load_requested.connect(self.cancel_cached_history_load)
+        dialog.edit_current_requested.connect(self.edit_current_annotations)
+        dialog.edit_manifest_requested.connect(self.edit_manifest_annotations)
+        dialog.batch_tag_current_requested.connect(self.batch_edit_current_tags)
+        dialog.batch_tag_manifest_requested.connect(self.batch_edit_manifest_tags)
+        dialog.batch_force_cache_requested.connect(self.force_cache_history_items)
+        dialog.batch_delete_history_requested.connect(self.delete_current_history_items)
+        dialog.batch_recover_manifest_requested.connect(self.restore_manifest_items)
+        dialog.batch_delete_manifest_requested.connect(self.delete_manifest_items)
         self.window.update_status("历史与缓存管理", "working")
         if dialog.exec_():
             params = dialog.get_params()
@@ -237,6 +257,302 @@ class HistoryController:
         self.history_cache_dialog.refresh_current_items(self.current_history_items())
         self.history_cache_dialog.refresh_manifest_items(self.manifest_items())
 
+    def edit_current_annotations(self, identity, timestamp=None):
+        target, _attr_name = self.find_history_item(identity, timestamp)
+        if target is None:
+            report_warning(self.window, "编辑名称与标签", "未找到选中的当前历史")
+            return False
+        editor = DataTagEditorDialog(target, self.history_cache_dialog or self.window)
+        if not editor.exec_():
+            return False
+        annotations = editor.annotations()
+        manifest_dir = getattr(target, "_history_manifest_dir", None)
+        manifest_id = getattr(target, "_history_manifest_id", None)
+        try:
+            if manifest_dir and manifest_id:
+                updated = HistoryManifestStore(Path(manifest_dir)).update_annotations(manifest_id, annotations)
+                if updated is None:
+                    raise KeyError(f"缓存索引中不存在历史项: {manifest_id}")
+            self._apply_annotations_to_memory(target, annotations)
+        except Exception as exc:
+            report_exception(
+                self.window, "名称与标签保存失败", str(exc), exc,
+                stage="保存历史名称与标签",
+            )
+            return False
+        self._annotations_changed()
+        logging.info("已更新历史显示信息: %s", getattr(target, "name", ""))
+        return True
+
+    def edit_manifest_annotations(self, item_id):
+        store = self.manifest_store()
+        item = next((entry for entry in store.load().get("items", []) if entry.get("id") == item_id), None)
+        if item is None:
+            report_warning(self.window, "编辑名称与标签", "未找到选中的可恢复历史")
+            return False
+        editor = DataTagEditorDialog(item, self.history_cache_dialog or self.window)
+        if not editor.exec_():
+            return False
+        annotations = editor.annotations()
+        try:
+            updated = store.update_annotations(item_id, annotations)
+            if updated is None:
+                raise KeyError(f"缓存索引中不存在历史项: {item_id}")
+            self._apply_annotations_to_bound_memory(store.cache_dir, item_id, annotations)
+        except Exception as exc:
+            report_exception(
+                self.window, "名称与标签保存失败", str(exc), exc,
+                stage="保存可恢复历史名称与标签",
+            )
+            return False
+        self._annotations_changed()
+        logging.info("已更新可恢复历史显示信息: %s", item.get("name", ""))
+        return True
+
+    def _memory_history_objects(self):
+        candidates = list(Data.history) + list(ProcessedData.history)
+        candidates.extend([
+            getattr(self.window, "data", None),
+            getattr(self.window, "processed_data", None),
+        ])
+        for canvas in getattr(getattr(self.window, "image_display", None), "display_canvas", []):
+            reference = getattr(canvas.data, "parent_data", None)
+            if callable(reference):
+                try:
+                    candidates.append(reference())
+                except ReferenceError:
+                    pass
+        seen = set()
+        for candidate in candidates:
+            if candidate is None or id(candidate) in seen:
+                continue
+            seen.add(id(candidate))
+            yield candidate
+
+    def _apply_annotations_to_memory(self, target, annotations):
+        for candidate in self._memory_history_objects():
+            if same_history_identity(candidate, target):
+                assign_annotations(candidate, annotations)
+
+    def _apply_annotations_to_bound_memory(self, cache_dir, item_id, annotations):
+        expected_dir = str(Path(cache_dir))
+        for candidate in self._memory_history_objects():
+            if (
+                str(getattr(candidate, "_history_manifest_dir", "")) == expected_dir
+                and getattr(candidate, "_history_manifest_id", None) == item_id
+            ):
+                assign_annotations(candidate, annotations)
+
+    def _annotations_changed(self):
+        image_display = getattr(self.window, "image_display", None)
+        if image_display is not None:
+            for canvas in getattr(image_display, "display_canvas", []):
+                reference = getattr(canvas.data, "parent_data", None)
+                source = None
+                if callable(reference):
+                    try:
+                        source = reference()
+                    except ReferenceError:
+                        pass
+                if source is None:
+                    continue
+                canvas.data.source_name = display_name_for(source)
+                canvas.data.source_original_name = getattr(source, "name", "")
+                canvas.data.source_tags = tags_for(source)
+                details = getattr(canvas, "data_details_dialog", None)
+                if details is not None:
+                    details.refresh()
+            image_display._sync_canvas_identities()
+        self.refresh_cache_dialog()
+
+    @staticmethod
+    def _apply_tag_operation(target, operation, tags):
+        existing = tags_for(target)
+        if operation == "add":
+            final_tags = existing + [tag for tag in tags if tag not in existing]
+        elif operation == "remove":
+            final_tags = [tag for tag in existing if tag not in tags]
+        elif operation == "clear":
+            final_tags = []
+        else:
+            raise ValueError(f"不支持的标签操作: {operation}")
+        return updated_annotations(getattr(target, "annotations", None) if not isinstance(target, dict) else target.get("annotations"), tags=final_tags)
+
+    def batch_edit_current_tags(self, identities):
+        targets = []
+        for identity in identities:
+            target, _ = self.find_history_item(identity)
+            if target is not None:
+                targets.append(target)
+        if not targets:
+            return False
+        editor = BatchTagEditorDialog(len(targets), self.history_cache_dialog or self.window)
+        if not editor.exec_():
+            return False
+        try:
+            updates = [(target, self._apply_tag_operation(target, editor.operation(), editor.tags())) for target in targets]
+            groups = {}
+            for target, annotations in updates:
+                directory = getattr(target, "_history_manifest_dir", None)
+                item_id = getattr(target, "_history_manifest_id", None)
+                if directory and item_id:
+                    groups.setdefault(str(directory), {})[str(item_id)] = annotations
+            for directory, manifest_updates in groups.items():
+                changed = HistoryManifestStore(Path(directory)).update_annotations_many(manifest_updates)
+                if len(changed) != len(manifest_updates):
+                    raise KeyError("部分缓存索引已不存在，批量标签未写入内存")
+            for target, annotations in updates:
+                self._apply_annotations_to_memory(target, annotations)
+        except Exception as exc:
+            report_exception(self.window, "批量标签失败", str(exc), exc, stage="批量编辑当前历史标签")
+            return False
+        self._annotations_changed()
+        logging.info("已批量更新当前历史标签: %d 项", len(updates))
+        return True
+
+    def batch_edit_manifest_tags(self, item_ids):
+        store = self.manifest_store()
+        by_id = {str(item.get("id")): item for item in store.load().get("items", [])}
+        targets = [by_id[item_id] for item_id in map(str, item_ids) if item_id in by_id]
+        if not targets:
+            return False
+        editor = BatchTagEditorDialog(len(targets), self.history_cache_dialog or self.window)
+        if not editor.exec_():
+            return False
+        try:
+            updates = {
+                str(item["id"]): self._apply_tag_operation(item, editor.operation(), editor.tags())
+                for item in targets
+            }
+            changed = store.update_annotations_many(updates)
+            if len(changed) != len(updates):
+                raise KeyError("部分缓存索引已不存在")
+            for item_id, annotations in updates.items():
+                self._apply_annotations_to_bound_memory(store.cache_dir, item_id, annotations)
+        except Exception as exc:
+            report_exception(self.window, "批量标签失败", str(exc), exc, stage="批量编辑可恢复历史标签")
+            return False
+        self._annotations_changed()
+        logging.info("已批量更新可恢复历史标签: %d 项", len(updates))
+        return True
+
+    def delete_current_history_items(self, identities):
+        if self._cache_write_busy("批量删除当前历史"):
+            return False
+        targets = []
+        for identity in identities:
+            target, _ = self.find_history_item(identity)
+            if target is not None:
+                targets.append((identity[0], target))
+        if not targets:
+            return False
+        answer = QMessageBox.question(
+            self.window, "批量删除当前历史",
+            f"将从本次历史移除 {len(targets)} 项，不会删除可恢复索引或缓存文件。是否继续？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return False
+        removed = 0
+        for kind, target in targets:
+            history = Data.history if kind == "Data" else ProcessedData.history
+            removed += bool(self._remove_unique_history(history, target))
+            attr_name = "data" if kind == "Data" else "processed_data"
+            if getattr(self.window, attr_name, None) is target:
+                setattr(self.window, attr_name, None)
+        self.refresh_cache_dialog()
+        logging.info("已批量删除当前历史: %d 项", removed)
+        return True
+
+    def restore_manifest_items(self, item_ids):
+        store = self.manifest_store()
+        by_id = {str(item.get("id")): item for item in store.load().get("items", [])}
+        requested = [by_id[item_id] for item_id in map(str, item_ids) if item_id in by_id]
+        valid = [item for item in requested if store.validate_item_files(item)["ok"]]
+        additions = {"Data": [], "ProcessedData": []}
+        for item in valid:
+            kind = item.get("kind")
+            history = Data.history if kind == "Data" else ProcessedData.history if kind == "ProcessedData" else ()
+            if kind in additions and not any(same_history_identity(existing, item) for existing in history):
+                additions[kind].append(item)
+        for kind, items in additions.items():
+            history = Data.history if kind == "Data" else ProcessedData.history
+            available = (history.maxlen or 0) - len(history) if history.maxlen is not None else len(items)
+            if len(items) > available:
+                report_warning(
+                    self.window, "批量恢复历史",
+                    f"{kind} 还可容纳 {available} 项，本次需新增 {len(items)} 项。请减少选择或先移除部分当前历史。",
+                )
+                return False
+        task = self.window.task_coordinator.create_task("批量恢复历史", "cache_restore_batch")
+        task.start()
+        self.window.task_coordinator.task_updated.emit(task)
+        restored = []
+        failures = []
+        for index, item in enumerate(valid, 1):
+            if task.token.is_cancelled:
+                self.window.task_coordinator.cancelled(task.task_id, "批量恢复已取消")
+                return False
+            try:
+                value = restore_history_item(item, store.cache_dir)
+                history = Data.history if item.get("kind") == "Data" else ProcessedData.history
+                if not any(same_history_identity(existing, value) for existing in history):
+                    history.append(value)
+                    restored.append(value)
+                self.window.task_coordinator.progress(
+                    task.task_id, index, len(valid), f"恢复 {display_name_for(item)}"
+                )
+            except Exception as exc:
+                failures.append(f"{item.get('name', item.get('id'))}: {exc}")
+                logging.exception("批量恢复历史项失败: %s", item.get("id"))
+        self.refresh_cache_dialog()
+        if failures:
+            self.window.task_coordinator.fail(
+                task.task_id, f"成功 {len(restored)} 项，失败 {len(failures)} 项\n" + "\n".join(failures)
+            )
+        else:
+            self.window.task_coordinator.complete(task.task_id, f"已恢复 {len(restored)} 项")
+        if restored and getattr(self.window, "data", None) is None and getattr(self.window, "processed_data", None) is None:
+            first = restored[0]
+            self.load_cached_history_async(first, "data" if isinstance(first, Data) else "processed_data")
+        return not failures
+
+    def delete_manifest_items(self, item_ids):
+        if self._cache_write_busy("批量删除可恢复历史"):
+            return False
+        item_ids = list(dict.fromkeys(map(str, item_ids)))
+        if not item_ids:
+            return False
+        answer = QMessageBox.question(
+            self.window, "批量删除可恢复历史",
+            f"将删除 {len(item_ids)} 条索引。\nYes：同时删除不再被任何数据引用的缓存文件。\nNo：仅删除索引。",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.No,
+        )
+        if answer == QMessageBox.Cancel:
+            return False
+        protected = collect_array_refs(list(Data.history)) + collect_array_refs(list(ProcessedData.history))
+        protected += collect_array_refs(getattr(self.window, "data", None))
+        protected += collect_array_refs(getattr(self.window, "processed_data", None))
+        for canvas in getattr(getattr(self.window, "image_display", None), "display_canvas", []):
+            protected += collect_array_refs(getattr(canvas, "data", None))
+        result = self.manifest_store().delete_items(
+            item_ids, delete_cache_files=(answer == QMessageBox.Yes), protected_refs=protected,
+        )
+        self.refresh_cache_dialog()
+        if result["failed_files"]:
+            report_warning(
+                self.window, "批量删除完成",
+                f"已删除索引 {result['removed']} 条、缓存文件 {result['deleted_files']} 个；"
+                f"{len(result['failed_files'])} 个文件未能删除，详情已写入日志。",
+            )
+            logging.warning("批量删除缓存文件部分失败: %s", result["failed_files"])
+        else:
+            QMessageBox.information(
+                self.window, "批量删除完成",
+                f"已删除索引 {result['removed']} 条，删除缓存文件 {result['deleted_files']} 个。",
+            )
+        return True
+
     def cache_summary(self):
         cache_dir = Path(self.window.tool_params.get("cache_directory") or self.window.default_cache_directory())
         files = list(cache_dir.glob("*.npy")) if cache_dir.exists() else []
@@ -264,7 +580,12 @@ class HistoryController:
             cache_state = "内存"
         return {
             "kind": kind,
-            "name": getattr(item, "name", ""),
+            "identity": history_identity(item, kind),
+            "serial_number": getattr(item, "serial_number", None),
+            "name": display_name_for(item),
+            "original_name": getattr(item, "name", ""),
+            "tags": tags_for(item),
+            "data_category": describe_source(item).label,
             "shape": getattr(item, "datashape", ""),
             "dtype": str(getattr(item, "datatype", "")),
             "timestamp": getattr(item, "timestamp", ""),
@@ -273,19 +594,35 @@ class HistoryController:
             "memory_bytes": status["memory_bytes"],
         }
 
-    def find_history_item(self, kind, timestamp):
+    def find_history_item(self, kind_or_identity, timestamp=None):
+        if timestamp is None and isinstance(kind_or_identity, (tuple, list)) and len(kind_or_identity) == 3:
+            kind, serial_number, timestamp = kind_or_identity
+        else:
+            kind, serial_number = kind_or_identity, None
         if kind == "Data":
-            return Data.find_history(timestamp), "data"
-        if kind == "ProcessedData":
-            return ProcessedData.find_history(timestamp), "processed_data"
+            history, attr_name = Data.history, "data"
+        elif kind == "ProcessedData":
+            history, attr_name = ProcessedData.history, "processed_data"
+        else:
+            return None, None
+        for item in history:
+            identity = history_identity(item, kind)
+            if serial_number is None:
+                if identity[2] == timestamp:
+                    return item, attr_name
+            elif identity == (str(kind), serial_number, timestamp):
+                return item, attr_name
         return None, None
 
-    def select_history_item(self, kind, timestamp):
-        target, attr_name = self.find_history_item(kind, timestamp)
+    def select_history_item(self, identity, timestamp=None):
+        target, attr_name = self.find_history_item(identity, timestamp)
         self.load_cached_history_async(target, attr_name)
 
-    def delete_current_history_item(self, kind, timestamp):
-        target, attr_name = self.find_history_item(kind, timestamp)
+    def delete_current_history_item(self, identity, timestamp=None):
+        if self._cache_write_busy("删除当前历史"):
+            return False
+        target, attr_name = self.find_history_item(identity, timestamp)
+        kind = identity[0] if isinstance(identity, (tuple, list)) else identity
         if target is None:
             report_warning(self.window, "删除历史", "未找到选中的当前历史")
             return False
@@ -306,8 +643,11 @@ class HistoryController:
         logging.info("已删除当前历史: %s", getattr(target, "name", ""))
         return True
 
-    def force_cache_history_item(self, kind, timestamp):
-        target, _ = self.find_history_item(kind, timestamp)
+    def force_cache_history_item(self, identity, timestamp=None):
+        if self._cache_write_busy("缓存落盘"):
+            return
+        target, _ = self.find_history_item(identity, timestamp)
+        kind = identity[0] if isinstance(identity, (tuple, list)) else identity
         if target is None:
             logging.warning("缓存落盘：未找到选中的历史数据")
             self.window.update_status("未找到选中的历史数据", "warning")
@@ -330,11 +670,137 @@ class HistoryController:
         self.cache_write_worker.error_signal.connect(self.cache_write_thread.quit)
         self.cache_write_thread.finished.connect(self.cache_write_worker.deleteLater)
         self.cache_write_thread.finished.connect(self.cache_write_thread.deleteLater)
+        self.cache_write_thread.finished.connect(self._clear_single_cache_write_handles)
         self.cache_write_thread.start()
+
+    def _clear_single_cache_write_handles(self):
+        if self._batch_cache_state is None:
+            self.cache_write_thread = None
+            self.cache_write_worker = None
+
+    def force_cache_history_items(self, identities):
+        if self._cache_write_busy("批量缓存落盘"):
+            return False
+        entries = []
+        for identity in identities:
+            target, _ = self.find_history_item(identity)
+            if target is not None:
+                entries.append((identity[0], target))
+        if not entries:
+            return False
+        task = self.window.task_coordinator.create_task("批量缓存历史数据", "cache_write_batch")
+        task.start(total=len(entries) * 1000)
+        self.window.task_coordinator.task_updated.emit(task)
+        self._batch_cache_state = {
+            "task": task, "entries": entries, "index": 0,
+            "success": 0, "failures": [], "worker": None,
+        }
+        task.cancel_callback = self._cancel_batch_cache
+        self._start_next_batch_cache_item()
+        return True
+
+    def _cancel_batch_cache(self):
+        state = self._batch_cache_state
+        worker = state.get("worker") if state else None
+        if worker is not None:
+            worker.cancel()
+
+    def _start_next_batch_cache_item(self):
+        state = self._batch_cache_state
+        if state is None:
+            return
+        task = state["task"]
+        if task.token.is_cancelled:
+            self.window.task_coordinator.cancelled(task.task_id, "批量缓存落盘已取消")
+            self._batch_cache_state = None
+            return
+        if state["index"] >= len(state["entries"]):
+            message = f"批量缓存完成：成功 {state['success']} 项，失败 {len(state['failures'])} 项"
+            if state["failures"]:
+                logging.error("%s\n%s", message, "\n".join(state["failures"]))
+                self.window.task_coordinator.fail(task.task_id, message)
+            else:
+                self.window.task_coordinator.complete(task.task_id, message)
+            self._batch_cache_state = None
+            self.refresh_cache_dialog()
+            return
+
+        kind, target = state["entries"][state["index"]]
+        thread = QThread()
+        worker = CachePersistWorker(target, task.token)
+        state["worker"] = worker
+        self.cache_write_thread = thread
+        self.cache_write_worker = worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress_signal.connect(
+            lambda current, total, message, target=target: self._batch_cache_progress(
+                target, current, total, message
+            )
+        )
+        worker.finished_signal.connect(
+            lambda _refs, target=target, kind=kind: self._batch_cache_item_done(target, kind)
+        )
+        worker.error_signal.connect(self._batch_cache_item_failed)
+        worker.cancelled_signal.connect(lambda: None)
+        worker.finished_signal.connect(thread.quit)
+        worker.error_signal.connect(thread.quit)
+        worker.cancelled_signal.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._batch_cache_advance)
+        thread.start()
+
+    def _batch_cache_progress(self, target, current, total, message):
+        state = self._batch_cache_state
+        if state is None:
+            return
+        try:
+            fraction = max(0, min(1000, int(float(current) / float(total) * 1000))) if total else 0
+        except (TypeError, ValueError, ZeroDivisionError):
+            fraction = 0
+        self.window.task_coordinator.progress(
+            state["task"].task_id,
+            state["index"] * 1000 + fraction,
+            len(state["entries"]) * 1000,
+            f"第 {state['index'] + 1}/{len(state['entries'])} 项 {display_name_for(target)}：{message}",
+        )
+
+    def _batch_cache_item_done(self, target, kind):
+        state = self._batch_cache_state
+        if state is None:
+            return
+        try:
+            store = self.manifest_store()
+            stored = store.upsert(build_manifest_item(target, kind))
+            bind_manifest_source(target, store.cache_dir, stored.get("id"))
+            state["success"] += 1
+        except Exception as exc:
+            state["failures"].append(f"{getattr(target, 'name', '')}: {exc}")
+            logging.exception("批量缓存索引写入失败")
+
+    def _batch_cache_item_failed(self, message):
+        state = self._batch_cache_state
+        if state is None:
+            return
+        _kind, target = state["entries"][state["index"]]
+        state["failures"].append(f"{getattr(target, 'name', '')}: {message}")
+
+    def _batch_cache_advance(self):
+        state = self._batch_cache_state
+        self.cache_write_thread = None
+        self.cache_write_worker = None
+        if state is None:
+            return
+        state["worker"] = None
+        state["index"] += 1
+        QTimer.singleShot(0, self._start_next_batch_cache_item)
 
     def _finish_force_cache(self, target, kind, task_id):
         manifest_item = build_manifest_item(target, kind)
-        self.manifest_store().upsert(manifest_item)
+        store = self.manifest_store()
+        stored = store.upsert(manifest_item)
+        bind_manifest_source(target, store.cache_dir, stored.get("id"))
         self.window.task_coordinator.complete(task_id, "历史数据缓存完成")
         logging.info("历史数据已强制缓存: %s", getattr(target, "name", ""))
         self.refresh_cache_dialog()
@@ -343,12 +809,16 @@ class HistoryController:
         self.window.task_coordinator.fail(task_id, message)
 
     def cleanup_orphans(self):
+        if self._cache_write_busy("清理孤立缓存"):
+            return False
         manifest = self.manifest_store().load()
         active_refs = collect_array_refs(Data.history) + collect_array_refs(ProcessedData.history)
         active_refs += array_refs_for_manifest(manifest)
         return self._start_cache_maintenance("cleanup", active_refs)
 
     def clear_all_cache(self):
+        if self._cache_write_busy("清除全部缓存"):
+            return False
         Data.clear_history(remove_cache=False)
         ProcessedData.clear_history(remove_cache=False)
         return self._start_cache_maintenance("clear")
@@ -400,7 +870,7 @@ class HistoryController:
             report_warning(self.window, "恢复历史", "缓存文件缺失，无法恢复该历史项")
             return None
         try:
-            restored = restore_history_item(item)
+            restored = restore_history_item(item, store.cache_dir)
             if item.get("kind") == "Data":
                 self._append_unique_history(Data.history, restored)
                 attr_name = "data"
@@ -419,6 +889,8 @@ class HistoryController:
             return None
 
     def delete_manifest_item(self, item_id):
+        if self._cache_write_busy("删除可恢复历史"):
+            return None
         answer = QMessageBox.question(
             self.window,
             "删除可恢复历史",
@@ -438,20 +910,28 @@ class HistoryController:
 
     @staticmethod
     def _append_unique_history(history, item):
-        timestamp = getattr(item, "timestamp", None)
-        serial_number = getattr(item, "serial_number", None)
         for existing in list(history):
-            if getattr(existing, "timestamp", None) == timestamp or getattr(existing, "serial_number", None) == serial_number:
+            if same_history_identity(existing, item):
                 history.remove(existing)
                 break
         history.append(item)
 
     @staticmethod
     def _remove_unique_history(history, item):
-        timestamp = getattr(item, "timestamp", None)
-        serial_number = getattr(item, "serial_number", None)
         for existing in list(history):
-            if existing is item or getattr(existing, "timestamp", None) == timestamp or getattr(existing, "serial_number", None) == serial_number:
+            if existing is item or same_history_identity(existing, item):
                 history.remove(existing)
                 return True
         return False
+
+    def _cache_write_busy(self, action):
+        busy = self._batch_cache_state is not None
+        if not busy and self.cache_write_thread is not None:
+            try:
+                busy = self.cache_write_thread.isRunning()
+            except RuntimeError:
+                self.cache_write_thread = None
+                self.cache_write_worker = None
+        if busy:
+            report_warning(self.window, action, "缓存写入任务正在运行，请等待完成或先取消任务")
+        return busy

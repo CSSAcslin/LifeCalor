@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
 )
 
 from dataio.classification import DataCategory, describe_source, describe_value
+from history.annotations import display_name_for, tags_for
 
 
 class CanvasDataDetailsDialog(QDialog):
@@ -61,9 +62,13 @@ class CanvasDataDetailsDialog(QDialog):
             shape=getattr(image, "imageshape", ()), dtype=getattr(image, "datatype", ""),
             axes=(), time_length=getattr(image, "totalframes", None),
         )
-        name = getattr(image, "source_name", self.canvas.windowTitle())
+        name = display_name_for(source) if source is not None else getattr(image, "source_name", self.canvas.windowTitle())
+        source_tags = tags_for(source) if source is not None else []
+        if not source_tags:
+            source_tags = list(getattr(image, "source_tags", []) or [])
+        tags_text = " ".join(source_tags) or "无标签"
         self.summary.setText(
-            f"{name}  |  {descriptor.label}  |  shape={descriptor.shape}  |  "
+            f"{name}  |  标签: {tags_text}  |  {descriptor.label}  |  shape={descriptor.shape}  |  "
             f"dtype={descriptor.dtype or getattr(image, 'datatype', '')}"
         )
         self.tabs.addTab(self._summary_tree(source, image, descriptor), "数据概要")
@@ -81,8 +86,14 @@ class CanvasDataDetailsDialog(QDialog):
 
     def _summary_tree(self, source, image, descriptor):
         tree = self._new_tree()
+        source_tags = tags_for(source) if source is not None else []
+        if not source_tags:
+            source_tags = list(getattr(image, "source_tags", []) or [])
+        tags_text = " ".join(source_tags) or "无标签"
         values = {
-            "名称": getattr(image, "source_name", ""),
+            "显示名称": display_name_for(source) if source is not None else getattr(image, "source_name", ""),
+            "原始名称": getattr(source, "name", getattr(image, "source_original_name", "")),
+            "标签": tags_text,
             "来源对象": type(source).__name__ if source is not None else "已释放",
             "来源格式": getattr(image, "source_format", ""),
             "数据分类": descriptor.label,

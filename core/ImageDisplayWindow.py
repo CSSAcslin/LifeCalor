@@ -28,6 +28,7 @@ from display.hover import format_hover_value
 from ExtraDialog import ROIInfoDialog, ColorMapDialog, DataExportDialog, ParamsResetDialog
 from widget.AdvancedTimeline import AdvancedTimeline
 from diagnostics import report_exception, report_warning
+from history.annotations import compact_display_name
 
 import matplotlib.cm as cm
 
@@ -104,24 +105,31 @@ class ImageDisplayWindow(QMainWindow):
         Canvas_bar.addSeparator()
         self.layout_button = QToolButton(self)
         self.layout_button.setObjectName("CanvasLayoutButton")
-        self.layout_button.setIcon(self.style().standardIcon(QStyle.SP_TitleBarNormalButton))
+        self.layout_button.setIcon(QIcon(":icons/icon_layout.svg"))
         self.layout_button.setToolTip("排列、聚焦或恢复图像画布")
         self.layout_button.setPopupMode(QToolButton.InstantPopup)
         self.layout_menu = QMenu(self.layout_button)
         self.auto_layout_action = self.layout_menu.addAction("自动排列")
+        self.auto_layout_action.setIcon(QIcon(":icons/icon_layout.svg"))
         self.auto_layout_action.setToolTip("根据当前画布数量自动采用单画布、左右、三画布或四象限布局")
         self.horizontal_layout_action = self.layout_menu.addAction("左右等分")
+        self.horizontal_layout_action.setIcon(QIcon(":icons/icon_layout_horizontal.svg"))
         self.horizontal_layout_action.setToolTip("两张画布左右等宽排列")
         self.vertical_layout_action = self.layout_menu.addAction("上下等分")
+        self.vertical_layout_action.setIcon(QIcon(":icons/icon_layout_vertical.svg"))
         self.vertical_layout_action.setToolTip("两张画布上下等高排列")
         self.quad_layout_action = self.layout_menu.addAction("四象限")
+        self.quad_layout_action.setIcon(QIcon(":icons/icon_layout_quad.svg"))
         self.quad_layout_action.setToolTip("四张画布按 2×2 等分排列")
         self.layout_menu.addSeparator()
         self.focus_layout_action = self.layout_menu.addAction("聚焦当前画布")
+        self.focus_layout_action.setIcon(QIcon(":icons/icon_layout_focus.svg"))
         self.focus_layout_action.setToolTip("临时隐藏其他画布；不会删除数据或改变画布内容")
         self.restore_layout_action = self.layout_menu.addAction("恢复聚焦前布局")
+        self.restore_layout_action.setIcon(QIcon(":icons/icon_layout_restore.svg"))
         self.restore_layout_action.setToolTip("恢复聚焦前的停靠、浮动和可见状态")
         self.reset_layout_action = self.layout_menu.addAction("重置布局")
+        self.reset_layout_action.setIcon(QIcon(":icons/icon_reset.svg"))
         self.reset_layout_action.setToolTip("收回浮动画布并按当前画布数量重新排列")
         self.auto_layout_action.triggered.connect(lambda: self.layout_manager.arrange("auto"))
         self.horizontal_layout_action.triggered.connect(lambda: self.layout_manager.arrange("horizontal"))
@@ -433,10 +441,12 @@ class ImageDisplayWindow(QMainWindow):
     @staticmethod
     def _apply_canvas_identity(canvas, canvas_id):
         source_name = str(canvas.data.source_name).replace("\n", " ")
+        original_name = str(getattr(canvas.data, "source_original_name", source_name)).replace("\n", " ")
+        tags = " ".join(getattr(canvas.data, "source_tags", []) or []) or "无"
         short_name = source_name if len(source_name) <= 36 else f"{source_name[:33]}..."
         canvas.setWindowTitle(f"{canvas_id}-{short_name}")
         canvas.setToolTip(
-            f"画布 {canvas_id}\n数据: {source_name}\n"
+            f"画布 {canvas_id}\n显示名称: {source_name}\n原始名称: {original_name}\n标签: {tags}\n"
             f"Shape: {getattr(canvas.data, 'imageshape', '')}"
         )
     def _sync_canvas_identities(self):
@@ -1272,11 +1282,14 @@ class SubImageDisplayWidget(QDockWidget):
                         self.add_fast_selection(x_int,y_int,self.anchor_mask)
                         method = self.args_dict['anchor_method']
                         frame_index = self.current_time_idx if self.data.is_temporary else 0
+                        source_label = compact_display_name(
+                            getattr(self.data, "source_name", f"canvas{self.id}"), 10
+                        )
                         if method == 'value_distribution':
-                            name = f'canvas{self.id}-({x_int},{y_int})-frame{frame_index}-值分布'
+                            name = f'{source_label}-({x_int},{y_int})-frame{frame_index}-值分布'
                             self.get_value_distribution.emit(self.data, self.anchor_mask, frame_index, name)
                         elif self.data.is_temporary:
-                            name = f'canvas{self.id}-({x_int},{y_int}){method}'
+                            name = f'{source_label}-({x_int},{y_int}){method}'
                             self.get_fast_selection.emit(self.data,self.anchor_mask, method , name)
                         else:
                             logging.warning("二维图像的 anchor 快速提取仅支持值分布统计")

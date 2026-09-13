@@ -21,6 +21,9 @@ from fontTools.merge import layoutPreMerge
 
 from DataManager import Data,ProcessedData,ImagingData
 from widget.DataTreeWidget import DataHistoryTreeWidget, DataTreeEntry
+from widget.DataFilterControls import (
+    TagFilterButton, metadata_matches, style_filter_controls,
+)
 from dataio.classification import DataCategory, describe_source
 import re
 
@@ -1093,6 +1096,7 @@ class DataViewAndSelectPop(QDialog):
         self.add_canvas = add_canvas
 
         self.selected_timestamp = None
+        self.selected_identity = None
         self.selected_index = -1
         self.selected_name = ""
         self.selected_table = None  # 记录选择来自哪个表格
@@ -1157,6 +1161,27 @@ class DataViewAndSelectPop(QDialog):
         tab = QWidget()
         tab_layout = QVBoxLayout(tab)
 
+        filter_layout = QHBoxLayout()
+        search = QLineEdit()
+        search.setPlaceholderText("搜索显示名称、原始名称、标签或来源")
+        search.setClearButtonEnabled(True)
+        search.setToolTip("仅搜索当前列表的元数据，不会读取或扫描数组内容")
+        filter_layout.addWidget(search, 1)
+        tag_filter = TagFilterButton()
+        tags = []
+        for payload in data_list:
+            raw_tags = payload.get("标签", [])
+            values = raw_tags if isinstance(raw_tags, (list, tuple)) else str(raw_tags).split()
+            for tag in values:
+                if tag and tag not in tags:
+                    tags.append(tag)
+        tag_filter.set_tags(tags)
+        filter_layout.addWidget(tag_filter)
+        clear_filter = QPushButton("清除筛选")
+        clear_filter.setToolTip("清除名称和标签筛选，不修改数据")
+        filter_layout.addWidget(clear_filter)
+        style_filter_controls(search, tag_filter, clear_filter)
+        tab_layout.addLayout(filter_layout)
         table = QTableWidget()
         tab_layout.addWidget(table)
 
@@ -1166,6 +1191,12 @@ class DataViewAndSelectPop(QDialog):
         # 添加到选项卡
         self.tab_widget.addTab(tab, tab_name)
         self.tables.append(table)
+        table._search_control = search
+        table._tag_filter = tag_filter
+        search.textChanged.connect(lambda _text, t=table: self._filter_table(t))
+        tag_filter.filterChanged.connect(lambda t=table: self._filter_table(t))
+        clear_filter.clicked.connect(search.clear)
+        clear_filter.clicked.connect(tag_filter.clear_filter)
 
         # 排序功能
         table.setSortingEnabled(True)
@@ -1199,13 +1230,15 @@ class DataViewAndSelectPop(QDialog):
                 item.setToolTip(value)
                 item.setTextAlignment(Qt.AlignCenter)
                 table.setItem(row_idx, col_idx, item)
+            if keys:
+                table.item(row_idx, 0).setData(Qt.UserRole, dict(data_dict))
 
             # 在最后一列创建并设置按钮
             button_text = "显示选择" if self.add_canvas else "设为当前"
             button = QPushButton(button_text)
 
             # 使用lambda表达式捕获当前行索引和表格
-            button.clicked.connect(lambda checked, r=row_idx, t=table: self.on_row_button_clicked(r, t))
+            button.clicked.connect(lambda checked, payload=dict(data_dict), t=table: self._select_payload(payload, t))
             table.setCellWidget(row_idx, num_cols - 1, button)
 
         # 调整列宽以自适应内容
@@ -1217,27 +1250,58 @@ class DataViewAndSelectPop(QDialog):
 
     def on_row_button_clicked(self, row_index, table):
         """处理行按钮点击事件"""
-        # 确定数据来自哪个表格
-        table_index = self.tables.index(table)
-        if table_index == 0 and self.datadict != []:
-            data_list = self.datadict
-            self.selected_table = 'data'
-        else:
-            data_list = self.processed_datadict
-            self.selected_table = 'processed_data'
-
+        first_item = table.item(row_index, 0)
+        selected_data = first_item.data(Qt.UserRole) if first_item is not None else None
+        if not selected_data:
+            return
         self.selected_index = row_index
-        selected_data = data_list[row_index]
+        self._select_payload(selected_data, table)
+
+    def _select_payload(self, selected_data, table):
+        self.selected_table = 'data' if selected_data.get('type') == 'Data' else 'processed_data'
 
         # 获取名称和时间戳
         name = selected_data.get('name')
-        self.selected_name = str(name) if name else f"数据{row_index + 1}"
+        self.selected_name = str(name) if name else "未命名数据"
         self.selected_timestamp = selected_data.get('timestamp')
+        self.selected_identity = (
+            selected_data.get('type'),
+            selected_data.get('serial_number', selected_data.get('序号')),
+            self.selected_timestamp,
+        )
 
         # 更新状态显示
         self.selected_data_label.setText(self.selected_name)
 
         self.accept()
+
+    @staticmethod
+    def _filter_table(table, text=None):
+        search = getattr(table, "_search_control", None)
+        query = str(search.text() if search is not None else text or "").casefold().strip()
+        tag_filter = getattr(table, "_tag_filter", None)
+        for row in range(table.rowCount()):
+            first_item = table.item(row, 0)
+            payload = first_item.data(Qt.UserRole) if first_item is not None else {}
+            searchable = " ".join(
+                str(value) for key, value in payload.items() if key != "timestamp"
+            ).casefold()
+            raw_tags = payload.get("标签", [])
+            tags = raw_tags if isinstance(raw_tags, (list, tuple)) else str(raw_tags).split()
+            metadata = {
+                "display_name": payload.get("name", ""),
+                "original_name": payload.get("原始名", ""),
+                "source_name": payload.get("数据源", ""),
+                "tags": tags,
+            }
+            matches = (not query or query in searchable)
+            if tag_filter is not None:
+                matches = matches and metadata_matches(
+                    metadata,
+                    tags=tag_filter.selected_tags(),
+                    untagged=tag_filter.untagged_selected(),
+                )
+            table.setRowHidden(row, not matches)
 
     def on_cell_clicked(self, row_index, col_index, table):
         """处理单元格点击事件"""
@@ -1248,6 +1312,10 @@ class DataViewAndSelectPop(QDialog):
     def get_selected_timestamp(self):
         """获取选择的数据信息,(timestamp,selected_type(data or processed_data))"""
         return self.selected_timestamp, self.selected_table
+
+    def get_selected_identity(self):
+        """返回稳定历史身份 (kind, serial_number, timestamp)。"""
+        return self.selected_identity, self.selected_table
 
 # 帮助dialog
 class CustomHelpDialog(QDialog):
@@ -1879,12 +1947,58 @@ class DataTreeViewDialog(QDialog):
         header_layout.addWidget(refresh_btn)
         header_layout.addWidget(expand_all_btn)
         layout.addLayout(header_layout)
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("搜索"))
+        self.search_filter = QLineEdit()
+        self.search_filter.setClearButtonEnabled(True)
+        self.search_filter.setPlaceholderText("显示名称、原始名称或 Other Results key")
+        self.search_filter.textChanged.connect(self._filter_tree)
+        filter_layout.addWidget(self.search_filter, 1)
+        self.category_filter = QComboBox()
+        self.category_filter.setToolTip("按标量、向量、图片、视频等数据类型筛选")
+        self.category_filter.currentIndexChanged.connect(self._filter_tree)
+        filter_layout.addWidget(self.category_filter)
+        self.tag_filter = TagFilterButton()
+        self.tag_filter.filterChanged.connect(self._filter_tree)
+        filter_layout.addWidget(self.tag_filter)
+        clear_filter = QPushButton("清除筛选")
+        clear_filter.clicked.connect(self._clear_filters)
+        filter_layout.addWidget(clear_filter)
+        style_filter_controls(
+            self.search_filter, self.category_filter, self.tag_filter, clear_filter
+        )
+        layout.addLayout(filter_layout)
         self.tree = DataHistoryTreeWidget(self, self._tree_action_factory)
         layout.addWidget(self.tree)
+        self.refresh_data()
 
     def refresh_data(self):
         self.tree.refresh_data()
         self.node_map = self.tree.node_map
+        categories, tags = self.tree.available_filter_values()
+        selected = self.category_filter.currentData() if self.category_filter.count() else ""
+        self.category_filter.blockSignals(True)
+        self.category_filter.clear()
+        self.category_filter.addItem("全部类型", "")
+        for category in categories:
+            self.category_filter.addItem(category, category)
+        self.category_filter.setCurrentIndex(max(0, self.category_filter.findData(selected)))
+        self.category_filter.blockSignals(False)
+        self.tag_filter.set_tags(tags)
+        self._filter_tree()
+
+    def _filter_tree(self, _value=None):
+        self.tree.filter_entries(
+            query=self.search_filter.text(),
+            category=self.category_filter.currentData() or "",
+            tags=self.tag_filter.selected_tags(),
+            untagged=self.tag_filter.untagged_selected(),
+        )
+
+    def _clear_filters(self):
+        self.search_filter.clear()
+        self.category_filter.setCurrentIndex(0)
+        self.tag_filter.clear_filter()
 
     def expand_except_parameters_results(self):
         self.tree.expand_except_metadata()

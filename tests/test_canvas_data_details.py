@@ -14,6 +14,7 @@ if str(CORE) not in sys.path:
 
 from PyQt5.QtWidgets import QApplication, QWidget
 from display.data_details import CanvasDataDetailsDialog
+from history.annotations import updated_annotations
 
 
 class FakeCanvas(QWidget):
@@ -59,6 +60,8 @@ class CanvasDataDetailsTests(unittest.TestCase):
         source.time_point = np.arange(4)
         source.parameters = {"fps": 20, "calibration": {"unit": "nm"}}
         source.out_processed = {"map": payload}
+        source.name = "generated"
+        source.annotations = updated_annotations(None, display_name="Alias", tags=["🔬"])
         canvas = FakeCanvas(source)
         dialog = CanvasDataDetailsDialog(canvas, canvas)
         self.addCleanup(dialog.close)
@@ -66,6 +69,7 @@ class CanvasDataDetailsTests(unittest.TestCase):
         self.assertEqual(dialog.tabs.count(), 4)
         self.assertIn("视频", dialog.summary.text())
         self.assertIn("shape=(4, 8, 9)", dialog.summary.text())
+        self.assertIn("🔬", dialog.summary.text())
 
 
 if __name__ == "__main__":

@@ -56,6 +56,8 @@ class HistoryTimestampDisplayTests(unittest.TestCase):
             current_items=[{
                 "kind": "Data",
                 "name": "raw",
+                "serial_number": 1,
+                "identity": ("Data", 1, timestamp),
                 "timestamp": timestamp,
             }],
             manifest_items=[{
@@ -69,10 +71,10 @@ class HistoryTimestampDisplayTests(unittest.TestCase):
 
         current = dialog.current_tree.topLevelItem(0)
         manifest = dialog.manifest_tree.topLevelItem(0)
-        self.assertEqual(dialog.current_tree.headerItem().text(7), "时间")
-        self.assertEqual(current.text(7), expected)
-        self.assertEqual(current.data(0, Qt.UserRole), ("Data", timestamp))
-        self.assertEqual(manifest.text(7), expected)
+        self.assertEqual(dialog.current_tree.headerItem().text(9), "时间")
+        self.assertEqual(current.text(9), expected)
+        self.assertEqual(current.data(0, Qt.UserRole), ("Data", 1, timestamp))
+        self.assertEqual(manifest.text(9), expected)
         self.assertEqual(manifest.data(0, Qt.UserRole), "Data:1")
         dialog.close()
 
@@ -343,6 +345,36 @@ class HistoryCacheManagerTests(unittest.TestCase):
         self.assertEqual(result["deleted_files"], 0)
         self.assertTrue(cache_file.exists())
         self.assertEqual(store.load()["items"], [])
+
+    def test_batch_delete_protects_shared_and_active_refs(self):
+        shared_file = self.cache_dir / "shared.npy"
+        active_file = self.cache_dir / "active.npy"
+        np.save(shared_file, np.zeros((2, 3), dtype=np.float32))
+        np.save(active_file, np.ones((2, 3), dtype=np.float32))
+        shared_ref = ArrayRef(shared_file, (2, 3), "float32", 24, 1.0, "shared")
+        active_ref = ArrayRef(active_file, (2, 3), "float32", 24, 1.0, "active")
+        store = HistoryManifestStore(self.cache_dir)
+        store.upsert({
+            "id": "Data:1:10.0", "kind": "Data", "name": "one",
+            "arrays": {
+                "data_origin": array_ref_to_dict(shared_ref),
+                "out_processed.active": array_ref_to_dict(active_ref),
+            },
+        })
+        store.upsert({
+            "id": "Data:2:20.0", "kind": "Data", "name": "two",
+            "arrays": {"data_origin": array_ref_to_dict(shared_ref)},
+        })
+
+        result = store.delete_items(
+            ["Data:1:10.0"], delete_cache_files=True, protected_refs=[active_ref],
+        )
+
+        self.assertEqual(result["removed"], 1)
+        self.assertEqual(result["deleted_files"], 0)
+        self.assertTrue(shared_file.exists())
+        self.assertTrue(active_file.exists())
+        self.assertEqual([item["id"] for item in store.load()["items"]], ["Data:2:20.0"])
 
     def test_manifest_file_is_json_and_uses_schema_version(self):
         store = HistoryManifestStore(self.cache_dir)

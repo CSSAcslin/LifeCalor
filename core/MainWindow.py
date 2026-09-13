@@ -31,6 +31,7 @@ from ThreadController import is_thread_active as thread_is_active
 from exporting import ExportController
 from selection import SelectionController
 from history import HistoryController
+from history.annotations import display_name_for, tags_for
 from history.manifest import HistoryManifestStore, array_refs_for_manifest
 from progress import normalize_progress
 from display.status import render_status_update
@@ -1586,31 +1587,32 @@ class MainWindow(QMainWindow):
     """数据导入相关"""
     def get_data_all(self) ->  List[Dict[str, Any]]:
         Data_list = []
-        if self.data is None:
-            return []
         # 直接读取历史数据
-        for data in self.data.history:
+        for data in Data.history:
             Data_list.append({
                 "type": 'Data',
-                "name": data.name,
+                "name": display_name_for(data),
+                "原始名": data.name,
+                "标签": " ".join(tags_for(data)),
                 "序号": data.serial_number,
                 "导入格式": data.format_import,
                 "数据大小": data.datashape,
                 "timestamp": data.timestamp,
             })
-            Data_list.reverse()
+        Data_list.reverse()
         return Data_list
 
     def get_processed_data_all(self) ->  List[Dict[str, Any]]:
         ProcessedData_list = []
-        if self.processed_data is None:
-            return []
         # 直接读取历史数据
-        for processed in self.processed_data.history:
+        for processed in ProcessedData.history:
                 ProcessedData_list.append({
                     "type": "ProcessedData",
-                    "name": processed.name,
+                    "name": display_name_for(processed),
+                    "原始名": processed.name,
+                    "标签": " ".join(tags_for(processed)),
                     "处理类型": processed.type_processed,
+                    "序号": processed.serial_number,
                     "数据大小": processed.datashape,
                     "数据源": self._find_parent_name(processed.timestamp_inherited),
                     "timestamp": processed.timestamp,
@@ -1627,7 +1629,7 @@ class MainWindow(QMainWindow):
         if data_history is not None:
             for data in list(data_history):
                 if data.timestamp == timestamp:
-                    return data.name
+                    return display_name_for(data)
 
         processed_history = getattr(ProcessedData, 'history', None)
         if processed_history is None and self.processed_data is not None:
@@ -1635,7 +1637,7 @@ class MainWindow(QMainWindow):
         if processed_history is not None:
             for processed in list(processed_history):
                 if processed.timestamp == timestamp:
-                    return processed.name
+                    return display_name_for(processed)
 
         return '已恢复历史'
 

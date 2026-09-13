@@ -20,6 +20,12 @@
     <file alias="icons/icon_cancel.svg">resources/icon_cancel.svg</file>
     <file alias="icons/icon_reset.svg">resources/icon_reset.svg</file>
     <file alias="icons/icon_export.svg">resources/icon_export.svg</file>
+    <file alias="icons/icon_layout.svg">resources/icon_layout.svg</file>
+    <file alias="icons/icon_layout_horizontal.svg">resources/icon_layout_horizontal.svg</file>
+    <file alias="icons/icon_layout_vertical.svg">resources/icon_layout_vertical.svg</file>
+    <file alias="icons/icon_layout_quad.svg">resources/icon_layout_quad.svg</file>
+    <file alias="icons/icon_layout_focus.svg">resources/icon_layout_focus.svg</file>
+    <file alias="icons/icon_layout_restore.svg">resources/icon_layout_restore.svg</file>
     <file>LifeCalor.ico</file>
 </qresource>
 </RCC>

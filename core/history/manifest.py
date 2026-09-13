@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -9,9 +12,22 @@ import numpy as np
 
 from ArrayCache import ArrayRef
 from DataManager import Data, ProcessedData, collect_array_refs
+from history.annotations import (
+    bind_manifest_source,
+    copy_annotations,
+    manifest_item_id,
+)
 
 MANIFEST_FILENAME = "history_manifest.json"
 SCHEMA_VERSION = 1
+_LOCKS_GUARD = threading.Lock()
+_STORE_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _store_lock(path: Path) -> threading.RLock:
+    key = str(path.resolve())
+    with _LOCKS_GUARD:
+        return _STORE_LOCKS.setdefault(key, threading.RLock())
 
 
 def _json_safe(value: Any):
@@ -139,7 +155,7 @@ def _restore_common_fields(instance, item: dict):
         object.__setattr__(instance, "framesize", shape[0])
 
 
-def restore_history_item(item: dict):
+def restore_history_item(item: dict, manifest_dir: Path | str | None = None):
     kind = item.get("kind")
     arrays = item.get("arrays") or {}
     metadata = item.get("metadata") or {}
@@ -147,6 +163,7 @@ def restore_history_item(item: dict):
     if kind == "Data":
         instance = Data.__new__(Data)
         _restore_common_fields(instance, item)
+        object.__setattr__(instance, "annotations", copy_annotations(item.get("annotations")))
         object.__setattr__(instance, "format_import", item.get("format_import", ""))
         object.__setattr__(instance, "parameters", metadata.get("parameters") or {})
         object.__setattr__(instance, "time_point", _restore_time_point(metadata, tuple(item.get("shape", ())), metadata.get("parameters") or {}))
@@ -163,11 +180,13 @@ def restore_history_item(item: dict):
         else:
             object.__setattr__(instance, "_image_import_storage", None)
             object.__setattr__(instance, "image_import", None)
+        bind_manifest_source(instance, manifest_dir, item.get("id"))
         return instance
 
     if kind == "ProcessedData":
         instance = ProcessedData.__new__(ProcessedData)
         _restore_common_fields(instance, item)
+        object.__setattr__(instance, "annotations", copy_annotations(item.get("annotations")))
         object.__setattr__(instance, "timestamp_inherited", item.get("timestamp_inherited"))
         object.__setattr__(instance, "type_processed", item.get("type_processed", ""))
         object.__setattr__(instance, "parameters", metadata.get("parameters") or {})
@@ -184,6 +203,7 @@ def restore_history_item(item: dict):
                 key = field_name.split(".", 1)[1]
                 out_processed[key] = array_ref_from_dict(array_info)
         object.__setattr__(instance, "out_processed", out_processed)
+        bind_manifest_source(instance, manifest_dir, item.get("id"))
         return instance
 
     raise ValueError(f"不支持恢复的历史类型: {kind}")
@@ -268,9 +288,10 @@ def build_manifest_item(item, kind: str | None = None) -> dict:
         "time_point": _serialize_time_point(getattr(item, "time_point", None)),
     }
     return {
-        "id": f"{kind}:{getattr(item, 'serial_number', '')}:{getattr(item, 'timestamp', '')}",
+        "id": manifest_item_id(item, kind),
         "kind": kind,
         "name": getattr(item, "name", ""),
+        "annotations": copy_annotations(getattr(item, "annotations", None)),
         "type_processed": getattr(item, "type_processed", ""),
         "format_import": getattr(item, "format_import", ""),
         "timestamp": getattr(item, "timestamp", None),
@@ -292,6 +313,7 @@ class HistoryManifestStore:
     def __init__(self, cache_dir: Path | str):
         self.cache_dir = Path(cache_dir)
         self.path = self.cache_dir / MANIFEST_FILENAME
+        self._lock = _store_lock(self.path)
 
     def empty_manifest(self) -> dict:
         return {
@@ -300,33 +322,104 @@ class HistoryManifestStore:
             "items": [],
         }
 
-    def load(self) -> dict:
+    def _load_unlocked(self) -> dict:
         if not self.path.exists():
             return self.empty_manifest()
         with self.path.open("r", encoding="utf-8") as fh:
             data = json.load(fh)
-        if data.get("schema_version") != SCHEMA_VERSION:
-            data["schema_version"] = SCHEMA_VERSION
+        data.setdefault("schema_version", SCHEMA_VERSION)
         data.setdefault("items", [])
         return data
 
-    def save(self, manifest: dict) -> dict:
+    def load(self) -> dict:
+        with self._lock:
+            return self._load_unlocked()
+
+    def _save_unlocked(self, manifest: dict) -> dict:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         manifest = dict(manifest)
+        try:
+            schema = int(manifest.get("schema_version", SCHEMA_VERSION))
+        except (TypeError, ValueError):
+            schema = SCHEMA_VERSION
+        if schema > SCHEMA_VERSION:
+            raise ValueError(f"历史索引版本 {schema} 高于当前支持版本 {SCHEMA_VERSION}")
         manifest["schema_version"] = SCHEMA_VERSION
         manifest["saved_at"] = time.time()
         manifest.setdefault("items", [])
-        with self.path.open("w", encoding="utf-8") as fh:
-            json.dump(manifest, fh, ensure_ascii=False, indent=2)
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self.cache_dir,
+                prefix=f".{self.path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as fh:
+                temporary_path = Path(fh.name)
+                json.dump(manifest, fh, ensure_ascii=False, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(temporary_path, self.path)
+        except Exception:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+            raise
         return manifest
 
+    def save(self, manifest: dict) -> dict:
+        with self._lock:
+            return self._save_unlocked(manifest)
+
+    def update(self, mutator):
+        with self._lock:
+            manifest = self._load_unlocked()
+            result = mutator(manifest)
+            self._save_unlocked(manifest)
+            return result
+
     def upsert(self, item: dict) -> dict:
-        manifest = self.load()
-        items = [existing for existing in manifest.get("items", []) if existing.get("id") != item.get("id")]
-        items.append(item)
-        manifest["items"] = items
-        self.save(manifest)
-        return item
+        def mutate(manifest):
+            items = list(manifest.get("items", []))
+            existing = next((entry for entry in items if entry.get("id") == item.get("id")), None)
+            merged = {**(existing or {}), **item}
+            manifest["items"] = [entry for entry in items if entry.get("id") != item.get("id")]
+            manifest["items"].append(merged)
+            return merged
+
+        return self.update(mutate)
+
+    def update_annotations(self, item_id: str, annotations: dict) -> dict | None:
+        normalized = copy_annotations(annotations)
+
+        def mutate(manifest):
+            for item in manifest.get("items", []):
+                if item.get("id") == item_id:
+                    item["annotations"] = normalized
+                    item["annotations_updated_at"] = time.time()
+                    return dict(item)
+            return None
+
+        return self.update(mutate)
+
+    def update_annotations_many(self, updates: dict[str, dict]) -> list[dict]:
+        normalized = {
+            str(item_id): copy_annotations(annotations)
+            for item_id, annotations in updates.items()
+        }
+
+        def mutate(manifest):
+            changed = []
+            for item in manifest.get("items", []):
+                item_id = str(item.get("id", ""))
+                if item_id in normalized:
+                    item["annotations"] = normalized[item_id]
+                    item["annotations_updated_at"] = time.time()
+                    changed.append(dict(item))
+            return changed
+
+        return self.update(mutate)
 
     def validate_item_files(self, item: dict) -> dict:
         missing = []
@@ -340,42 +433,84 @@ class HistoryManifestStore:
         return [item for item in self.load().get("items", []) if self.validate_item_files(item)["ok"]]
 
     def remove_missing_items(self) -> int:
-        manifest = self.load()
-        old_items = manifest.get("items", [])
-        new_items = [item for item in old_items if self.validate_item_files(item)["ok"]]
-        manifest["items"] = new_items
-        self.save(manifest)
-        return len(old_items) - len(new_items)
+        def mutate(manifest):
+            old_items = manifest.get("items", [])
+            new_items = [item for item in old_items if self.validate_item_files(item)["ok"]]
+            manifest["items"] = new_items
+            return len(old_items) - len(new_items)
+
+        return self.update(mutate)
 
     def clear_items(self) -> int:
-        manifest = self.load()
-        old_items = manifest.get("items", [])
-        manifest["items"] = []
-        self.save(manifest)
-        return len(old_items)
+        def mutate(manifest):
+            old_items = manifest.get("items", [])
+            manifest["items"] = []
+            return len(old_items)
+
+        return self.update(mutate)
 
     def delete_item(self, item_id: str, delete_cache_files: bool = False) -> dict:
-        manifest = self.load()
-        old_items = list(manifest.get("items", []))
-        target = next((item for item in old_items if item.get("id") == item_id), None)
-        if target is None:
-            return {"removed": False, "deleted_files": 0}
+        with self._lock:
+            manifest = self._load_unlocked()
+            old_items = list(manifest.get("items", []))
+            target = next((item for item in old_items if item.get("id") == item_id), None)
+            if target is None:
+                return {"removed": False, "deleted_files": 0}
 
-        remaining_items = [item for item in old_items if item.get("id") != item_id]
-        deleted_files = 0
-        if delete_cache_files:
+            remaining_items = [item for item in old_items if item.get("id") != item_id]
             remaining_paths = manifest_path_keys({"items": remaining_items})
-            seen_paths: set[str] = set()
-            for ref in array_refs_for_item(target):
-                key = _ref_path_key(ref)
-                if key in remaining_paths or key in seen_paths:
-                    continue
-                seen_paths.add(key)
-                path = Path(ref.path)
-                if path.exists() and path.is_file():
-                    path.unlink()
-                    deleted_files += 1
+            manifest["items"] = remaining_items
+            self._save_unlocked(manifest)
 
-        manifest["items"] = remaining_items
-        self.save(manifest)
-        return {"removed": True, "deleted_files": deleted_files}
+            deleted_files = 0
+            if delete_cache_files:
+                seen_paths: set[str] = set()
+                for ref in array_refs_for_item(target):
+                    key = _ref_path_key(ref)
+                    if key in remaining_paths or key in seen_paths:
+                        continue
+                    seen_paths.add(key)
+                    path = Path(ref.path)
+                    if path.exists() and path.is_file():
+                        path.unlink()
+                        deleted_files += 1
+            return {"removed": True, "deleted_files": deleted_files}
+
+    def delete_items(self, item_ids, delete_cache_files=False, protected_refs=()) -> dict:
+        requested = {str(item_id) for item_id in item_ids}
+        with self._lock:
+            manifest = self._load_unlocked()
+            old_items = list(manifest.get("items", []))
+            targets = [item for item in old_items if str(item.get("id", "")) in requested]
+            remaining_items = [item for item in old_items if str(item.get("id", "")) not in requested]
+            manifest["items"] = remaining_items
+            self._save_unlocked(manifest)
+
+            deleted_files = 0
+            failed_files = []
+            if delete_cache_files:
+                protected_paths = manifest_path_keys({"items": remaining_items})
+                protected_paths.update(_ref_path_key(ref) for ref in protected_refs)
+                candidate_paths = {}
+                for item in targets:
+                    for ref in array_refs_for_item(item):
+                        candidate_paths[_ref_path_key(ref)] = Path(ref.path)
+                cache_root = self.cache_dir.resolve()
+                for key, path in candidate_paths.items():
+                    if key in protected_paths:
+                        continue
+                    try:
+                        resolved = path.resolve()
+                        if not resolved.is_relative_to(cache_root):
+                            raise ValueError(f"缓存文件不在当前缓存目录内: {path}")
+                        if resolved.exists() and resolved.is_file():
+                            resolved.unlink()
+                            deleted_files += 1
+                    except Exception as exc:
+                        failed_files.append({"path": str(path), "error": str(exc)})
+            return {
+                "removed": len(targets),
+                "missing": len(requested) - len(targets),
+                "deleted_files": deleted_files,
+                "failed_files": failed_files,
+            }
