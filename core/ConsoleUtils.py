@@ -53,10 +53,9 @@ class ConsoleWidget(QWidget):
         # 日志输出区域
         self.console_output = QTextEdit()
         self.console_output.setReadOnly(True)
+        self.console_output.setProperty("consoleOutput", True)
         self.console_output.setStyleSheet("""
             QTextEdit {
-                background-color: black;
-                color: #00FF00;
                 font-family: Consolas;
                 font-size: 10pt;
             }
@@ -66,17 +65,6 @@ class ConsoleWidget(QWidget):
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setTextVisible(True)
-        self.progress_bar.setStyleSheet("""
-            QProgressBar {
-                border: 1px solid grey;
-                border-radius: 3px;
-                text-align: center;
-            }
-            QProgressBar::chunk {
-                background-color: #05B8CC;
-                width: 10px;
-            }
-        """)
         self.progress_bar.hide()
 
         layout.addWidget(self.console_output)

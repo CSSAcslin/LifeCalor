@@ -111,7 +111,6 @@ class UpdateDialog(QDialog):
             self.remind_button.clicked.connect(self.remind_later)
             button_layout.addWidget(self.remind_button)
             self.never_button = QPushButton("永不提醒")
-            self.never_button.setStyleSheet("""QPushButton {color: rgba(0, 0, 0, 172);}""")
             self.never_button.clicked.connect(self.remind_never)
             button_layout.addWidget(self.never_button)
 

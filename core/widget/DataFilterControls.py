@@ -6,34 +6,9 @@ from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import QAction, QMenu, QToolButton
 
 
-FILTER_CONTROL_STYLE = """
-QLineEdit[filterControl="true"], QComboBox[filterControl="true"], QToolButton[filterControl="true"] {
-    padding: 2px 4px;
-    border: 1px solid #9ad19a;
-    border-radius: 4px;
-    background: #ffffff;
-    color: #2E7D32;
-}
-QLineEdit[filterControl="true"]:focus, QComboBox[filterControl="true"]:focus,
-QToolButton[filterControl="true"]:checked {
-    border-color: #4caf50;
-}
-QComboBox[filterControl="true"]::drop-down {
-    border: 0;
-    width: 24px;
-}
-QToolButton[filterControl="true"]::menu-indicator {
-    subcontrol-position: right center;
-    subcontrol-origin: padding;
-    right: 5px;
-}
-"""
-
-
 def style_filter_controls(*widgets):
     for widget in widgets:
         widget.setProperty("filterControl", True)
-        widget.setStyleSheet(FILTER_CONTROL_STYLE)
         widget.setFixedHeight(30)
 
 
@@ -67,7 +42,6 @@ class TagFilterButton(QToolButton):
         super().__init__(parent)
         self.setPopupMode(QToolButton.InstantPopup)
         self.setProperty("filterControl", True)
-        self.setStyleSheet(FILTER_CONTROL_STYLE)
         self.setToolTip("筛选包含任意一个所选表情标签的数据；“无标签”与具体标签互斥")
         self._menu = QMenu(self)
         self.setMenu(self._menu)

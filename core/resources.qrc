@@ -26,6 +26,9 @@
     <file alias="icons/icon_layout_quad.svg">resources/icon_layout_quad.svg</file>
     <file alias="icons/icon_layout_focus.svg">resources/icon_layout_focus.svg</file>
     <file alias="icons/icon_layout_restore.svg">resources/icon_layout_restore.svg</file>
+    <file alias="appearance/style.qss">style.qss</file>
+    <file alias="appearance/light.qss">appearance/light.qss</file>
+    <file alias="appearance/dark.qss">appearance/dark.qss</file>
     <file>LifeCalor.ico</file>
 </qresource>
 </RCC>

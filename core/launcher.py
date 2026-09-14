@@ -35,18 +35,20 @@ def _configure_application_icon(app):
 
 def _configure_appearance(app):
     app.setStyle("Fusion")
-    qss_path = _resource_root() / "style.qss"
-    try:
-        app.setStyleSheet(qss_path.read_text(encoding="utf-8"))
-    except OSError:
-        logging.warning("无法读取全局样式文件: %s", qss_path, exc_info=True)
-
     for font_path in (
         "C:/Windows/Fonts/NotoSansSC-VF.ttf",
         "C:/Windows/Fonts/calibril.ttf",
     ):
         if Path(font_path).exists():
             QFontDatabase.addApplicationFont(font_path)
+    try:
+        from appearance import install_theme_manager
+
+        return install_theme_manager(app)
+    except Exception:
+        logging.error("界面主题初始化失败，使用 Fusion 安全外观", exc_info=True)
+        app.setStyleSheet("")
+        return None
 
 
 def main():
@@ -65,11 +67,10 @@ def main():
 
     log_file = install_early_logging()
     icon_path = _configure_application_icon(app)
+    _configure_appearance(app)
     splash = StartupSplash(icon_path)
     splash.show_ready(app)
     logging.info("启动页首次可见耗时: %.3fs", time.perf_counter() - started_at)
-
-    _configure_appearance(app)
 
     from startup.bootstrap import launch_main_window
 

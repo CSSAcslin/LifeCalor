@@ -31,26 +31,54 @@ class StartupSplash(QWidget):
         self._build_ui(Path(icon_path) if icon_path else None)
 
     def _build_ui(self, icon_path):
+        colors = {
+            "panel": "white",
+            "border": "#8BCB8B",
+            "name": "#1F4D2E",
+            "version": "#607066",
+            "status": "#274B33",
+            "detail": "#6B746E",
+            "track": "#E5EEE7",
+            "accent": "#4FA764",
+        }
+        try:
+            from appearance import get_theme_manager
+
+            manager = get_theme_manager(QApplication.instance())
+            if manager is not None and manager.current_theme == "dark":
+                tokens = manager.tokens
+                colors.update(
+                    panel=tokens["panel_bg"],
+                    border=tokens["outline"],
+                    name=tokens["text"],
+                    version=tokens["secondary"],
+                    status=tokens["text"],
+                    detail=tokens["secondary"],
+                    track=tokens["border"],
+                    accent=tokens["accent"],
+                )
+        except Exception:
+            pass
         self.setStyleSheet(
-            """
-            QWidget#LifeCalorStartupSplash {
-                background: white;
-                border: 1px solid #8BCB8B;
+            f"""
+            QWidget#LifeCalorStartupSplash {{
+                background: {colors['panel']};
+                border: 1px solid {colors['border']};
                 border-radius: 6px;
-            }
-            QLabel#StartupName { color: #1F4D2E; font-size: 20pt; font-weight: 600; }
-            QLabel#StartupVersion { color: #607066; font-size: 10pt; }
-            QLabel#StartupStatus { color: #274B33; font-size: 10pt; }
-            QLabel#StartupDetail { color: #6B746E; font-size: 9pt; }
-            QProgressBar {
+            }}
+            QLabel#StartupName {{ color: {colors['name']}; font-size: 20pt; font-weight: 600; }}
+            QLabel#StartupVersion {{ color: {colors['version']}; font-size: 10pt; }}
+            QLabel#StartupStatus {{ color: {colors['status']}; font-size: 10pt; }}
+            QLabel#StartupDetail {{ color: {colors['detail']}; font-size: 9pt; }}
+            QProgressBar {{
                 min-height: 8px;
                 max-height: 8px;
                 border: 0;
                 border-radius: 4px;
-                background: #E5EEE7;
+                background: {colors['track']};
                 text-align: center;
-            }
-            QProgressBar::chunk { background: #4FA764; border-radius: 4px; }
+            }}
+            QProgressBar::chunk {{ background: {colors['accent']}; border-radius: 4px; }}
             """
         )
         root = QVBoxLayout(self)

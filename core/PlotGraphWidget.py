@@ -1,15 +1,15 @@
 import sys
 import numpy as np
 import pyqtgraph as pg
-from PyQt5.QtGui import QCursor
+from PyQt5.QtGui import QColor, QCursor
 from PyQt5.QtWidgets import (QTabWidget, QWidget, QVBoxLayout, QApplication,
                              QPushButton, QHBoxLayout, QCheckBox, QLabel, QAction, QMenu, QActionGroup, QInputDialog)
 from PyQt5.QtCore import Qt, pyqtSignal
 from scipy import signal
 
-# 全局配置：白色背景，黑色前景色 (符合科研论文习惯)
-pg.setConfigOption('background', 'w')
-pg.setConfigOption('foreground', 'k')
+from appearance import get_theme_manager, theme_tokens
+
+
 class PlotGraphWidget(QWidget):
     '''基于PyQtGraph实现的强大数据显示及分析控件'''
 
@@ -42,15 +42,6 @@ class PlotGraphWidget(QWidget):
 
         # 悬浮取值标签 (替代原来的十字光标)
         self.hover_label = QLabel(self)
-        self.hover_label.setStyleSheet("""
-                    QLabel {
-                        background-color: rgba(255, 255, 255, 220);
-                        border: 1px solid #C8E6C9;
-                        border-radius: 4px;
-                        padding: 4px;
-                        color: #4CAF50;
-                    }
-                """)
         self.hover_label.hide()
 
         self.hover_point = pg.ScatterPlotItem(size=12, pen=pg.mkPen('w', width=2), brush=pg.mkBrush('r'))
@@ -76,17 +67,53 @@ class PlotGraphWidget(QWidget):
         self.plot_widget.addItem(self.peak_marker)
 
         self.peak_info_label = QLabel(self)
-        self.peak_info_label.setStyleSheet("""
-                    QLabel {
-                        background-color: rgba(240, 248, 255, 220); /* 淡蓝色背景区分取值框 */
-                        border: 1px solid #4682B4; border-radius: 4px;
-                        padding: 4px; color: #337AC6;
-                    }
-                """)
         self.peak_info_label.hide()
 
         self.peak_region.sigRegionChanged.connect(self._update_peak_analysis)
         self.init_custom_context_menu()
+        self._theme_manager = get_theme_manager()
+        if self._theme_manager is not None:
+            self._theme_manager.register_adapter(self)
+        else:
+            app = QApplication.instance()
+            theme_id = app.property("appearanceTheme") if app is not None else "light"
+            self.apply_theme(theme_tokens(theme_id))
+
+    def apply_theme(self, tokens):
+        """Update plot chrome without recalculating or replacing plotted data."""
+        colors = tokens.colors
+        self.plot_widget.setBackground(colors["panel_bg"])
+        for axis_name in ("left", "bottom", "right", "top"):
+            axis = self.plot_widget.getAxis(axis_name)
+            axis.setPen(pg.mkPen(colors["border"]))
+            axis.setTextPen(pg.mkPen(colors["secondary"]))
+
+        self.legend.setBrush(pg.mkBrush(QColor(colors["raised_bg"])))
+        self.legend.setPen(pg.mkPen(colors["border"]))
+        self._apply_legend_theme(colors["text"])
+
+        self.hover_label.setStyleSheet(self._floating_label_style(tokens, "accent"))
+        self.peak_info_label.setStyleSheet(self._floating_label_style(tokens, "info"))
+
+    def _apply_legend_theme(self, text_color):
+        for _sample, label in self.legend.items:
+            text_item = getattr(label, "item", None)
+            if text_item is not None:
+                text_item.setDefaultTextColor(QColor(text_color))
+
+    @staticmethod
+    def _floating_label_style(tokens, accent_key):
+        colors = tokens.colors
+        background = QColor(colors["raised_bg"])
+        return (
+            "QLabel {"
+            f"background-color: rgba({background.red()}, {background.green()}, "
+            f"{background.blue()}, 235);"
+            f"border: 1px solid {colors[accent_key]};"
+            "border-radius: 4px; padding: 4px;"
+            f"color: {colors['text']};"
+            "}"
+        )
 
     def resizeEvent(self, event):
         """确保悬浮标签始终在右下角"""
@@ -257,6 +284,7 @@ class PlotGraphWidget(QWidget):
             self._apply_histogram(item)
 
         self._setup_legend_interaction(item)
+        self._apply_legend_theme(self._current_theme_colors()["text"])
         # 自适应显示
         if len(self.data_items) == 1:
             self.plot_widget.autoRange()
@@ -316,11 +344,21 @@ class PlotGraphWidget(QWidget):
         target_label.mouseClickEvent = mouseClickEvent
         target_label.mouseDoubleClickEvent = mouseDoubleClickEvent
 
+    def _current_theme_colors(self):
+        manager = get_theme_manager()
+        if manager is not None:
+            return manager.tokens.colors
+        app = QApplication.instance()
+        return theme_tokens(
+            app.property("appearanceTheme") if app is not None else "light"
+        ).colors
+
     def _rename_curve(self, item, new_name):
         self.legend.removeItem(item)
         item.opts['name'] = new_name
         self.legend.addItem(item, new_name)
         self._setup_legend_interaction(item)  # 重新绑定事件
+        self._apply_legend_theme(self._current_theme_colors()["text"])
 
     def _remove_curve(self, item):
         self.plot_widget.removeItem(item)

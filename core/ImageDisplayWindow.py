@@ -435,8 +435,16 @@ class ImageDisplayWindow(QMainWindow):
             parent=self,
         )
         self._apply_canvas_identity(canvas, canvas_id)
+        self._apply_active_tool_to_canvas(canvas)
         canvas.render_status_signal.connect(self.render_status_signal.emit)
         return canvas
+
+    def _apply_active_tool_to_canvas(self, canvas):
+        """Make a newly created/replaced canvas inherit the shared toolbar state."""
+        canvas.set_drawing_tool(self.current_tool)
+        canvas.set_anchor_mode(
+            self.current_tool == "Anchor" and self.anchor_active
+        )
 
     @staticmethod
     def _apply_canvas_identity(canvas, canvas_id):
@@ -630,6 +638,8 @@ class ImageDisplayWindow(QMainWindow):
                 canvas.set_anchor_mode(self.anchor_active)
         else:
             self.anchor_active = False
+            for canvas in self.display_canvas:
+                canvas.set_anchor_mode(False)
 
     def cursor(self):
         self.anchor_active = False

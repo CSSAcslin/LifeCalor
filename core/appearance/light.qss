@@ -1,0 +1,63 @@
+/* Original white-green theme with color-only readability refinements. */
+QFrame#AppTitleBar {
+    background-color: $raised_bg;
+    border-bottom: 1px solid $border;
+}
+QLabel#AppTitleText { color: $text; background: transparent; }
+QLabel#AppTitleIcon { background: transparent; }
+QToolButton[titleBarButton="true"] {
+    color: $text;
+    background: transparent;
+    border: 0;
+}
+QToolButton[titleBarButton="true"]:hover { background-color: $hover_bg; }
+QToolButton[titleBarButton="true"]:pressed { background-color: $selection; }
+QToolButton[titleBarRole="close"]:hover { background-color: $error; }
+
+QWidget[themeSurface="panel"] { background-color: $panel_bg; }
+
+QLineEdit[filterControl="true"], QComboBox[filterControl="true"],
+QToolButton[filterControl="true"] {
+    padding: 2px 4px;
+    border: 1px solid $outline;
+    border-radius: 4px;
+    background: $input_bg;
+    color: $accent;
+}
+QLineEdit[filterControl="true"]:focus, QComboBox[filterControl="true"]:focus,
+QToolButton[filterControl="true"]:checked { border-color: $accent; }
+QComboBox[filterControl="true"]::drop-down { border: 0; width: 24px; }
+QToolButton[filterControl="true"]::menu-indicator {
+    subcontrol-position: right center;
+    subcontrol-origin: padding;
+    right: 5px;
+}
+
+QMenu::item:selected {
+    background-color: $selection;
+    color: $text;
+}
+QToolBox::tab:selected {
+    background-color: $accent;
+    color: $on_accent;
+}
+QTableWidget::item:selected, QTreeWidget::item:selected,
+QTreeView::item:selected, QListView::item:selected {
+    background-color: $selection;
+    color: $text;
+}
+QTreeWidget::item:selected:!active, QTreeView::item:selected:!active {
+    background-color: $selection;
+    color: $text;
+}
+QTabBar::tab:selected {
+    background-color: $accent;
+    color: $on_accent;
+    border-color: $accent_dark;
+}
+#StressButton {
+    background-color: $accent;
+    color: $on_accent;
+}
+#StressButton:hover { background-color: $accent_dark; }
+#StressButton:pressed { background-color: $accent_dark; }

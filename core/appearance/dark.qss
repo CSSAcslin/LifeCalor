@@ -1,0 +1,327 @@
+/* Color-only overlay. Do not add padding, margins, sizes or font metrics here. */
+QFrame#AppTitleBar {
+    background-color: $raised_bg;
+    border-bottom: 1px solid $border;
+}
+QLabel#AppTitleText { color: $text; background: transparent; }
+QLabel#AppTitleIcon { background: transparent; }
+QToolButton[titleBarButton="true"] {
+    color: $text;
+    background: transparent;
+    border: 0;
+}
+QToolButton[titleBarButton="true"]:hover { background-color: $hover_bg; }
+QToolButton[titleBarButton="true"]:pressed { background-color: $selection; }
+QToolButton[titleBarRole="close"]:hover { background-color: $error; }
+
+QWidget {
+    color: $text;
+    background-color: $panel_bg;
+    selection-background-color: $selection;
+    selection-color: $text;
+}
+QMainWindow, QDialog { background-color: $app_bg; }
+QLabel, QCheckBox, QRadioButton { background-color: transparent; }
+QDialog QLabel { color: $text; }
+QWidget[themeSurface="panel"] { background-color: $panel_bg; }
+
+QCheckBox::indicator, QRadioButton::indicator {
+    width: 14px;
+    height: 14px;
+    border: 1px solid $outline;
+    background-color: $input_bg;
+}
+QCheckBox::indicator { border-radius: 3px; }
+QRadioButton::indicator { border-radius: 7px; }
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {
+    border-color: $accent;
+    background-color: $hover_bg;
+}
+QCheckBox::indicator:checked {
+    border-color: $accent;
+    background-color: $accent;
+    image: url(:/icons/icon_accept.svg);
+}
+QCheckBox::indicator:indeterminate,
+QRadioButton::indicator:checked {
+    border-color: $accent;
+    background-color: $accent;
+}
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {
+    border-color: $border;
+    background-color: $raised_bg;
+}
+
+QTreeWidget::indicator, QTreeView::indicator {
+    width: 14px;
+    height: 14px;
+    border: 1px solid $outline;
+    border-radius: 3px;
+    background-color: $input_bg;
+}
+QTreeWidget::indicator:hover, QTreeView::indicator:hover {
+    border-color: $accent;
+    background-color: $hover_bg;
+}
+QTreeWidget::indicator:checked, QTreeView::indicator:checked {
+    border-color: $accent;
+    background-color: $accent;
+    image: url(:/icons/icon_accept.svg);
+}
+
+QLineEdit[filterControl="true"], QComboBox[filterControl="true"],
+QToolButton[filterControl="true"] {
+    padding: 2px 4px;
+    border: 1px solid $outline;
+    border-radius: 4px;
+    background: $input_bg;
+    color: $text;
+}
+QLineEdit[filterControl="true"]:focus, QComboBox[filterControl="true"]:focus,
+QToolButton[filterControl="true"]:checked { border-color: $accent; }
+QComboBox[filterControl="true"]::drop-down { border: 0; width: 24px; }
+QToolButton[filterControl="true"]::menu-indicator {
+    subcontrol-position: right center;
+    subcontrol-origin: padding;
+    right: 5px;
+}
+
+QMenuBar {
+    background-color: $raised_bg;
+    border-top-color: $accent;
+    border-bottom-color: $border;
+}
+QMenuBar::item { color: $text; background: transparent; }
+QMenuBar::item:selected, QMenuBar::item:hover { background-color: $hover_bg; color: $text; }
+QMenuBar::item:pressed { background-color: $selection; }
+QMenu {
+    background-color: $raised_bg;
+    border-color: $outline;
+}
+QMenu::item { background-color: $raised_bg; color: $text; }
+QMenu::item:selected { background-color: $selection; color: $text; }
+QMenu::item:disabled { color: $disabled; }
+QMenu::separator { background-color: $border; }
+
+QDockWidget { border-color: $border; color: $text; }
+QDockWidget::title { background-color: $raised_bg; color: $text; }
+QDockWidget::title:hover { background-color: $hover_bg; color: $text; }
+QDockWidget > QWidget { background-color: $panel_bg; border-color: $border; }
+QDockWidget[canvasFocused="true"] { border-color: $accent; }
+QDockWidget[canvasFocused="true"]::title { background-color: $selection; }
+QDockWidget::separator { background-color: $border; }
+QDockWidget[floating="true"] { border-color: $border; }
+
+QStatusBar { background-color: $raised_bg; color: $text; }
+QProgressBar {
+    border-color: $border;
+    background: $input_bg;
+    color: $text;
+}
+QProgressBar::chunk { background-color: $accent; }
+
+QToolBar {
+    background-color: $raised_bg;
+    border-color: $border;
+}
+QToolBar::separator { background-color: $border; }
+QToolBar QToolButton {
+    background-color: transparent;
+    border-color: transparent;
+}
+QToolBar QToolButton:hover {
+    background-color: $hover_bg;
+    border-color: $border;
+}
+QToolBar QToolButton:checked {
+    background-color: $selection;
+    border-color: $accent;
+}
+QToolBar QToolButton:pressed { background-color: $selection; }
+
+QToolBox { background-color: $panel_bg; }
+QToolBox::tab {
+    background-color: $raised_bg;
+    color: $secondary;
+    border-color: $border;
+}
+QToolBox::tab:selected { background-color: $selection; color: $text; }
+QToolBox::tab:hover { background-color: $hover_bg; color: $text; }
+QToolBox > QWidget { background-color: $panel_bg; border-color: $border; }
+
+QPushButton {
+    background-color: $raised_bg;
+    color: $text;
+    border-color: $outline;
+}
+QPushButton:hover { background-color: $hover_bg; border-color: $accent; }
+QPushButton:pressed { background-color: $selection; border-color: $accent; }
+QPushButton:disabled {
+    background-color: $raised_bg;
+    color: $disabled;
+    border-color: $border;
+}
+#StressButton {
+    background-color: $accent;
+    color: $on_accent;
+}
+#StressButton:hover { background-color: $accent; }
+#StressButton:pressed { background-color: $accent_dark; }
+#StressButton:disabled { background-color: $border; color: $disabled; }
+
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateEdit, QTimeEdit,
+QDateTimeEdit, QTextEdit, QPlainTextEdit, QTextBrowser {
+    background-color: $input_bg;
+    color: $text;
+    border: 1px solid $outline;
+    border-radius: 4px;
+    selection-background-color: $selection;
+}
+QLineEdit:hover, QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover,
+QTextEdit:hover, QPlainTextEdit:hover { border-color: $accent; }
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
+QTextEdit:focus, QPlainTextEdit:focus {
+    background-color: $input_bg;
+    border-color: $accent;
+}
+QLineEdit:read-only, QTextEdit:read-only, QPlainTextEdit:read-only {
+    background-color: $raised_bg;
+    color: $text;
+}
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled,
+QDoubleSpinBox:disabled, QTextEdit:disabled, QPlainTextEdit:disabled {
+    background-color: $raised_bg;
+    color: $disabled;
+    border-color: $border;
+}
+QComboBox::drop-down { border-left: 1px solid $border; }
+QComboBox QAbstractItemView {
+    background-color: $raised_bg;
+    color: $text;
+    border-color: $outline;
+    selection-background-color: $selection;
+    selection-color: $text;
+}
+QComboBox QAbstractItemView::item { color: $text; background-color: $raised_bg; }
+QComboBox QAbstractItemView::item:hover,
+QComboBox QAbstractItemView::item:selected {
+    color: $text;
+    background-color: $selection;
+}
+
+QToolButton {
+    color: $text;
+    background-color: transparent;
+    border-color: transparent;
+}
+QToolButton:hover { background-color: $hover_bg; border-color: $border; }
+QToolButton:pressed, QToolButton:checked {
+    background-color: $selection;
+    border-color: $accent;
+}
+
+QTableWidget, QTableView, QTreeWidget, QTreeView, QListWidget, QListView {
+    background-color: $input_bg;
+    alternate-background-color: $raised_bg;
+    color: $text;
+    border-color: $border;
+}
+QTableWidget { gridline-color: $border; }
+QTableWidget::item, QTableView::item, QTreeWidget::item, QTreeView::item,
+QListWidget::item, QListView::item {
+    color: $text;
+}
+QHeaderView::section {
+    background-color: $raised_bg;
+    color: $text;
+    border-color: $border;
+}
+QHeaderView, QTableWidget QHeaderView, QTableView QHeaderView,
+QTreeWidget QHeaderView, QTreeView QHeaderView {
+    background-color: $raised_bg;
+    color: $text;
+}
+QTableWidget QHeaderView::section, QTableView QHeaderView::section,
+QTreeWidget QHeaderView::section, QTreeView QHeaderView::section {
+    background-color: $raised_bg;
+    color: $text;
+    border-color: $border;
+}
+QTableWidget QHeaderView::section:hover, QTableView QHeaderView::section:hover,
+QTreeWidget QHeaderView::section:hover, QTreeView QHeaderView::section:hover {
+    background-color: $hover_bg;
+}
+QTableWidget QHeaderView::section:pressed, QTableView QHeaderView::section:pressed,
+QTreeWidget QHeaderView::section:pressed, QTreeView QHeaderView::section:pressed {
+    background-color: $selection;
+}
+QTableCornerButton::section {
+    background-color: $raised_bg;
+    border-color: $border;
+}
+QTableWidget::item:selected, QTreeWidget::item:selected,
+QTreeView::item:selected, QListView::item:selected {
+    background-color: $selection;
+    color: $text;
+}
+QTableWidget::item:focus, QTreeWidget::item:focus, QTreeView::item:focus {
+    background-color: $selection;
+    color: $text;
+    border-color: $accent;
+}
+QTableWidget::item:hover, QTreeWidget::item:hover,
+QTreeView::item:hover, QListView::item:hover { background-color: $hover_bg; }
+QTreeWidget::item:selected:!active, QTreeView::item:selected:!active {
+    background-color: $selection;
+    color: $text;
+}
+QTreeWidget::branch, QTreeView::branch,
+QTreeWidget::branch:selected, QTreeView::branch:selected {
+    background-color: $input_bg;
+}
+QTreeWidget::branch:hover, QTreeView::branch:hover { background-color: $hover_bg; }
+QTreeView::item:!selected:alternate { background-color: $raised_bg; }
+QTreeWidget QHeaderView::section:hover { background-color: $hover_bg; }
+QTreeWidget QHeaderView::section:pressed { background-color: $selection; }
+
+QScrollArea { background-color: $panel_bg; }
+QScrollBar:vertical, QScrollBar:horizontal { background: $app_bg; }
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: $outline; }
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
+    background: $accent;
+}
+QTreeWidget QScrollBar:vertical, QTreeWidget QScrollBar:horizontal,
+QTableWidget QScrollBar:vertical, QTableWidget QScrollBar:horizontal {
+    background: $app_bg;
+}
+QTreeWidget QScrollBar::handle:vertical,
+QTreeWidget QScrollBar::handle:horizontal,
+QTableWidget QScrollBar::handle:vertical,
+QTableWidget QScrollBar::handle:horizontal {
+    background: $outline;
+}
+QAbstractScrollArea::corner { background-color: $app_bg; }
+
+QSplitter::handle { background-color: $border; }
+QSplitter::handle:hover { background-color: $accent; }
+
+QTabWidget::pane { border-color: $border; background: $panel_bg; }
+QTabBar::tab {
+    background-color: $raised_bg;
+    color: $secondary;
+    border-color: $border;
+}
+QTabBar::tab:selected {
+    background-color: $selection;
+    color: $text;
+    border-color: $accent;
+}
+QTabBar::tab:hover { background-color: $hover_bg; color: $text; }
+
+QGroupBox { border-color: $border; color: $text; }
+QGroupBox::title { color: $accent; background-color: $panel_bg; }
+QToolTip {
+    color: $text;
+    background-color: $raised_bg;
+    border-color: $outline;
+}

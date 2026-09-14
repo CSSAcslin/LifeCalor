@@ -8,7 +8,7 @@ import resources_rc # 重要不能删
 from PyQt5 import sip
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (QStackedWidget, QStatusBar, QFrame, QSplitter, QDesktopWidget, QSizePolicy,
-                             QTabWidget
+                             QTabWidget, QActionGroup, QApplication
                              )
 from PyQt5.QtCore import QElapsedTimer, QSettings, QCoreApplication, QUrl, QStandardPaths
 
@@ -47,6 +47,7 @@ from memory import estimate_resident_bytes
 from dataio.classification import DataCategory, describe_source
 from app_metadata import APP_VERSION
 from startup.logging_setup import ensure_file_logging, resolve_log_path, take_startup_messages
+from appearance import get_theme_manager
 
 
 class MainWindow(QMainWindow):
@@ -490,7 +491,7 @@ class MainWindow(QMainWindow):
         """设置左侧面板"""
         self.left_panel = QScrollArea()
         self.left_panel_widget = QWidget()
-        self.left_panel_widget.setStyleSheet(""" QWidget {background-color: white; }""")
+        self.left_panel_widget.setProperty("themeSurface", "panel")
         self.left_panel.setWidgetResizable(True)
         self.left_panel_layout = QVBoxLayout()
         self.left_panel_layout.setContentsMargins(15,15,15,15)
@@ -860,7 +861,7 @@ class MainWindow(QMainWindow):
         scroll_area.setWidgetResizable(True)  # 关键设置
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         scroll_content = QWidget()
-        scroll_content.setStyleSheet(""" QWidget {background-color: white; }""")
+        scroll_content.setProperty("themeSurface", "panel")
         EM_iSCAT_layout1 = QVBoxLayout(scroll_content)
         preprocess_set_layout = QHBoxLayout()
         preprocess_set_layout.addWidget(QLabel("背景帧数："))
@@ -1069,6 +1070,26 @@ class MainWindow(QMainWindow):
         # 编辑菜单
         edit_menu = self.menu.addMenu("编辑")
 
+        theme_menu = edit_menu.addMenu("界面主题")
+        self.theme_action_group = QActionGroup(self)
+        self.theme_action_group.setExclusive(True)
+        self.theme_actions = {}
+        theme_manager = get_theme_manager(QApplication.instance())
+        current_theme = theme_manager.current_theme if theme_manager is not None else "light"
+        for theme_id, label in (("dark", "石墨深色"), ("light", "清爽浅色")):
+            action = theme_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(theme_id == current_theme)
+            action.triggered.connect(
+                lambda checked, selected=theme_id: (
+                    checked and self._set_interface_theme(selected)
+                )
+            )
+            self.theme_action_group.addAction(action)
+            self.theme_actions[theme_id] = action
+        if theme_manager is not None:
+            theme_manager.themeChanged.connect(self._sync_theme_actions)
+
         # 编辑菜单-坏点处理功能
         bad_frame_edit = edit_menu.addAction("坏点处理")
         bad_frame_edit.triggered.connect(self.bad_frame_edit_dialog)
@@ -1126,46 +1147,22 @@ class MainWindow(QMainWindow):
         update_action = self.menu.addAction('检查更新')
         update_action.triggered.connect(self.update_dialog)
 
+    def _set_interface_theme(self, theme_id):
+        manager = get_theme_manager(QApplication.instance())
+        if manager is None or not manager.set_theme(theme_id):
+            current = manager.current_theme if manager is not None else "light"
+            for action_id, action in self.theme_actions.items():
+                action.setChecked(action_id == current)
+
+    def _sync_theme_actions(self, tokens):
+        for action_id, action in self.theme_actions.items():
+            action.setChecked(action_id == tokens.theme_id)
+
     @staticmethod
     def QGroupBoxCreator(title="",style="default"):
-        # 全局Box样式定义
         group_box = QGroupBox(title)
-        styles = {
-            "default": """
-            QGroupBox{
-                border:1px solid #aaaaaa;
-                border-radius:5px;
-                margin-top:5px;
-                padding:15px;
-                padding-left: 5px;
-                padding-right: 5px;
-            }
-            QGroupBox::title{
-                ubcontrol-origin: margin;
-                left: 10px;
-                padding: 0 3px;
-                color: #2E7D32;
-                font-weight: 1000;
-            }
-            """,
-            "inner":"""
-            QGroupBox{
-                border: 1px solid #aaaaaa;
-                border-radius: 5px;
-                margin-top: 5px;
-                padding: 5px;
-                padding-left: 0px;
-                padding-right: 0px;
-            }""",
-            "noborder":"""
-            QGroupBox{
-                border: 0px;
-                border-radius: 0px;
-                margin: 0px;
-                padding:0px;
-            }"""
-        }
-        group_box.setStyleSheet(styles.get(style, styles["default"]))
+        role = {"inner": "inner", "noborder": "plain"}.get(style, "default")
+        group_box.setProperty("uiRole", role)
         return group_box
 
     def setup_status_bar(self):
@@ -2420,6 +2417,7 @@ class MainWindow(QMainWindow):
         self.ensure_task_thread_running("calc_thread", "calculation")
         self.update_status('计算进行中...', 'working')
         self.easy_process.emit(aim_data,'avg',None)
+
         return None
 
 

@@ -227,6 +227,27 @@ class CanvasLifecycleTests(unittest.TestCase):
         self.assertEqual(self.display.cursor_id, 1)
         self.assertTrue(old._is_closing)
 
+    def test_new_and_replaced_canvases_inherit_selected_drawing_tool(self):
+        first = self.display.add_canvas(make_image("tool-source"))
+        self.display.set_tools("Rect")
+
+        added = self.display.add_canvas(make_image("tool-added", 2))
+        replaced = self.display.replace_canvas(first.id, make_image("tool-replaced", 3))
+
+        self.assertEqual(added.drawing_tool, "Rect")
+        self.assertEqual(replaced.drawing_tool, "Rect")
+        self.assertFalse(added.anchor_active)
+        self.assertFalse(replaced.anchor_active)
+
+    def test_new_canvas_inherits_active_anchor_mode(self):
+        self.display.add_canvas(make_image("anchor-source"))
+        self.display.set_tools("Anchor")
+
+        added = self.display.add_canvas(make_image("anchor-added", 2))
+
+        self.assertEqual(added.drawing_tool, "Anchor")
+        self.assertTrue(added.anchor_active)
+
     def test_slow_render_retirement_returns_immediately_and_gui_keeps_ticking(self):
         canvas = self.display.add_canvas(make_image("slow"))
         self.assertTrue(
