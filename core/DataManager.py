@@ -31,7 +31,7 @@ from ArrayCache import (
 )
 from display.source import DisplaySourceFactory
 from display.renderer import FrameRenderParams, FrameRenderer
-from tasks.model import CancellationToken, TaskCancelled
+from tasks import CancellationToken, TaskCancelled, TaskContextQueue, task_scoped
 from diagnostics import AppError, format_exception_details
 from history.annotations import (
     copy_annotations,
@@ -326,10 +326,26 @@ class DataManager(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.cancellation_token = CancellationToken()
+        self.task_id = None
+        self._task_contexts = TaskContextQueue()
         logging.info("图像数据管理线程已启动")
 
     def set_cancellation_token(self, token):
         self.cancellation_token = token or CancellationToken()
+
+    def enqueue_task_context(self, task_id, token=None):
+        return self._task_contexts.enqueue(task_id, token)
+
+    def _activate_task_context(self):
+        context = self._task_contexts.next()
+        if context is None:
+            return True
+        self.task_id = context.task_id or None
+        self.cancellation_token = context.token
+        if context.token.is_cancelled:
+            self.processing_cancelled_signal.emit()
+            return False
+        return True
 
     def cancel(self):
         self.cancellation_token.cancel()
@@ -338,6 +354,7 @@ class DataManager(QObject):
         self.cancellation_token.raise_if_cancelled()
 
     @pyqtSlot(object, str, str, str, bool, dict)
+    @task_scoped
     def export_data(self, data, output_dir, prefix, format_type='tif', is_temporal=True, arg_dict=None):
         format_type = format_type.lower()
         arg_dict = arg_dict or {}
@@ -655,6 +672,7 @@ class DataManager(QObject):
         return created_files
 
     @pyqtSlot(object, np.ndarray, float, bool, bool, float)
+    @task_scoped
     def ROI_processed(self, data, mask, multiply_factor, is_crop=False, is_zoom=False, zoom_factor=1.0):
         """Run ROI processing with the shared cancellation and diagnostic contract."""
         try:
@@ -667,7 +685,7 @@ class DataManager(QObject):
             self.processing_error_signal.emit(AppError(
                 "ROI 处理失败", str(exc), stage="ROI 处理", severity="error",
                 original=exc, details=format_exception_details(exc, "ROI 处理", data),
-                context={"data": data},
+                context={"data": data}, task_id=self.task_id,
             ))
             return False
 
@@ -1109,9 +1127,13 @@ class Data:
         snapshot.annotations = copy_annotations(self.annotations)
         store = get_array_store()
         owner_id = str(self.timestamp)
-        data_origin = self.data_origin
+        origin_storage = object.__getattribute__(self, "__dict__").get("_data_origin_storage")
+        data_origin = None if isinstance(origin_storage, ArrayRef) else self.data_origin
         image_import = self.image_import
-        if should_cache_array(data_origin, store.config):
+        if isinstance(origin_storage, ArrayRef):
+            object.__setattr__(snapshot, "_data_origin_storage", origin_storage)
+            object.__setattr__(snapshot, "data_origin", None)
+        elif should_cache_array(data_origin, store.config):
             cached_origin = cache_array_or_keep_memory(store, data_origin, owner_id, "data_origin")
             object.__setattr__(snapshot, "_data_origin_storage", cached_origin)
             if isinstance(cached_origin, ArrayRef):
@@ -1193,17 +1215,39 @@ class ProcessedData:
         Data._counter += 1
         self.serial_number = Data._counter  # 生成序号
 
-        if self.data_processed is not None:
-            array = self.data_processed
-            self.datashape = array.shape
+        storage = object.__getattribute__(self, "__dict__").get("_data_processed_storage")
+        if storage is not None:
+            if isinstance(storage, ArrayRef):
+                self.datashape = tuple(storage.shape)
+                self.datatype = np.dtype(storage.dtype)
+                self.ndim = len(self.datashape)
+                if (
+                    storage.min_value is not None
+                    and storage.max_value is not None
+                    and storage.mean_value is not None
+                ):
+                    self.datamin = storage.min_value
+                    self.datamax = storage.max_value
+                    self.datamean = storage.mean_value
+                else:
+                    array = storage.load(mmap_mode="r")
+                    self.datamin = array.min()
+                    self.datamax = array.max()
+                    self.datamean = array.mean()
+                    mapping = getattr(array, "_mmap", None)
+                    if mapping is not None:
+                        mapping.close()
+            else:
+                array = self.data_processed
+                self.datashape = array.shape
+                self.datamin = array.min()
+                self.datamax = array.max()
+                self.datatype = array.dtype
+                self.datamean = array.mean()
+                self.ndim = array.ndim
             self.timelength, self.framesize = _array_layout(
                 self.datashape, self.out_processed, self.time_point
             )
-            self.datamin = array.min()
-            self.datamax = array.max()
-            self.datatype = array.dtype
-            self.datamean = array.mean()
-            self.ndim = array.ndim
 
         # 加序列号
         self.name = f"{self.name}-{self.serial_number}"
@@ -1324,8 +1368,12 @@ class ProcessedData:
         snapshot.annotations = copy_annotations(self.annotations)
         store = get_array_store()
         owner_id = str(self.timestamp)
-        data_processed = self.data_processed
-        if should_cache_array(data_processed, store.config):
+        processed_storage = object.__getattribute__(self, "__dict__").get("_data_processed_storage")
+        data_processed = None if isinstance(processed_storage, ArrayRef) else self.data_processed
+        if isinstance(processed_storage, ArrayRef):
+            object.__setattr__(snapshot, "_data_processed_storage", processed_storage)
+            object.__setattr__(snapshot, "data_processed", None)
+        elif should_cache_array(data_processed, store.config):
             cached_processed = cache_array_or_keep_memory(store, data_processed, owner_id, "data_processed")
             object.__setattr__(snapshot, "_data_processed_storage", cached_processed)
             if isinstance(cached_processed, ArrayRef):

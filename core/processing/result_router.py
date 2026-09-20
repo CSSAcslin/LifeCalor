@@ -19,9 +19,9 @@ class ResultRouter:
             "heat_transfer": self._heat_transfer,
             "stft_quality": self._stft_quality,
             "cwt_quality": self._cwt_quality,
-            "ROI_stft": self._roi_stft,
-            "ROI_cwt": self._roi_cwt,
-            "Accumulated_time_amplitude_map": self._accumulated,
+            "ROI_stft": lambda _data: None,
+            "ROI_cwt": lambda _data: None,
+            "Accumulated_time_amplitude_map": lambda _data: None,
             "Single_channel_signal": self._single_channel,
             "signal_average": self._signal_average,
             "Roi_applied": self._roi_applied,
@@ -68,26 +68,13 @@ class ResultRouter:
         self.window.result_display.display_distribution_map(data, "传热系数分布图")
 
     def _stft_quality(self, data):
-        self.window.stft_quality_btn.setEnabled(True)
         self.window.result_display.quality_avg(data)
 
     def _cwt_quality(self, data):
         logging.info("请稍等，出图会有点慢")
-        self.window.cwt_quality_btn.setEnabled(True)
         self.window.result_display.quality_avg(data)
 
-    def _roi_stft(self, _data):
-        self.window.stft_process_btn.setEnabled(True)
-
-    def _roi_cwt(self, _data):
-        self.window.cwt_process_btn.setEnabled(True)
-
-    def _accumulated(self, _data):
-        self.window.atam_btn.setEnabled(True)
-
     def _single_channel(self, data):
-        self.window.tDgf_btn.setEnabled(True)
-        self.window.sscs_btn.setEnabled(True)
         if data.out_processed.get("thr_known"):
             self.window.result_display.single_channel(data, True)
             return

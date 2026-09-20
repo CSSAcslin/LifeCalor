@@ -55,6 +55,15 @@ class TaskRecord:
     token: CancellationToken = field(default_factory=CancellationToken, repr=False)
     cancel_callback: Optional[Callable[[], None]] = field(default=None, repr=False)
     diagnostic: Any = field(default=None, repr=False)
+    attempt_id: int = 0
+    stage: str = ""
+    requested_backend: str = ""
+    actual_backend: str = ""
+    precision: str = ""
+    device: str = ""
+    backend_reason: str = ""
+    resource_summary: str = ""
+    execution_details: dict[str, Any] = field(default_factory=dict)
 
     def start(self, total: int = 0, message: str = "") -> None:
         self.status = TaskStatus.RUNNING

@@ -27,22 +27,16 @@ class ProcessingController:
         thread = getattr(self.window, thread_name, None)
         worker = self._worker(category)
 
-        def cancel():
-            method = getattr(worker, "cancel", None) or getattr(worker, "stop", None)
-            if callable(method):
-                method()
-            if thread is not None and hasattr(thread, "requestInterruption"):
-                thread.requestInterruption()
-
         task = self.coordinator.create_task(
             name or self.DEFAULT_NAMES.get(category, category), category,
-            foreground=True, cancellable=True, cancel_callback=cancel,
+            foreground=True, cancellable=True,
         )
-        token_setter = getattr(worker, "set_cancellation_token", None)
-        if callable(token_setter):
-            token_setter(task.token)
-        if worker is not None and hasattr(worker, "abortion"):
-            worker.abortion = False
+        context_queuer = getattr(worker, "enqueue_task_context", None)
+        if not callable(context_queuer):
+            raise RuntimeError(
+                f"{category} worker 不支持任务级上下文，无法安全排队"
+            )
+        context_queuer(task.task_id, task.token)
         self._queues[category].append(task.task_id)
         self.coordinator.start(task.task_id, message=task.name)
         if thread is not None and not is_thread_active(thread, expected_type=QThread, is_deleted=sip.isdeleted):

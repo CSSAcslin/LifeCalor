@@ -2,7 +2,7 @@
 
 LifeCalor 是一套基于 PyQt5 的本地科学成像数据分析工具。它面向带时间轴的二维成像序列，覆盖数据导入、画布与 ROI 交互、载流子寿命分析、EM-iSCAT 时频分析、多数据数组运算、结果绘图、历史缓存和多格式导出。
 
-当前版本：`1.0.16`
+当前版本：`1.1.0`
 
 ## 快速开始
 
@@ -290,8 +290,24 @@ $env:LIFECALOR_GITHUB_TOKEN = "your-token"
 python -m unittest discover -s tests -v
 ```
 
-当前版本完整测试集为 281 项，并包含 150% DPI 离屏界面烟测。`benchmarks/` 提供固定数据路径的耗时、内存变化和结果 Shape 基准，用于比较 STFT/CWT、导入、缓存和显示相关优化。
+自动化测试覆盖核心数据流、计算管线和 150% DPI 离屏界面烟测。`benchmarks/` 提供固定数据路径的耗时、内存变化和结果 Shape 基准，用于比较 STFT/CWT、导入、缓存和显示相关优化。1.1 的同契约 CPU/CUDA 基准可运行：
 
+```powershell
+python benchmarks/benchmark_compute_11.py --algorithm stft --size medium --backend cpu --repetitions 5
+python benchmarks/benchmark_compute_11.py --algorithm stft --size medium --backend gpu --repetitions 5
+```
+
+## 计算与加速
+
+“编辑 → 计算与加速”统一管理默认后端、精度、CPU 配额、RAM/显存预算、回退策略和首选设备。设置只影响之后提交的任务，任务面板会显示请求后端、实际后端、精度和执行阶段。
+
+- STFT 已支持有界 CPU 和可选 CUDA。CUDA 在独立进程中延迟加载；请先在“硬件状态”页执行快速自检。
+- CWT、EM 预处理和单指数寿命热图已使用有界 CPU 分块，大输出可直接写入用户缓存目录。
+- CWT 和寿命 GPU 后端尚未开放；软件不会为显示“GPU 可用”而替换未经验证的小波或拟合定义。
+- Auto 只有在存在同设备、同算法、同精度的可信性能档案时才会选择 GPU；当前没有档案时保守使用 CPU。
+- “兼容现有”保持已验证的默认 dtype；后端选择和精度选择彼此独立。
+
+目标 NVIDIA 机器的完整验收步骤见 `docs/testing/lifecalor-1.1-acceptance.md`。
 ## 核心依赖
 
 项目当前没有统一的 requirements 文件。核心运行依赖包括：
@@ -301,6 +317,7 @@ python -m unittest discover -s tests -v
 - NumPy、SciPy、pandas
 - tifffile、Pillow、OpenCV
 - h5py、sif_parser、PyWavelets
+- CuPy（仅 NVIDIA CUDA STFT 可选；CPU-only 环境不需要）
 - Matplotlib
 - emoji 2.14.1（完整表情标签校验）
 
@@ -312,6 +329,7 @@ python -m unittest discover -s tests -v
 - `core/DataManager.py`：Data、ProcessedData、ImagingData、ROI、显示转换和导出基础。
 - `core/ImportManager.py`、`core/importing/`：统一导入请求、格式探测、导入器注册表和 HDF5 选择器。
 - `core/DataProcessor.py`：EM-iSCAT、STFT/CWT、统计和通用处理算法。
+- `core/compute/`：计算契约、资源规划、有界执行、原子结果写入及可选 CUDA worker。
 - `core/LifetimeCalculator.py`：寿命拟合、热图、扩散和传热计算。
 - `core/display/`、`core/ImageDisplayWindow.py`：显示源、异步帧渲染、播放策略、多画布和 ROI 交互。
 - `core/calculator/`：多数据表达式、实时 Shape 验证、预览和 metadata 策略。

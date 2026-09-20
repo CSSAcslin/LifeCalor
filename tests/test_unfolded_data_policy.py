@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,10 +9,6 @@ ROOT = Path(__file__).resolve().parents[1]
 CORE = ROOT / "core"
 if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))
-
-for module_name in list(sys.modules):
-    if any(module_name == prefix or module_name.startswith(prefix + ".") for prefix in ("scipy", "pywt", "PyQt5", "matplotlib", "PIL", "cv2", "tifffile", "h5py")):
-        sys.modules.pop(module_name, None)
 
 from DataProcessor import get_unfolded_data
 

@@ -1,5 +1,8 @@
 import copy
 import logging
+import shutil
+import uuid
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -11,105 +14,84 @@ from scipy import signal
 from scipy.optimize import curve_fit
 from scipy.ndimage import zoom
 from DataManager import *
-from multiprocessing import shared_memory, Manager, Pool
-import math
-import traceback
+from ArrayCache import ArrayRef
 
 from ResultDisplayWidget import HeartbeatDraw
 from diagnostics import AppError, format_exception_details
 from calculator import CalculationEngine, CalculationPlan
 from calculator.metadata import CalculationMetadataPolicy
+from compute import (
+    BackendPreference, CapabilityStatus, ComputeRequest, PrecisionPolicy,
+    ResourceBudget, compatibility_metadata, execution_metadata, plan_compute,
+    resolve_precision,
+)
+from compute.algorithms import cwt_frequency_trace, stft_frequency_trace
+from compute.algorithms.stft_pipeline import run_stft_pipeline
+from compute.algorithms.cwt_pipeline import run_cwt_pipeline
+from compute.algorithms.preprocess_pipeline import run_preprocess_pipeline
+from compute.capabilities import (
+    mark_algorithm_verified,
+    update_cached_device_capability,
+)
+from compute.worker import probe_cuda_capability_isolated
+from tasks import CancellationToken, TaskCancelled, TaskContextQueue, task_scoped
 
 
-def get_unfolded_data(data):
-    """Return pixel-major [pixels, frames] data for EM analysis without persisting duplicate arrays."""
-    out_processed = getattr(data, "out_processed", {}) or {}
-    if "unfolded_data" in out_processed:
-        return out_processed["unfolded_data"]
+def _primary_data_source(data):
+    if isinstance(data, ProcessedData):
+        values = object.__getattribute__(data, "__dict__")
+        source = values.get("_data_processed_storage")
+        return source if source is not None else data.data_processed
+    if isinstance(data, Data):
+        values = object.__getattribute__(data, "__dict__")
+        source = values.get("_data_origin_storage")
+        return source if source is not None else data.data_origin
     source = getattr(data, "data_processed", None)
     if source is None:
         source = getattr(data, "data_origin", None)
+    return source
+
+
+def get_unfolded_data(data):
+    """Return pixel-major [pixels, frames] data without persisting a duplicate."""
+    out_processed = getattr(data, "out_processed", {}) or {}
+    if "unfolded_data" in out_processed:
+        return out_processed["unfolded_data"]
+    source = _primary_data_source(data)
     if source is None:
         raise ValueError("无法展开数据：缺少 data_processed/data_origin")
-    if source.ndim != 3:
-        raise ValueError(f"无法展开数据：期望3维数组，实际维度 {source.ndim}")
-    t, h, w = source.shape
-    return source.reshape((t, h * w)).T
+    array = source.load(mmap_mode="r") if isinstance(source, ArrayRef) else source
+    if array.ndim != 3:
+        raise ValueError(f"无法展开数据：期望3维数组，实际维度 {array.ndim}")
+    t, h, w = array.shape
+    return array.reshape((t, h * w)).T
 
 
-# --- 全局 Worker 函数 ---
-def _stft_worker_process(
-        input_shm_name, input_shape, input_dtype,
-        output_shm_name, output_shape, output_dtype,
-        pixel_range,
-        fps, window, window_size, noverlap, nfft, target_idx, batch_size,
-        queue
-):
-    """
-    独立进程运行的函数：读取共享内存 -> 计算 -> 写入共享内存
-    """
-    # 1. 连接共享内存
-    existing_shm_in = shared_memory.SharedMemory(name=input_shm_name)
-    existing_shm_out = shared_memory.SharedMemory(name=output_shm_name)
-
+def get_mean_time_trace(data, token=None, row_step=32):
+    """Compute the spatial mean without unfolding or copying the complete THW array."""
+    source = _primary_data_source(data)
+    if source is None:
+        raise ValueError("无法计算平均信号：缺少 data_processed/data_origin")
+    loaded_here = isinstance(source, ArrayRef)
+    array = source.load(mmap_mode="r") if loaded_here else np.asanyarray(source)
     try:
-        # 2. 通过 buffer 重构 NumPy 数组 (零拷贝)
-        unfolded_data = np.ndarray(input_shape, dtype=input_dtype, buffer=existing_shm_in.buf)
-        stft_out_flat = np.ndarray(output_shape, dtype=output_dtype, buffer=existing_shm_out.buf)
-
-        # 3. 获取该进程负责的像素范围
-        start_global, end_global = pixel_range
-        total_pixels_in_task = end_global - start_global
-
-        # 4. 内部循环：Cache 友好的小 Batch 处理
-        #    为了保护 L3 Cache，我们不在进程内一次性算完 3万个像素
-        #    而是每次算 64-128 个像素
-        CACHE_BATCH_SIZE = batch_size
-
-        local_processed_count = 0
-
-        for b_start in range(start_global, end_global, CACHE_BATCH_SIZE):
-            b_end = min(b_start + CACHE_BATCH_SIZE, end_global)
-
-            # --- 核心计算逻辑 (同之前的优化版) ---
-            batch_data = unfolded_data[b_start:b_end, :]  # [Batch, Time]
-
-            # STFT
-            _, _, Zxx_batch = signal.stft(
-                batch_data, fs=fps, window=window,
-                nperseg=window_size, noverlap=noverlap, nfft=nfft,
-                axis=-1
+        if array.ndim != 3:
+            raise ValueError(f"平均信号要求 THW 三维数据，实际 shape={array.shape}")
+        accumulator_dtype = np.complex128 if np.iscomplexobj(array) else np.float64
+        total = np.zeros(array.shape[0], dtype=accumulator_dtype)
+        for row_start in range(0, array.shape[1], max(1, int(row_step))):
+            if token is not None:
+                token.raise_if_cancelled()
+            row_stop = min(array.shape[1], row_start + max(1, int(row_step)))
+            total += np.asarray(array[:, row_start:row_stop, :]).sum(
+                axis=(1, 2), dtype=accumulator_dtype
             )
-
-            # 提取目标频率
-            target_data = Zxx_batch[:, target_idx, :]
-            mag_batch = np.abs(target_data)
-
-            if mag_batch.ndim == 3:
-                mag_batch = np.mean(mag_batch, axis=1)
-
-            mag_batch *= 2
-
-            # 写入输出共享内存
-            # 注意：stft_out_flat 的形状是 (out_length, total_pixels)
-            # 我们需要转置 mag_batch (Batch, Time) -> (Time, Batch)
-            valid_len = min(mag_batch.shape[1], stft_out_flat.shape[0])
-            stft_out_flat[:valid_len, b_start:b_end] = mag_batch.T[:valid_len, :]
-
-            # 5. 上报进度
-            #    为了防止 Queue 拥堵，每处理一定量才发一次
-            local_processed_count += (b_end - b_start)
-            if local_processed_count >= 1000 or b_end == end_global:
-                queue.put(local_processed_count)
-                local_processed_count = 0
-
-    except Exception as e:
-        traceback.print_exc()
-        raise f"Worker Error: {e}"
+        return total / (array.shape[1] * array.shape[2])
     finally:
-        # 清理连接（不删除内存，只断开连接）
-        existing_shm_in.close()
-        existing_shm_out.close()
+        if loaded_here:
+            mapping = getattr(array, "_mmap", None)
+            if mapping is not None:
+                mapping.close()
 
 class DataProcessor(QObject):
     """本类包含所有非计算流程的操作（常开线程）"""
@@ -490,11 +472,38 @@ class MassDataProcessor(QObject):
     processing_cancelled_signal = pyqtSignal()
     calculator_completed = pyqtSignal(object)
     calculator_failed = pyqtSignal(object)
+    compute_plan_signal = pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
         logging.info("大数据处理线程已载入")
         self.abortion = False
+        self.cancellation_token = CancellationToken()
+        self.task_id = None
+        self._task_contexts = TaskContextQueue()
+
+    def set_cancellation_token(self, token):
+        self.cancellation_token = token or CancellationToken()
+
+    def set_task_context(self, task_id, token=None):
+        self.task_id = str(task_id or "") or None
+        if token is not None:
+            self.cancellation_token = token
+
+    def enqueue_task_context(self, task_id, token=None):
+        return self._task_contexts.enqueue(task_id, token)
+
+    def _activate_task_context(self):
+        context = self._task_contexts.next()
+        if context is None:
+            return True
+        self.task_id = context.task_id or None
+        self.cancellation_token = context.token
+        self.abortion = False
+        if context.token.is_cancelled:
+            self.processing_cancelled_signal.emit()
+            return False
+        return True
 
     def _emit_failure(self, title, stage, exc, data=None):
         details = format_exception_details(exc, stage, data)
@@ -506,95 +515,133 @@ class MassDataProcessor(QObject):
             details=details,
             original=exc,
             context={"data": data} if data is not None else {},
+            task_id=self.task_id,
         ))
         return False
 
     def _emit_cancelled(self):
         self.processing_cancelled_signal.emit()
         return False
-    @pyqtSlot(object,int,bool)
-    def pre_process(self,data,bg_num = 360,unfold=True):
-        """数据预处理，包含背景去除，数组展开"""
+    @pyqtSlot(object, int, bool, object)
+    @task_scoped
+    def pre_process(self, data, bg_num=360, unfold=True, compute_options=None):
+        """Apply exact median-background normalization with bounded spatial blocks."""
         try:
-            logging.info("开始预处理...")
-            self.processing_progress_signal.emit(0, 100)
-            data_origin = data.data_origin.copy() if isinstance(data, Data) else data.data_processed.copy()
-            parameters = data.parameters if isinstance(data, Data) else data.out_processed
-            # 1. 提取前n帧计算背景帧
-            if data.datatype != np.float32:
-                data_origin = data_origin.astype(np.float32) # 注意这里开始原本Uint8 转为了F32
-            else:
-                data_origin = data_origin
-            total_frames = data.timelength
+            logging.info("开始有界预处理...")
+            options = dict(compute_options or {})
+            values = object.__getattribute__(data, "__dict__")
+            storage_name = (
+                "_data_origin_storage" if isinstance(data, Data)
+                else "_data_processed_storage"
+            )
+            source = values.get(storage_name)
+            if source is None:
+                source = data.data_origin if isinstance(data, Data) else data.data_processed
+            shape = tuple(int(value) for value in source.shape)
+            if len(shape) != 3:
+                raise ValueError(f"EM 预处理要求 THW 三维数据，实际 shape={shape}")
+            input_dtype = np.dtype(source.dtype)
+            backend = BackendPreference(options.get("backend", "auto"))
+            precision = PrecisionPolicy(options.get("precision", "compatibility"))
+            compute_precision = resolve_precision("em_preprocess", input_dtype, precision)
+            compute_itemsize = np.dtype(compute_precision.compute_dtype).itemsize
+            output_itemsize = np.dtype(compute_precision.output_dtype).itemsize
+            background_count = min(max(1, int(bg_num)), shape[0])
+            workspace_per_pixel = (
+                shape[0] * (input_dtype.itemsize + compute_itemsize + output_itemsize)
+                + background_count * compute_itemsize
+            )
+            request = ComputeRequest(
+                task_id=self.task_id or f"preprocess-{uuid.uuid4().hex}",
+                attempt_id=0,
+                algorithm="em_preprocess",
+                data_id=str(getattr(data, "timestamp", getattr(data, "name", "data"))),
+                shape=shape,
+                dtype=input_dtype,
+                axes="THW",
+                source=source,
+                parameters={
+                    "output_shape": shape,
+                    "workspace_bytes_per_spatial_item": workspace_per_pixel,
+                    "background_frames": background_count,
+                    "max_spatial_items": 4096,
+                },
+                backend=backend,
+                precision=precision,
+            )
+            cache_dir = Path(
+                options.get("cache_directory") or get_array_store().config.cache_dir
+            )
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            budget = ResourceBudget(
+                host_limit_bytes=max(
+                    256, int(options.get("host_memory_limit_mb", 4096))
+                ) * 1024 ** 2,
+                disk_free_bytes=int(shutil.disk_usage(cache_dir).free),
+                cpu_workers=max(1, int(options.get("cpu_workers", 1))),
+            )
+            plan = plan_compute(
+                request,
+                budget,
+                capabilities=tuple(options.get("capabilities", ())),
+                default_backend=BackendPreference.AUTO,
+                allow_cpu_fallback=bool(options.get("allow_cpu_fallback", True)),
+                disk_output_threshold_bytes=max(
+                    1, int(options.get("cache_threshold_mb", 512))
+                ) * 1024 ** 2,
+            )
+            self.compute_plan_signal.emit(plan)
 
-            # 计算背景帧 (前n帧的平均) 并添加遇0处理
-            self.processing_progress_signal.emit(10, 100)
-            bg_frame = np.median(data_origin[:bg_num], axis=0)
-            bg_frame_safe = bg_frame.copy()
-            epsilon = 1e-10
-            zero_mask = np.abs(bg_frame_safe) < epsilon
-            if np.any(zero_mask):
-                # 用非零最小值替换零值
-                non_zero_min = np.min(np.abs(bg_frame_safe[~zero_mask]))
-                if non_zero_min > 0:
-                    bg_frame_safe[zero_mask] = non_zero_min
-                else:
-                    bg_frame_safe[zero_mask] = 1.0
-            self.processing_progress_signal.emit(20, 100)
-
-            # 2. 所有帧减去背景
-
-            # processed_data = (data_origin - bg_frame[np.newaxis, :, :]) / bg_frame[np.newaxis, :, :]
-            # self.processing_progress_signal.emit(50, 100)
-            processed_data = np.empty_like(data_origin)
-            for i in range(total_frames):
+            def report_progress(current, total, message):
                 if self.abortion:
-                    return self._emit_cancelled()
+                    self.cancellation_token.cancel()
+                self.processing_progress_signal.emit(int(current), int(total))
 
-                # 减去背景帧
-                processed_data[i] = (data_origin[i] - bg_frame_safe ) / bg_frame_safe
-
-                # 每隔10%的进度更新一次
-                if i % max(1, total_frames // 10) == 0:
-                    progress_value = 20 + int(60 * i / total_frames)
-                    self.processing_progress_signal.emit(progress_value, 100)
-            self.processing_progress_signal.emit(80, 100)
-
-            # 3. 展开为二维数组
-            if unfold:
-                T, H, W = processed_data.shape
-                unfolded_data = processed_data.reshape((T, H * W)).T
-            else:
-                unfolded_data = None
-            self.processing_progress_signal.emit(95, 100)
-            # 保存结果
-            processed = ProcessedData(data.timestamp,
-                                                  f'{data.name}@EM_pre',
-                                                  'EM_pre_processed',
-                                                  time_point=data.time_point,
-                                                  data_processed=processed_data,
-                                                  out_processed={
-                                                      'fps' : parameters['fps'],
-                                                      'bg_frame': bg_frame,
-                                                      **parameters
-                                                  })
-
+            result = run_preprocess_pipeline(
+                plan,
+                background_frames=background_count,
+                cache_dir=cache_dir,
+                token=self.cancellation_token,
+                progress=report_progress,
+            )
+            parameters = dict(
+                data.parameters if isinstance(data, Data) else data.out_processed
+            )
+            metadata = execution_metadata(
+                result.plan,
+                execution="bounded_cpu",
+                background_frames=background_count,
+                background_reduction="exact_median",
+                unfolded_data="on_demand_view",
+            )
+            processed = ProcessedData(
+                data.timestamp,
+                f"{data.name}@EM_pre",
+                "EM_pre_processed",
+                time_point=data.time_point,
+                data_processed=result.output,
+                out_processed={
+                    **parameters,
+                    "bg_frame": result.background,
+                    "compute": metadata,
+                },
+            )
             self.processed_result.emit(processed)
-            self.processing_progress_signal.emit(100, 100)
             return True
-        except Exception as e:
-            return self._emit_failure("数据处理失败", "EM_pre_processed", e, data)
-
+        except TaskCancelled:
+            return self._emit_cancelled()
+        except Exception as exc:
+            return self._emit_failure("数据处理失败", "EM_pre_processed", exc, data)
     @pyqtSlot(object,float,int,int,int,int,int,str)
+    @task_scoped
     def quality_stft(self,data,target_freq: float,scale_range:int,fps:int, window_size: int, noverlap: int,
                     custom_nfft: int, window_type: str):
         """STFT质量分析"""
-        unfolded_data = get_unfolded_data(data)
+        mean_signal = get_mean_time_trace(data, self.cancellation_token)
 
         # 窗函数的选择和生成
         window = self.get_window(window_type, window_size)
 
-        mean_signal = np.mean(unfolded_data, axis=0)
         f, t, Zxx = signal.stft(
             mean_signal,
             fs=fps,
@@ -635,317 +682,234 @@ class MassDataProcessor(QObject):
         #     self.processed_result.emit({'type': "stft_quality", 'error': str(e)})
         #     return False
 
-    @pyqtSlot(object, object, int, int, int, int, int, str, bool, int, int)
-    def python_stft(self, data, target_freq, scale_range: int, fps: int, window_size: int, noverlap: int,
-                    custom_nfft: int, window_type: str, is_multipro: bool, batch_size: int, cpu_num: int):
-        """可选并行计算加速
-        执行逐像素STFT分析
-        参数:
-            avi_data: 预处理后的数据字典
-            target_freq: 目标分析频率(Hz)
-            window_size: Hanning窗口大小(样本数)
-            noverlap: 重叠样本数
-            custom_nfft: 自定义FFT点数(可选)
-        """
-        if is_multipro: # 启用并行加速
-            logging.info("将开启并行加速，进度条不代表实时进度，请稍等。。。")
-            shm_in = None
-            shm_out = None
-            pool = None
+    @pyqtSlot(object, object, int, int, int, int, int, str, bool, int, int, object)
+    @task_scoped
+    def python_stft(self, data, target_freq, scale_range: int, fps: int, window_size: int,
+                    noverlap: int, custom_nfft: int, window_type: str, is_multipro: bool,
+                    batch_size: int, cpu_num: int, compute_options=None):
+        """Execute STFT through the bounded CPU/CUDA pipeline."""
+        try:
+            options = dict(compute_options or {})
+            values = object.__getattribute__(data, "__dict__")
+            storage_name = (
+                "_data_processed_storage" if isinstance(data, ProcessedData)
+                else "_data_origin_storage"
+            )
+            source = values.get(storage_name)
+            if source is None:
+                source = data.data_processed if isinstance(data, ProcessedData) else data.data_origin
+            shape = tuple(int(value) for value in source.shape)
+            if len(shape) != 3:
+                raise ValueError(f"STFT 期望 THW 三维数据，实际 shape={shape}")
+            input_dtype = np.dtype(source.dtype)
+            if int(fps) <= 0:
+                raise ValueError("STFT 采样帧率必须大于 0")
+            if int(window_size) < 1:
+                raise ValueError("STFT 窗口大小必须大于 0")
+            if not 0 <= int(noverlap) < int(window_size):
+                raise ValueError("STFT 窗口重叠必须满足 0 <= noverlap < window_size")
 
-            shm_in_name = "LifeCalor_STFT_Input"
-            shm_out_name = "LifeCalor_STFT_Output"
+            window = self.get_window(window_type, int(window_size))
+            if window is None:
+                raise ValueError(f"无法创建 STFT 窗函数: {window_type}")
+            nfft = max(int(custom_nfft), int(window_size))
+            reference_dtype = input_dtype if input_dtype.kind in "fc" else np.dtype("float32")
+            reference = np.zeros(shape[0], dtype=reference_dtype)
+            frequencies, time_series, magnitude, target_idx = stft_frequency_trace(
+                reference,
+                fs=int(fps),
+                window=window,
+                nperseg=int(window_size),
+                noverlap=int(noverlap),
+                nfft=nfft,
+                target_freq=target_freq,
+                scale_range=scale_range,
+            )
+            output_shape = (int(magnitude.shape[-1]), shape[1], shape[2])
 
-            # --- 1. 自愈机制：清理上次可能残留的内存 ---
-            for name in [shm_in_name, shm_out_name]:
-                try:
-                    # 尝试连接已存在的内存
-                    temp_shm = shared_memory.SharedMemory(name=name)
-                    # 如果能连上，说明它是僵尸内存，将其释放
-                    temp_shm.unlink()
-                    temp_shm.close()
-                    logging.warning(f"发现并清理了异常残留的共享内存: {name}")
-                except FileNotFoundError:
-                    # 这是好结果，说明没有残留
-                    pass
-                except Exception as e:
-                    logging.warning(f"清理共享内存警告: {e}")
+            backend = BackendPreference(options.get("backend", BackendPreference.CPU.value))
+            precision_policy = PrecisionPolicy(
+                options.get("precision", PrecisionPolicy.COMPATIBILITY.value)
+            )
+            precision = resolve_precision("stft", input_dtype, precision_policy)
+            frequency_bins = nfft if input_dtype.kind == "c" else nfft // 2 + 1
+            compute_itemsize = np.dtype(precision.compute_dtype).itemsize
+            complex_itemsize = (
+                compute_itemsize if np.dtype(precision.compute_dtype).kind == "c"
+                else compute_itemsize * 2
+            )
+            output_itemsize = np.dtype(precision.output_dtype).itemsize
+            workspace_per_pixel = (
+                shape[0] * compute_itemsize
+                + 2 * frequency_bins * output_shape[0] * complex_itemsize
+                + output_shape[0] * output_itemsize
+            )
 
+            task_id = self.task_id or f"stft-{uuid.uuid4().hex}"
+            request = ComputeRequest(
+                task_id=task_id,
+                attempt_id=0,
+                algorithm="stft",
+                data_id=str(getattr(data, "timestamp", getattr(data, "name", "data"))),
+                shape=shape,
+                dtype=input_dtype,
+                axes="THW",
+                source=source,
+                parameters={
+                    "output_shape": output_shape,
+                    "workspace_bytes_per_spatial_item": workspace_per_pixel,
+                    "fps": int(fps),
+                    "window_size": int(window_size),
+                    "noverlap": int(noverlap),
+                    "nfft": nfft,
+                    "target_freq": float(target_freq),
+                    "scale_range": float(scale_range),
+                    "max_spatial_items": 512,
+                },
+                backend=backend,
+                precision=precision_policy,
+            )
+
+            preferred_device = str(options.get("preferred_device", "") or "")
             try:
-                # --- 1. 参数校验与准备 ---
-                window = self.get_window(window_type, window_size)
-                frame_size = data.framesize
-                unfolded_data = get_unfolded_data(data)
+                device_index = int(preferred_device.rsplit(":", 1)[-1]) if preferred_device else 0
+            except ValueError:
+                device_index = 0
+            capabilities = list(options.get("capabilities", ()))
+            capability = next(
+                (
+                    device for device in capabilities
+                    if device.kind == "gpu"
+                    and device.status is CapabilityStatus.AVAILABLE
+                    and "stft" in device.supported_algorithms
+                    and (not preferred_device or device.device_id == preferred_device)
+                ),
+                None,
+            )
+            if backend is BackendPreference.GPU and capability is None:
+                capability = probe_cuda_capability_isolated(device_index, timeout=15.0)
+                update_cached_device_capability(capability)
+                capabilities = [
+                    device for device in capabilities
+                    if device.device_id != capability.device_id
+                ]
+                capabilities.append(capability)
+                if capability.status is not CapabilityStatus.AVAILABLE:
+                    logging.warning("CUDA STFT 自检未通过: %s", capability.detail)
 
-                mean_signal = np.mean(unfolded_data, axis=0)
-                f0, t0, Zxx0 = signal.stft(
-                    mean_signal,
-                    fs=fps,
-                    window=window,
-                    nperseg=window_size,
-                    noverlap=noverlap,
-                    nfft=custom_nfft,
-                    return_onesided=True,
-                    scaling='psd'
+            host_limit = max(256, int(options.get("host_memory_limit_mb", 4096))) * 1024 ** 2
+            device_limit = 0
+            if capability is not None and capability.status is CapabilityStatus.AVAILABLE:
+                percent = min(90, max(10, int(options.get("gpu_memory_percent", 70))))
+                reserve = max(1024 ** 3, int(capability.total_memory_bytes * 0.1))
+                available = max(0, capability.free_memory_bytes - reserve)
+                device_limit = min(
+                    int(capability.total_memory_bytes * percent / 100),
+                    available,
                 )
-                out_length = Zxx0.shape[1]
-                time_series = t0
 
-                if isinstance(target_freq, float):
-                    if scale_range > 0:
-                        low_bound = max(0.0, target_freq - scale_range / 2.0)
-                        high_bound = min(f0[-1], target_freq + scale_range / 2.0)
-                        target_idx = np.where((f0 >= low_bound) & (f0 <= high_bound))[0]
-                        if len(target_idx) == 0:
-                            target_idx = [np.argmin(np.abs(f0 - target_freq))]
-                    else:
-                        target_idx = [np.argmin(np.abs(f0 - target_freq))]
-                else:
-                    target_idx = target_freq
+            cache_dir = Path(
+                options.get("cache_directory") or get_array_store().config.cache_dir
+            )
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            budget = ResourceBudget(
+                host_limit_bytes=host_limit,
+                device_limit_bytes=device_limit,
+                disk_free_bytes=int(shutil.disk_usage(cache_dir).free),
+                cpu_workers=max(1, int(options.get("cpu_workers", cpu_num or 1))),
+            )
+            allow_fallback = bool(options.get("allow_cpu_fallback", True))
+            plan = plan_compute(
+                request,
+                budget,
+                capabilities=tuple(capabilities),
+                default_backend=BackendPreference.AUTO,
+                allow_cpu_fallback=allow_fallback,
+                disk_output_threshold_bytes=max(
+                    1, int(options.get("cache_threshold_mb", 512))
+                ) * 1024 ** 2,
+            )
+            self.compute_plan_signal.emit(plan)
 
-                height, width = frame_size
-                total_pixels = unfolded_data.shape[0]
-                self.processing_progress_signal.emit(0, total_pixels)
-                nfft = max(custom_nfft, window_size)
+            params = {
+                "fps": int(fps),
+                "window": window,
+                "window_size": int(window_size),
+                "noverlap": int(noverlap),
+                "nfft": nfft,
+                "target_freq": target_freq,
+                "scale_range": scale_range,
+            }
 
-                # --- 2. 创建共享内存 (Shared Memory) ---
-                # 这一步非常关键：我们在主进程申请内存，子进程直接用，无需复制 16GB 数据
-                # A. 输入数据共享内存
-                # create=True 表示创建新内存块
-                shm_in = shared_memory.SharedMemory(create=True, size=unfolded_data.nbytes, name=shm_in_name)
-                # 将 numpy 数据复制进共享内存
-                shm_in_arr = np.ndarray(unfolded_data.shape, dtype=unfolded_data.dtype, buffer=shm_in.buf)
-                shm_in_arr[:] = unfolded_data[:]  # copy data
+            def report_progress(current, total, message):
+                if self.abortion:
+                    self.cancellation_token.cancel()
+                self.processing_progress_signal.emit(int(current), int(total))
 
-                # B. 输出结果共享内存 (预分配)
-                # 我们需要一个 (out_length, total_pixels) 的矩阵方便写入
-                # 最终结果是 (out_length, height, width)，但计算时平铺比较好处理
-                output_shape_flat = (out_length, total_pixels)
-                output_dtype = np.float32
-                output_bytes = int(np.prod(output_shape_flat) * np.dtype(output_dtype).itemsize)
-
-                shm_out = shared_memory.SharedMemory(create=True, size=output_bytes, name=shm_out_name)
-                # 初始化为 0
-                shm_out_arr = np.ndarray(output_shape_flat, dtype=output_dtype, buffer=shm_out.buf)
-                shm_out_arr[:] = 0
-
-                # 获取核心数
-                num_cores = cpu_num
-
-                # 计算每个进程负责的像素范围
-                chunk_size = math.ceil(total_pixels / num_cores)
-                tasks = []
-                self.processing_progress_signal.emit(1, total_pixels)
-                # 使用 Manager Queue 进行进程间通信 (进度条)
-                m = Manager()
-                queue = m.Queue()
-
-                for i in range(num_cores):
-                    start = i * chunk_size
-                    end = min((i + 1) * chunk_size, total_pixels)
-                    if start >= end: break
-
-                    # 打包参数
-                    task_args = (
-                        shm_in.name, unfolded_data.shape, unfolded_data.dtype,
-                        shm_out.name, output_shape_flat, output_dtype,
-                        (start, end),  # Pixel Range
-                        fps, window, window_size, noverlap, nfft, target_idx,batch_size,
-                        queue
-                    )
-                    tasks.append(task_args)
-
-                self.processing_progress_signal.emit(2, total_pixels)
-                print(f"开始多进程计算: 核心数={len(tasks)}, SHM_IN={shm_in.name}, SHM_OUT={shm_out.name}")
-
-                # --- 4. 启动进程池 ---
-                # 注意：Windows 下必须使用 starmap_async 或者手动解析 args
-                pool = Pool(processes=len(tasks))
-
-                # 异步提交任务
-                result_async = pool.starmap_async(_stft_worker_process, tasks)
-
-                # --- 5. 监控进度 ---
-                # 主线程在这里循环，直到任务完成
-                # 这样既不会阻塞 UI (如果在 thread 里)，又能实时更新进度
-                processed_total = 2
-                while not result_async.ready():
-                    # 检查中止信号
-                    if self.abortion:
-                        pool.terminate()
-                        return self._emit_cancelled()
-
-                    # 尝试从队列获取进度更新
-                    # 每次取一点，避免死锁
-                    while not queue.empty():
-                        processed_total += queue.get()
-
-                    self.processing_progress_signal.emit(processed_total, total_pixels)
-
-                    # 稍微 sleep 一下避免空转烧 CPU
-                    QThread.msleep(50)
-
-                    # 确保最后取完队列
-                while not queue.empty():
-                    processed_total += queue.get()
-                self.processing_progress_signal.emit(total_pixels, total_pixels)
-
-                # 检查是否有异常抛出
-                result_async.get()  # 如果 worker 报错，这里会 raise Exception
-
-                # --- 6. 结果回收与重构 ---
-                # 此时 shm_out_arr 里已经是计算好的数据了
-                # 我们需要把它 reshape 成 (out_length, height, width)
-                # 注意：这里的 .copy() 很重要，因为 shm_out 马上要 close/unlink 了
-                final_result_flat = shm_out_arr.copy()
-
-                # 重塑维度
-                stft_py_out = final_result_flat.reshape(out_length, height, width)
-
-                # 发送结果
-                self.processed_result.emit(ProcessedData(
-                    data.timestamp,
-                    f'{data.name}@r_stft',
-                    'ROI_stft',
-                    time_point=time_series,
-                    data_processed=stft_py_out,
-                    out_processed={
-                        'whole_mean': np.mean(stft_py_out, axis=(1, 2)),
-                        'window_type': window,
-                        'window_size': window_size,
-                        'window_step': window_size - noverlap,
-                        'target_freq': target_freq,
-                        'FFT_length': nfft,
-                        **{k: data.out_processed.get(k) for k in data.out_processed if k not in {"unfolded_data"}},
-                        **data.parameters
-                    }
-                ))
-
-                return True
-
-            except Exception as e:
-                traceback.print_exc()
-                return self._emit_failure("数据处理失败", "ROI_stft", e, data)
-
-            finally:
-                # --- 7. 清理资源 (至关重要) ---
-                if pool:
-                    try:
-                        pool.close()
-                    except ValueError:
-                        pass
-                    pool.join()
-
-                # 必须手动释放共享内存，否则会造成内存泄漏直到重启电脑
-                if shm_in:
-                    shm_in.close()
-                    shm_in.unlink()  # unlink 表示从系统中删除
-                if shm_out:
-                    shm_out.close()
-                    shm_out.unlink()
-
-                logging.info("共享内存已释放，进程池已关闭。")
-
-        else: # 不启用加速
-
-            try:
-                window = self.get_window(window_type, window_size)
-                frame_size = data.framesize
-                unfolded_data = get_unfolded_data(data)
-
-                mean_signal = np.mean(unfolded_data, axis=0)
-                f0, t0, Zxx0 = signal.stft(
-                    mean_signal,
-                    fs=fps,
-                    window=window,
-                    nperseg=window_size,
-                    noverlap=noverlap,
-                    nfft=custom_nfft,
-                    return_onesided=True,
-                    scaling='psd'
+            result = run_stft_pipeline(
+                plan,
+                params,
+                cache_dir=cache_dir,
+                token=self.cancellation_token,
+                progress=report_progress,
+                allow_cpu_fallback=allow_fallback,
+                device_index=device_index,
+            )
+            if result.plan.actual_backend == "gpu":
+                verified = mark_algorithm_verified(
+                    f"nvidia:{device_index}", "stft"
                 )
-                out_length = Zxx0.shape[1]
-                time_series = t0
-
-                if isinstance(target_freq, float):
-                    if scale_range > 0:
-                        low_bound = max(0.0, target_freq - scale_range / 2.0)
-                        high_bound = min(f0[-1], target_freq + scale_range / 2.0)
-                        target_idx = np.where((f0 >= low_bound) & (f0 <= high_bound))[0]
-                        if len(target_idx) == 0:
-                            target_idx = [np.argmin(np.abs(f0 - target_freq))]
-                    else:
-                        target_idx = [np.argmin(np.abs(f0 - target_freq))]
-                else:
-                    target_idx = target_freq
-
-                total_pixels = unfolded_data.shape[0]
-                nfft = max(custom_nfft, window_size)
-                self.processing_progress_signal.emit(0, total_pixels)
-
-                # 4. 初始化结果数组
-                height, width = frame_size
-                stft_py_out = np.zeros((out_length, height, width), dtype=np.float32)
-
-                # 窗函数的选择和生成
-                window = self.get_window(window_type, window_size)
-
-                # 5. 逐像素STFT处理
-                self.processing_progress_signal.emit(1, total_pixels)
-
-                # 对每个像素执行STFT
-                for i in range(total_pixels):
-                    if self.abortion:
-                        return self._emit_cancelled()
-
-                    pixel_signal = unfolded_data[i, :]
-
-                    # 计算当前像素的STFT
-                    # signal.ShortTimeFFT
-                    _, _, Zxx = signal.stft(
-                        pixel_signal,
-                        fs=fps,
-                        window=window,
-                        nperseg=window_size,
-                        noverlap=noverlap,
-                        nfft=nfft,
-                        return_onesided=False,
-                        scaling='spectrum'
-                    )
-                    # 提取目标频率处的幅度
-                    magnitude = np.mean(np.abs(Zxx[target_idx, :]), axis=0) * 2
-
-                    # 将结果存入对应像素位置
-                    y = i // width
-                    x = i % width
-                    stft_py_out[:, y, x] = magnitude
-                    # zxx_out[:,:, y, x] = Zxx
-
-                    self.processing_progress_signal.emit(i, total_pixels)
-
-                # with h5py.File('transfer_data.h5', 'w') as f:
-                #     # 创建数据集并写入数据(for debug)
-                #     dset = f.create_dataset('big_array', data=stft_py_out, compression='gzip')
-
-                # 6. 发送完整结果
-                self.processed_result.emit(ProcessedData(data.timestamp,
-                                                                   f'{data.name}@r_stft',
-                                                                   'ROI_stft',
-                                                                    time_point=time_series,
-                                                                   data_processed=stft_py_out,
-                                                                   out_processed={'whole_mean':np.mean(stft_py_out, axis=(1, 2)),
-                                                                                  'window_type': window,
-                                                                                  'window_size': window_size,
-                                                                                  'window_step': window_size - noverlap,
-                                                                                  'FFT_length': nfft,
-                                                                                  **{k:data.out_processed.get(k)
-                                                                                     for k in data.out_processed if k not in {"unfolded_data"}},
-                                                                                  **data.parameters}))
-                self.processing_progress_signal.emit(total_pixels, total_pixels)
-                return True
-            except Exception as e:
-                return self._emit_failure("数据处理失败", "ROI_stft", e, data)
-
+                logging.info(
+                    "GPU 算法实际任务验证通过: algorithm=stft device=%s backend=%s",
+                    verified.name if verified is not None else f"nvidia:{device_index}",
+                    verified.backend if verified is not None else "CuPy/CUDA",
+                )
+            if result.plan is not plan:
+                self.compute_plan_signal.emit(result.plan)
+            metadata = execution_metadata(
+                result.plan,
+                execution=f"bounded_{result.plan.actual_backend}",
+                device=capability.name if capability is not None else "CPU",
+                fallback_reason=result.fallback_reason or (
+                    result.plan.backend_reason
+                    if backend is BackendPreference.GPU
+                    and result.plan.actual_backend == "cpu"
+                    else ""
+                ),
+                frequency_selection="contract_v1",
+                max_gpu_oom_retries=3,
+            )
+            inherited = {
+                key: value for key, value in (getattr(data, "out_processed", {}) or {}).items()
+                if key != "unfolded_data"
+            }
+            inherited.update(getattr(data, "parameters", {}) or {})
+            processed = ProcessedData(
+                data.timestamp,
+                f"{data.name}@r_stft",
+                "ROI_stft",
+                time_point=result.times,
+                data_processed=result.output,
+                out_processed={
+                    "whole_mean": result.whole_mean,
+                    "window_type": window,
+                    "window_size": int(window_size),
+                    "window_step": int(window_size) - int(noverlap),
+                    "target_freq": target_freq,
+                    "scale_range": scale_range,
+                    "FFT_length": nfft,
+                    "frequencies": result.frequencies,
+                    "target_idx": result.selected_indices,
+                    **inherited,
+                    "compute": metadata,
+                },
+            )
+            self.processed_result.emit(processed)
+            return True
+        except TaskCancelled:
+            return self._emit_cancelled()
+        except Exception as exc:
+            return self._emit_failure("数据处理失败", "ROI_stft", exc, data)
     def get_window(self,window_type, window_size):
         try:
             if window_type == 'gaussian':
@@ -965,6 +929,7 @@ class MassDataProcessor(QObject):
             logging.error(f'Window Fault:{e}')
 
     @pyqtSlot(object,float,int,int,int,str)
+    @task_scoped
     def quality_cwt(self,data, target_freq: float,scale_range:int, fps: int, totalscales: int, wavelet: str = 'morl'):
         """
         CWT(连续小波变换)分析信号评估
@@ -975,7 +940,7 @@ class MassDataProcessor(QObject):
             wavelet: 使用的小波类型(默认为'morl'墨西哥帽小波)
         """
         try:
-            unfolded_data = get_unfolded_data(data)
+            mean_signal = get_mean_time_trace(data, self.cancellation_token)
             frame_size = data.framesize  # (宽度, 高度)
             cparam = 2 * pywt.central_frequency(wavelet) * totalscales
             scales = cparam/np.arange(totalscales,1,-1)
@@ -983,12 +948,12 @@ class MassDataProcessor(QObject):
             # scales = pywt.frequency2scale(wavelet, target_freqs * 1.0 / EM_fps)
             self.processing_progress_signal.emit(20, 100)
             # 计算参数
-            total_frames = unfolded_data.shape[1]
-            total_pixels = unfolded_data.shape[0]
+            total_frames = int(data.timelength)
+            total_pixels = int(data.framesize[0] * data.framesize[1])
             height, width = frame_size
             self.processing_progress_signal.emit(40, 100)
             # 计算平均信号的CWT (用于质量评估)
-            mean_signal = np.mean(unfolded_data, axis=0)
+
             coefficients, frequencies = pywt.cwt(mean_signal, scales, wavelet, sampling_period=1.0 / fps)
             self.processing_progress_signal.emit(70, 100)
             # 发送平均信号CWT结果
@@ -1010,81 +975,147 @@ class MassDataProcessor(QObject):
         except Exception as e:
             return self._emit_failure("数据处理失败", "cwt_quality", e, data)
 
-    @pyqtSlot(object,float, int, int,str, float)
-    def python_cwt(self,data, target_freq: float, fps: int, totalscales: int, wavelet: str, cwt_scale_range: float):
-        """
-        执行逐像素CWT分析
-        参数:
-        参数:
-            target_freq: 目标分析频率(Hz)
-            EM_fps: 采样频率
-            scales: 尺度数组，控制小波变换的频率分辨率
-            wavelet: 使用的小波类型(默认为cmor3-3)
-        """
+    @pyqtSlot(object, float, int, int, str, float, object)
+    @task_scoped
+    def python_cwt(
+        self,
+        data,
+        target_freq: float,
+        fps: int,
+        totalscales: int,
+        wavelet: str,
+        cwt_scale_range: float,
+        compute_options=None,
+    ):
+        """Execute CWT in bounded spatial blocks with immediate scale reduction."""
         try:
-            unfolded_data = get_unfolded_data(data)
-            frame_size = data.framesize  # (宽度, 高度)
-            # cparam = 2 * pywt.central_frequency(wavelet) * totalscales
-            # scales = cparam / np.arange(totalscales, 1, -1)
-            target_freqs = np.linspace(target_freq-cwt_scale_range//2, target_freq+cwt_scale_range//2, totalscales)#totalscales//4
-            scales = pywt.frequency2scale(wavelet, target_freqs * 1.0 / fps)
-            total_frames = unfolded_data.shape[1]
-            total_pixels = unfolded_data.shape[0]
-            self.processing_progress_signal.emit(0, total_pixels)
-            # 初始化结果数组
-            height, width = frame_size
-            cwt_py_out = np.zeros((data.timelength, height, width), dtype=np.float32)
-            fc = pywt.central_frequency(wavelet)
+            options = dict(compute_options or {})
+            values = object.__getattribute__(data, "__dict__")
+            source = values.get("_data_processed_storage")
+            if source is None:
+                source = data.data_processed
+            shape = tuple(int(value) for value in source.shape)
+            if len(shape) != 3:
+                raise ValueError(f"CWT 要求 THW 三维数据，实际 shape={shape}")
+            input_dtype = np.dtype(source.dtype)
+            backend = BackendPreference(options.get("backend", "auto"))
+            precision = PrecisionPolicy(options.get("precision", "compatibility"))
+            precision_info = resolve_precision("cwt", input_dtype, precision)
+            complex_dtype = np.dtype(
+                "complex128" if np.dtype(precision_info.compute_dtype).itemsize > 8
+                else "complex64"
+            )
+            workspace_per_pixel = (
+                int(totalscales) * shape[0] * complex_dtype.itemsize
+                + shape[0] * (
+                    np.dtype(precision_info.compute_dtype).itemsize
+                    + np.dtype(precision_info.output_dtype).itemsize
+                )
+            )
+            request = ComputeRequest(
+                task_id=self.task_id or f"cwt-{uuid.uuid4().hex}",
+                attempt_id=0,
+                algorithm="cwt",
+                data_id=str(getattr(data, "timestamp", getattr(data, "name", "data"))),
+                shape=shape,
+                dtype=input_dtype,
+                axes="THW",
+                source=source,
+                parameters={
+                    "output_shape": shape,
+                    "workspace_bytes_per_spatial_item": workspace_per_pixel,
+                    "target_freq": float(target_freq),
+                    "scale_range": float(cwt_scale_range),
+                    "total_scales": int(totalscales),
+                    "wavelet": str(wavelet),
+                    "fps": int(fps),
+                    "max_spatial_items": 256,
+                },
+                backend=backend,
+                precision=precision,
+            )
+            cache_dir = Path(
+                options.get("cache_directory") or get_array_store().config.cache_dir
+            )
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            budget = ResourceBudget(
+                host_limit_bytes=max(
+                    256, int(options.get("host_memory_limit_mb", 4096))
+                ) * 1024 ** 2,
+                disk_free_bytes=int(shutil.disk_usage(cache_dir).free),
+                cpu_workers=max(1, int(options.get("cpu_workers", 1))),
+            )
+            allow_fallback = bool(options.get("allow_cpu_fallback", True))
+            plan = plan_compute(
+                request,
+                budget,
+                capabilities=tuple(options.get("capabilities", ())),
+                default_backend=BackendPreference.AUTO,
+                allow_cpu_fallback=allow_fallback,
+                disk_output_threshold_bytes=max(
+                    1, int(options.get("cache_threshold_mb", 512))
+                ) * 1024 ** 2,
+            )
+            self.compute_plan_signal.emit(plan)
+            if plan.actual_backend != "cpu":
+                raise RuntimeError("CWT CUDA 后端尚未通过科学一致性验证")
 
-            # 5. 逐像素STFT处理
-            self.processing_progress_signal.emit(1, total_pixels)
+            params = {
+                "target_freq": float(target_freq),
+                "scale_range": float(cwt_scale_range),
+                "total_scales": int(totalscales),
+                "wavelet": str(wavelet),
+                "fps": int(fps),
+            }
 
-            mid_idx = totalscales // 8
-
-            # 对每个像素执行cwt
-            for i in range(total_pixels):
+            def report_progress(current, total, message):
                 if self.abortion:
-                    return self._emit_cancelled()
+                    self.cancellation_token.cancel()
+                self.processing_progress_signal.emit(int(current), int(total))
 
-                pixel_signal = unfolded_data[i, :]
-
-                # 计算当前像素的STFT
-                coefficients, _ = pywt.cwt(pixel_signal, scales, wavelet, sampling_period=1.0 / fps)
-
-                # 提取目标频率处（中间32个值）的幅度
-                # aim_coefficients = coefficients[mid_idx-16:mid_idx+16,:]
-                # magnitude_avg = np.mean(np.abs(aim_coefficients),axis = 0)
-                magnitude_avg = np.mean(np.abs(coefficients),axis = 0)
-
-                # 将结果存入对应像素位置
-                y = i // width
-                x = i % width
-                cwt_py_out[:, y, x] = magnitude_avg  * 2 / np.sqrt(scales[:,None])
-
-                # 每100个像素更新一次进度
-                self.processing_progress_signal.emit(i, total_pixels)
-
-            # 发送完整结果
-            times = np.arange(cwt_py_out.shape[0]) / fps
-            self.processed_result.emit(ProcessedData(data.timestamp,
-                                                                 f'{data.name}@cwt',
-                                                                 'ROI_cwt',
-                                                                 time_point=times,
-                                                                 data_processed=cwt_py_out,
-                                                                 out_processed={'whole_mean':np.mean(cwt_py_out, axis=(1, 2)),
-                                                                                'total_scales': totalscales,
-                                                                                'wavelet_name':wavelet,
-                                                                                'scale_range': cwt_scale_range,
-                                                                                'target_freq': target_freq,
-                                                                                **{k: data.out_processed.get(k)
-                                                                                   for k in data.out_processed if
-                                                                                   k not in {"unfolded_data"}},**data.parameters}))
-            self.processing_progress_signal.emit(total_pixels, total_pixels)
+            result = run_cwt_pipeline(
+                plan,
+                params,
+                cache_dir=cache_dir,
+                token=self.cancellation_token,
+                progress=report_progress,
+            )
+            inherited = {
+                key: value for key, value in (getattr(data, "out_processed", {}) or {}).items()
+                if key != "unfolded_data"
+            }
+            inherited.update(getattr(data, "parameters", {}) or {})
+            metadata = execution_metadata(
+                result.plan,
+                execution="bounded_cpu",
+                scale_reduction="normalized_mean",
+            )
+            processed = ProcessedData(
+                data.timestamp,
+                f"{data.name}@cwt",
+                "ROI_cwt",
+                time_point=np.arange(shape[0]) / float(fps),
+                data_processed=result.output,
+                out_processed={
+                    "whole_mean": result.whole_mean,
+                    "total_scales": int(totalscales),
+                    "wavelet_name": str(wavelet),
+                    "scale_range": float(cwt_scale_range),
+                    "target_freq": float(target_freq),
+                    "scales": result.scales,
+                    "frequencies": result.frequencies,
+                    **inherited,
+                    "compute": metadata,
+                },
+            )
+            self.processed_result.emit(processed)
             return True
-        except Exception as e:
-            return self._emit_failure("数据处理失败", "ROI_cwt", e, data)
-
+        except TaskCancelled:
+            return self._emit_cancelled()
+        except Exception as exc:
+            return self._emit_failure("数据处理失败", "ROI_cwt", exc, data)
     @pyqtSlot(object)
+    @task_scoped
     def accumulate_amplitude(self,data):
         """累计时间振幅图"""
         self.processed_result.emit(ProcessedData(data.timestamp,
@@ -1113,6 +1144,7 @@ class MassDataProcessor(QObject):
         return A * np.exp(-((x - x0) ** 2 / (2 * sigmax ** 2) + (y - y0) ** 2 / (2 * sigmay ** 2))) + b
 
     @pyqtSlot(object,int,float,bool)
+    @task_scoped
     def twoD_gaussian_fit(self,data:ProcessedData|Data,zm = 2,thr = 2.5,thr_known = False):
         """
         对三维时序数据逐帧进行二维高斯拟合
@@ -1228,6 +1260,7 @@ class MassDataProcessor(QObject):
             return self._emit_failure("数据处理失败", "Single_channel_signal", e, data)
 
     @pyqtSlot(object, int, float, bool)
+    @task_scoped
     def simple_single_channel(self, data: ProcessedData|Data, zm=2, thr=2.5, thr_known=False):
         """简单的单通道信号处理办法"""
         try:
@@ -1283,6 +1316,7 @@ class MassDataProcessor(QObject):
             return self._emit_failure("数据处理失败", "简单 Single_channel_signal", e, data)
 
     @pyqtSlot(object)
+    @task_scoped
     def twoD_fourier_transform(self,data,):
         """
             对3D时序视频数据进行2D傅里叶变换
@@ -1340,6 +1374,7 @@ class MassDataProcessor(QObject):
             return self._emit_failure("数据处理失败", "2D_Fourier_transform", e, data)
 
     @pyqtSlot(object)
+    @task_scoped
     def twoD_inverse_fourier_transform(self, data):
         """
         对2D傅里叶变换后的频域数据进行逆变换，恢复3D时序视频数据（空间域）
@@ -1419,6 +1454,7 @@ class MassDataProcessor(QObject):
             return self._emit_failure("数据处理失败", "2D_Inverse_Fourier_transform", e, data)
 
     @pyqtSlot(object, int, int ,list, str, str, float)
+    @task_scoped
     def heartbeat_movement(self, data, step, base_num, after_series, save_path = "", export_mode = 'video', scale = 1):
         """心肌细胞运动分析，使用
         稠密光流 (Farneback算法)"""
@@ -1568,6 +1604,7 @@ class MassDataProcessor(QObject):
     def stop(self):
         """请求中止处理"""
         self.abortion = True
+        self.cancellation_token.cancel()
 
     @staticmethod
     def calculate_amp_dur(data, thr, mode='open'):
@@ -1687,13 +1724,16 @@ class MassDataProcessor(QObject):
         return np.array(time_constants), np.array(mse_values)
 
     @pyqtSlot(object)
+    @task_scoped
     def calculation_operation(self, plan):
         """Execute a validated multi-source calculation plan."""
         try:
             if not isinstance(plan, CalculationPlan):
                 raise TypeError("计算任务类型无效")
+            self.cancellation_token.raise_if_cancelled()
             self.processing_progress_signal.emit(0, 1)
             result_data, validation = CalculationEngine.execute(plan)
+            self.cancellation_token.raise_if_cancelled()
             if result_data.ndim == 0:
                 result_data = result_data.reshape(1)
             primary = plan.operands[0].source
@@ -1713,6 +1753,8 @@ class MassDataProcessor(QObject):
             self.processed_result.emit(processed)
             self.calculator_completed.emit(processed)
             return True
+        except TaskCancelled:
+            return self._emit_cancelled()
         except Exception as exc:
             expression = getattr(plan, "expression", "")
             operands = []
@@ -1730,6 +1772,7 @@ class MassDataProcessor(QObject):
             self.calculator_failed.emit(AppError(
                 "多数据运算失败", str(exc), stage="多数据运算",
                 severity="error", details=details, original=exc,
+                task_id=self.task_id,
             ))
             return False
 
@@ -1787,7 +1830,3 @@ class MassDataProcessor(QObject):
     #     }
     #
     #     return results
-
-
-
-

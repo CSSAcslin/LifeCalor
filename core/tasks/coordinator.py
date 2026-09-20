@@ -27,6 +27,22 @@ class TaskCoordinator(QObject):
         logging.info("任务已创建: id=%s category=%s name=%s", task.task_id, category, name)
         return task
 
+    def configure_execution(self, task_id: str, *, attempt_id=0, stage="",
+                            requested_backend="", actual_backend="", precision="",
+                            device="", backend_reason="", resource_summary="",
+                            execution_details=None) -> None:
+        task = self._require(task_id)
+        task.attempt_id = max(0, int(attempt_id))
+        task.stage = str(stage or "")
+        task.requested_backend = str(requested_backend or "")
+        task.actual_backend = str(actual_backend or "")
+        task.precision = str(precision or "")
+        task.device = str(device or "")
+        task.backend_reason = str(backend_reason or "")
+        task.resource_summary = str(resource_summary or "")
+        task.execution_details = dict(execution_details or {})
+        self.task_updated.emit(task)
+
     def start(self, task_id: str, total: int = 0, message: str = "") -> None:
         task = self._require(task_id)
         task.start(total, message)

@@ -27,6 +27,18 @@ class MainWindowArchitectureTests(unittest.TestCase):
         self.assertNotIn("self.task_states", self.source)
         self.assertNotIn("from TaskController import ensure_thread_running", self.source)
 
+    def test_algorithm_buttons_are_not_locked_by_legacy_single_task_state(self):
+        self.assertNotIn("cal_running_status.connect", self.source)
+        self.assertNotIn("def btn_safety", self.source)
+        for button in (
+            "stft_process_btn",
+            "cwt_process_btn",
+            "atam_btn",
+            "tDgf_btn",
+            "sscs_btn",
+        ):
+            self.assertNotIn(f"self.{button}.setEnabled(False)", self.source)
+
     def test_mainwindow_delegates_thread_export_and_result_routing(self):
         self.assertIn("from ThreadController import is_thread_active as thread_is_active", self.source)
         self.assertIn("return thread_is_active(", self.source)
@@ -55,7 +67,8 @@ class MainWindowArchitectureTests(unittest.TestCase):
         self.assertIn("dialog.execute_requested.connect", block)
         self.assertNotIn("dialog.exec_()", block)
         self.assertIn('"多数据运算", "calculator"', block)
-        self.assertIn("cancel_callback=self.mass_data_processor.stop", block)
+        self.assertIn("self.mass_data_processor.enqueue_task_context", block)
+        self.assertNotIn("cancel_callback=self.mass_data_processor.stop", block)
         self.assertNotIn('ensure_task_thread_running("avi_thread", "em_processing")', block)
 
     def test_canvas_tool_parameters_are_persisted_immediately(self):

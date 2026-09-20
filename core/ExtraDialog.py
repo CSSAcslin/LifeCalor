@@ -1,7 +1,6 @@
 import logging
 import os
 import sys
-import time
 import psutil
 from math import ceil
 from typing import List
@@ -632,165 +631,145 @@ class DataSavingPop(QDialog):
 
 # 计算stft参数弹窗
 class STFTComputePop(QDialog):
-    def __init__(self,params,case,parent = None,time_length = None):
+    def __init__(self, params, case, parent=None, time_length=None, compute_options=None):
         super().__init__(parent)
         self.setWindowTitle("短时傅里叶变换")
-        self.setMinimumWidth(300)
-        self.setMinimumHeight(200)
+        self.setMinimumWidth(380)
         self.params = params
         self.help_dialog = None
         self.case = case
         self.time_length = time_length
+        self.compute_options = dict(compute_options or {})
         self.init_ui()
 
     def init_ui(self):
-        layout = QFormLayout()
-        row = 6
+        layout = QFormLayout(self)
         self.target_freq_input = QDoubleSpinBox()
         self.target_freq_input.setRange(0.1, 10000)
-        self.target_freq_input.setValue(self.params['target_freq'])
+        self.target_freq_input.setValue(self.params["target_freq"])
         self.target_freq_input.setSuffix(" Hz")
 
         self.fps_input = QSpinBox()
-        self.fps_input.setRange(10,99999)
-        self.fps_input.setValue(self.params['EM_fps'])
+        self.fps_input.setRange(1, 99999)
+        self.fps_input.setValue(self.params["EM_fps"])
 
         self.scale_range_input = QSpinBox()
-        self.scale_range_input.setRange(0,99999)
-        self.scale_range_input.setValue(self.params['stft_scale_range'])
+        self.scale_range_input.setRange(0, 99999)
+        self.scale_range_input.setValue(self.params["stft_scale_range"])
+        self.scale_range_input.setSuffix(" Hz")
 
         self.window_size_input = QSpinBox()
         self.window_size_input.setRange(1, 65536)
-        self.window_size_input.setValue(self.params['stft_window_size'])
+        self.window_size_input.setValue(self.params["stft_window_size"])
 
         self.noverlap_input = QSpinBox()
-        self.noverlap_input.setRange(0, 65536)
-        self.noverlap_input.setValue(self.params['stft_noverlap'])
+        self.noverlap_input.setRange(0, 65535)
+        self.noverlap_input.setValue(self.params["stft_noverlap"])
 
         self.custom_nfft_input = QSpinBox()
         self.custom_nfft_input.setRange(0, 65536)
-        self.custom_nfft_input.setValue(self.params['custom_nfft'])
+        self.custom_nfft_input.setValue(self.params["custom_nfft"])
+        self.custom_nfft_input.setSpecialValueText("自动")
 
-        layout.addRow(QLabel("目标频率"),self.target_freq_input)
-        layout.addRow(QLabel("平均范围"),self.scale_range_input)
-        layout.addRow(QLabel("采样帧率"),self.fps_input)
-        layout.addRow(QLabel("窗口大小"),self.window_size_input)
-        layout.addRow(QLabel("窗口重叠"),self.noverlap_input)
-        layout.addRow(QLabel("变换长度"),self.custom_nfft_input)
+        layout.addRow("目标频率", self.target_freq_input)
+        layout.addRow("平均范围", self.scale_range_input)
+        layout.addRow("采样帧率", self.fps_input)
+        layout.addRow("窗口大小", self.window_size_input)
+        layout.addRow("窗口重叠", self.noverlap_input)
+        layout.addRow("变换长度", self.custom_nfft_input)
 
-        if self.case == 'process':
-            row = 10
-            self.multiprocess_check = QCheckBox()
-            layout.addRow(QLabel("启用加速"),self.multiprocess_check)
-            self.hint_label = QLabel("建议启用时关闭无用程序")
-            layout.addRow(QLabel("启用警告："),self.hint_label)
-            self.multiprocess_check.toggled.connect(self.multiprocess_handle)
+        self.multiprocess_check = QCheckBox()
+        self.multiprocess_check.setVisible(False)
+        self.batch_size_input = QSpinBox()
+        self.batch_size_input.setRange(0, 10000)
+        self.batch_size_input.setValue(0)
+        self.batch_size_input.setVisible(False)
+        self.cpu_use_input = QSpinBox()
+        self.cpu_use_input.setRange(1, max(1, os.cpu_count() or 1))
+        self.cpu_use_input.setValue(max(1, int(self.compute_options.get("cpu_workers", 1))))
+        self.cpu_use_input.setVisible(False)
 
-            self.batch_size_input = QSpinBox()
-            self.batch_size_input.setRange(0,10000)
-            self.batch_size_input.setValue(0)
-            layout.addRow(QLabel("批处理大小"),self.batch_size_input)
-            self.noverlap_input.valueChanged.connect(self._batch_size_cal)
-            self.custom_nfft_input.valueChanged.connect(self._batch_size_cal)
-            self.window_size_input.valueChanged.connect(self._batch_size_cal)
-            self.batch_size_input.setEnabled(False)
+        if self.case == "process":
+            self.backend_combo = QComboBox()
+            for label, value in (("自动", "auto"), ("CPU", "cpu"), ("GPU", "gpu")):
+                self.backend_combo.addItem(label, value)
+            backend = str(self.compute_options.get("backend", "auto"))
+            index = self.backend_combo.findData(backend)
+            self.backend_combo.setCurrentIndex(index if index >= 0 else 0)
+            self.backend_combo.setToolTip(
+                "自动模式仅在已有可信性能档案时使用 GPU；否则使用有界 CPU 路径。"
+            )
 
-            self.cpu_use_input = QSpinBox()
-            self.cpu_use_input.setRange(0,100)
-            self.cpu_use_input.setValue(0)
-            layout.addRow(QLabel("加速核数"),self.cpu_use_input)
-            self.cpu_use_input.setEnabled(False)
+            self.precision_combo = QComboBox()
+            for label, value in (
+                ("兼容现有（推荐）", "compatibility"),
+                ("保留输入精度", "preserve_input"),
+                ("单精度", "single"),
+                ("双精度", "double"),
+            ):
+                self.precision_combo.addItem(label, value)
+            precision = str(self.compute_options.get("precision", "compatibility"))
+            index = self.precision_combo.findData(precision)
+            self.precision_combo.setCurrentIndex(index if index >= 0 else 0)
+            self.precision_combo.setToolTip(
+                "精度与后端独立；兼容现有保持当前 STFT 的 float32 输出约定。"
+            )
+            layout.addRow("计算后端", self.backend_combo)
+            layout.addRow("精度策略", self.precision_combo)
+
+            policy_hint = QLabel("块大小由内存、显存和输出尺寸统一规划")
+            policy_hint.setWordWrap(True)
+            policy_hint.setToolTip(
+                "计算会按二维空间块执行；大结果直接写入缓存，不再复制完整共享内存。"
+            )
+            layout.addRow("资源规划", policy_hint)
 
         button_layout = QHBoxLayout()
         self.apply_btn = QPushButton("执行STFT")
-        self.apply_btn.clicked.connect(self.accept)
+        self.apply_btn.clicked.connect(self._validate_and_accept)
         self.cancel_btn = QPushButton("取消")
         self.cancel_btn.clicked.connect(self.reject)
+        button_layout.addStretch(1)
         button_layout.addWidget(self.apply_btn)
         button_layout.addWidget(self.cancel_btn)
-        layout.setLayout(row,QFormLayout.FieldRole,button_layout)
+        layout.addRow(button_layout)
 
-        self.setLayout(layout)
+    def _validate_and_accept(self):
+        if self.noverlap_input.value() >= self.window_size_input.value():
+            report_warning(self, "参数错误", "窗口重叠必须小于窗口大小")
+            return
+        self.accept()
+
+    def selected_compute_options(self):
+        options = dict(self.compute_options)
+        if self.case == "process":
+            options["backend"] = self.backend_combo.currentData()
+            options["precision"] = self.precision_combo.currentData()
+        return options
 
     def event(self, event):
         if event.type() == QEvent.EnterWhatsThisMode:
-            # QWhatsThis.leaveWhatsThisMode()
             QTimer.singleShot(0, self.show_custom_help)
             return True
         return super().event(event)
 
     def show_custom_help(self):
-        """显示自定义非模态帮助对话框"""
         QWhatsThis.leaveWhatsThisMode()
-        help_title = "STFT 帮助说明"
-
-        # 创建并显示自定义对话框
-        self.help_dialog = CustomHelpDialog(help_title, ['stft'])
+        self.help_dialog = CustomHelpDialog("STFT 帮助说明", ["stft"])
         self.help_dialog.setWindowModality(Qt.NonModal)
-        self.help_dialog.show()  # 非阻塞显示
+        self.help_dialog.show()
         self.help_dialog.activateWindow()
         self.help_dialog.raise_()
-
-    def multiprocess_handle(self):
-        """多进程加速启用"""
-        multipro = self.multiprocess_check.isChecked()
-        if multipro:
-            self.batch_size_input.setEnabled(True)
-            self.hint_label.setText("启用后其他软件卡顿属正常现象")
-            self.cpu_use_input.setEnabled(True)
-            self._batch_size_cal()
-            self.cpu_use_input.setValue(ToolBucket.available_cpu_count()[1])
-            self.cpu_use_input.setSuffix(f"/{ToolBucket.available_cpu_count()[0]}")
-        else:
-            self.hint_label.setText("建议启用时关闭无用程序")
-            self.batch_size_input.setEnabled(False)
-            self.cpu_use_input.setEnabled(False)
-
-    def _batch_size_cal(self):
-        """动态计算批处理大小Size"""
-        custom_nfft =  self.custom_nfft_input.value()
-        window_size = self.window_size_input.value()
-        noverlap = self.noverlap_input.value()
-
-        # 1. 计算频率轴长度 (Freq Bins)
-        n_freqs = custom_nfft // 2 + 1
-
-        # 2. 计算步长 (Hop Size)
-        hop_size = window_size - noverlap
-        if hop_size < 1:
-            self.noverlap_input.setValue(window_size - 1)
-
-        # 3. 估算时间轴长度 (Time Steps)
-        # 加上 padding 带来的额外几帧，这里多算一点作为安全冗余 (+5)
-        n_time_steps = ceil(self.time_length / hop_size) + 5
-
-        # 4. 计算单个像素 STFT 结果占用的字节数 (Complex64 = 8 bytes)
-        bytes_per_pixel = n_freqs * n_time_steps * 8
-
-        # 5. 设定内存安全阈值 (例如 800 MB)
-        mem_info = psutil.virtual_memory()
-        available_ram = mem_info.available
-        SAFE_MEMORY_LIMIT = min(available_ram * 0.5, 2 * 1024 * 1024 * 1024)
-        # 意味着我们每次循环处理产生的数据量控制在 800MB 以内，这对大多数电脑都很轻松
-        TARGET_BLOCK_SIZE = 8 * 1024 * 1024  # 8 MB
-
-        # 3. 计算最佳 Batch Size
-        optimal_batch_size = int(TARGET_BLOCK_SIZE / bytes_per_pixel)
-        # 6. 算出 Batch Size
-        # 兜底：至少处理1个像素，如果连1个都存不下，那是硬件问题了
-        batch_size = max(1, int(SAFE_MEMORY_LIMIT / bytes_per_pixel))
-        batch_size = max(1, optimal_batch_size)
-        self.batch_size_input.setValue(batch_size)
-
 # 计算cwt参数弹窗
 class CWTComputePop(QDialog):
-    def __init__(self,params,case='quality',parent = None):
+    def __init__(self, params, case='quality', parent=None, compute_options=None):
         super().__init__(parent)
         self.setWindowTitle("小波变换")
         self.setMinimumWidth(300)
         self.setMinimumHeight(200)
         self.params = params
         self.case = case
+        self.compute_options = dict(compute_options or {})
         self.init_ui()
 
     def init_ui(self):
@@ -806,7 +785,7 @@ class CWTComputePop(QDialog):
         self.fps_input.setValue(self.params['EM_fps'])
 
         self.cwt_size_input = QSpinBox()
-        self.cwt_size_input.setRange(0, 65536)
+        self.cwt_size_input.setRange(1, 65536)
         if self.case == 'quality':
             self.cwt_size_input.setValue(256)
         else:
@@ -828,6 +807,32 @@ class CWTComputePop(QDialog):
         layout.addRow(QLabel("处理跨度"), self.cwt_scale_range)
 
         if self.case == 'signal':
+            self.backend_combo = QComboBox()
+            for label, value in (("自动", "auto"), ("CPU", "cpu"), ("GPU", "gpu")):
+                self.backend_combo.addItem(label, value)
+            backend = str(self.compute_options.get("backend", "auto"))
+            index = self.backend_combo.findData(backend)
+            self.backend_combo.setCurrentIndex(index if index >= 0 else 0)
+            self.backend_combo.setToolTip(
+                "CWT 的 CUDA 后端尚未完成科学一致性验证；自动模式使用有界 CPU。"
+            )
+            layout.addRow(QLabel("计算后端"), self.backend_combo)
+
+            self.precision_combo = QComboBox()
+            for label, value in (
+                ("兼容现有（推荐）", "compatibility"),
+                ("保留输入精度", "preserve_input"),
+                ("单精度", "single"),
+                ("双精度", "double"),
+            ):
+                self.precision_combo.addItem(label, value)
+            precision = str(self.compute_options.get("precision", "compatibility"))
+            index = self.precision_combo.findData(precision)
+            self.precision_combo.setCurrentIndex(index if index >= 0 else 0)
+            self.precision_combo.setToolTip(
+                "兼容现有保持 float32 输出；分块过程中不会建立完整尺度系数体。"
+            )
+            layout.addRow(QLabel("精度策略"), self.precision_combo)
             self.apply_btn = QPushButton("执行CWT")
         else:
             self.apply_btn = QPushButton("执行质量评价")
@@ -838,9 +843,16 @@ class CWTComputePop(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(self.apply_btn)
         button_layout.addWidget(self.cancel_btn)
-        layout.setLayout(5,QFormLayout.FieldRole,button_layout)
+        layout.addRow(button_layout)
 
         self.setLayout(layout)
+
+    def selected_compute_options(self):
+        options = dict(self.compute_options)
+        if self.case == "signal":
+            options["backend"] = self.backend_combo.currentData()
+            options["precision"] = self.precision_combo.currentData()
+        return options
 
 # 单通道信号参数弹窗
 class SCSComputePop(QDialog):
@@ -2185,6 +2197,7 @@ class HeartBeatFrameSelectDialog(QDialog):
         if motion_frames:
             if not self.parent.avi_thread.isRunning():
                 self.parent.avi_thread.start()
+            self.parent.ensure_task_thread_running("avi_thread", "em_processing")
             self.parent.heartbeat_signal.emit(self.data, self.step_input.value(),
                                               self.base_frame_input.value(),
                                               motion_frames, self.get_path(),

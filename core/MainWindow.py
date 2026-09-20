@@ -60,15 +60,15 @@ class MainWindow(QMainWindow):
     fix_bad_frames_signal = pyqtSignal(object, list, int)
     # cal
     start_reg_cal_signal = pyqtSignal(object, float, np.ndarray, str)
-    start_dis_cal_signal = pyqtSignal(object, float, str, str, int, str, int, bool, int)
-    start_heat_cal_signal = pyqtSignal(object, float, str, str, int, str, int, bool, int)
+    start_dis_cal_signal = pyqtSignal(object, float, str, str, int, str, int, bool, int, object)
+    start_heat_cal_signal = pyqtSignal(object, float, str, str, int, str, int, bool, int, object)
     start_dif_cal_signal = pyqtSignal(object, float, float, float, str)
     # mass
-    pre_process_signal = pyqtSignal(object,int,bool)
+    pre_process_signal = pyqtSignal(object, int, bool, object)
     stft_quality_signal = pyqtSignal(object,float, int, int, int, int, int, str)
-    stft_python_signal = pyqtSignal(object,object, int, int, int, int, int, str, bool, int, int)
+    stft_python_signal = pyqtSignal(object,object, int, int, int, int, int, str, bool, int, int, object)
     cwt_quality_signal = pyqtSignal(object,float, int, int, int, str)
-    cwt_python_signal = pyqtSignal(object,float, int, int, str, float)
+    cwt_python_signal = pyqtSignal(object, float, int, int, str, float, object)
     mass_export_signal = pyqtSignal(np.ndarray, str, str, str, bool, dict)
     managed_export_signal = pyqtSignal(object, str, str, str, bool, dict)
     atam_signal = pyqtSignal(object)
@@ -171,8 +171,116 @@ class MainWindow(QMainWindow):
         self._deferred_services_started = True
         if self._cleanup_cache_on_startup:
             QTimer.singleShot(0, self.history_controller.cleanup_orphans)
+        self._start_compute_hardware_probe()
         self.auto_update_check()
         logging.info("主窗口后台服务已启动")
+    def _start_compute_hardware_probe(self):
+        """Probe compute hardware after the main window is visible."""
+        if getattr(self, "_hardware_probe_thread", None) is not None:
+            if self._hardware_probe_thread.isRunning():
+                return
+        from compute.dialog import HardwareProbeThread, track_probe_thread
+
+        thread = track_probe_thread(HardwareProbeThread())
+        self._hardware_probe_thread = thread
+        thread.completed.connect(self._compute_hardware_snapshot_ready)
+        thread.failed.connect(
+            lambda message: logging.warning("启动硬件检测失败: %s", message)
+        )
+        thread.finished.connect(lambda: setattr(self, "_hardware_probe_thread", None))
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _compute_hardware_snapshot_ready(self, snapshot):
+        from compute.capabilities import reconcile_probe_snapshot, set_cached_snapshot
+        from compute.model import CapabilityStatus
+        from compute.resources import recommend_resources
+
+        snapshot = reconcile_probe_snapshot(snapshot)
+        set_cached_snapshot(snapshot)
+        recommendation = recommend_resources(snapshot)
+        logging.info(
+            "硬件检测: CPU=%s physical=%s logical=%s load=%s RAM_total=%s "
+            "RAM_available=%s auto_workers=%s auto_memory_mb=%s auto_gpu_percent=%s",
+            snapshot.cpu_name,
+            snapshot.physical_cores,
+            snapshot.logical_cores,
+            snapshot.cpu_percent,
+            snapshot.ram_total_bytes,
+            snapshot.ram_available_bytes,
+            recommendation.cpu_workers,
+            recommendation.host_memory_limit_mb,
+            recommendation.gpu_memory_percent,
+        )
+        for device in snapshot.devices:
+            logging.info(
+                "硬件检测: device=%s vendor=%s backend=%s status=%s "
+                "memory_total=%s memory_free=%s detail=%s",
+                device.name,
+                device.vendor,
+                device.backend or "none",
+                device.status.value,
+                device.total_memory_bytes,
+                device.free_memory_bytes,
+                device.detail,
+            )
+        candidate = next(
+            (
+                device for device in snapshot.devices
+                if device.vendor.upper() == "NVIDIA"
+                and bool(device.backend)
+                and device.status in (
+                    CapabilityStatus.UNAVAILABLE,
+                    CapabilityStatus.UNSUPPORTED,
+                )
+            ),
+            None,
+        )
+        if candidate is not None:
+            self._start_compute_cuda_self_test(candidate)
+
+    def _start_compute_cuda_self_test(self, device=None):
+        if getattr(self, "_cuda_probe_thread", None) is not None:
+            if self._cuda_probe_thread.isRunning():
+                return
+        from compute.dialog import CudaSelfTestThread, track_probe_thread
+
+        device_index = 0
+        if device is not None:
+            try:
+                device_index = int(device.device_id.rsplit(":", 1)[-1])
+            except ValueError:
+                device_index = 0
+        thread = track_probe_thread(CudaSelfTestThread(device_index))
+        self._cuda_probe_thread = thread
+        thread.completed.connect(self._compute_cuda_capability_ready)
+        thread.finished.connect(lambda: setattr(self, "_cuda_probe_thread", None))
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _compute_cuda_capability_ready(self, capability):
+        from compute.capabilities import (
+            update_cached_device_capability,
+        )
+        from compute.model import CapabilityStatus
+
+        update_cached_device_capability(capability)
+        message = (
+            "CUDA 自检: device=%s status=%s backend=%s memory_total=%s "
+            "memory_free=%s detail=%s"
+        )
+        values = (
+            capability.name,
+            capability.status.value,
+            capability.backend or "none",
+            capability.total_memory_bytes,
+            capability.free_memory_bytes,
+            capability.detail,
+        )
+        if capability.status is CapabilityStatus.AVAILABLE:
+            logging.info(message, *values)
+        else:
+            logging.warning(message, *values)
     """参数配置相关功能"""
     def init_params(self):
         """初始化参数库"""
@@ -759,10 +867,11 @@ class MainWindow(QMainWindow):
         heatmap_layout.addLayout(multipro_layout)
         cpunum_layout = QHBoxLayout()
         self.cpu_use_input = QSpinBox()
-        self.cpu_use_input.setRange(0, 100)
-        self.cpu_use_input.setValue(0)
+        self.cpu_use_input.setRange(1, max(1, ToolBucket.available_cpu_count()[0]))
         self.cpu_use_input.setSuffix(f"/{ToolBucket.available_cpu_count()[0]}")
-        self.multiprocess_check.toggled.connect(lambda: self.cpu_use_input.setValue(ToolBucket.available_cpu_count()[1]))
+        self.multiprocess_check.setChecked(True)
+        self.multiprocess_check.toggled.connect(self._sync_lifetime_compute_controls)
+        self._sync_lifetime_compute_controls()
         cpunum_layout.addWidget(QLabel("核数"))
         cpunum_layout.addWidget(self.cpu_use_input)
         heatmap_layout.addLayout(cpunum_layout)
@@ -1098,6 +1207,10 @@ class MainWindow(QMainWindow):
         cal_settings_edit = edit_menu.addAction("计算设置")
         cal_settings_edit.triggered.connect(self.calculation_set_edit_dialog)
 
+        compute_settings_edit = edit_menu.addAction("计算与加速")
+        compute_settings_edit.setToolTip("设置计算后端、精度、资源预算并查看硬件状态")
+        compute_settings_edit.triggered.connect(self.compute_settings_dialog)
+
         # 编辑菜单-绘图设置调整
         plt_settings_edit = edit_menu.addAction("绘图设置")
         plt_settings_edit.triggered.connect(self.plt_settings_edit_dialog)
@@ -1371,17 +1484,20 @@ class MainWindow(QMainWindow):
         task = self.task_coordinator.create_task(f"导出 {prefix}", "export")
         task.start()
         self._export_task_id = task.task_id
-        self.dat_thread.set_cancellation_token(task.token)
-        task.cancel_callback = self.dat_thread.cancel
+        self.dat_thread.enqueue_task_context(task.task_id, task.token)
         self.task_coordinator.task_updated.emit(task)
         self.managed_export_signal.emit(data, output_dir, prefix, format_type, is_temporal, arg_dict)
 
     def _data_manager_progress(self, current, total):
         task_id = getattr(self, "_export_task_id", None)
         task = self.task_coordinator.registry.get(task_id) if task_id else None
-        if task is not None and task.status in {
-            TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLING,
-        }:
+        if (
+            task is not None
+            and self.dat_thread.task_id == task_id
+            and task.status in {
+                TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLING,
+            }
+        ):
             self._export_progress(current, total)
             return
         self.processing_controller.progress("roi_processing", current, total, "ROI 处理")
@@ -1468,14 +1584,13 @@ class MainWindow(QMainWindow):
         self.start_dis_cal_signal.connect(self.cal_thread.distribution_analyze)
         self.start_heat_cal_signal.connect(self.cal_thread.heat_transfer_calculation)
         self.start_dif_cal_signal.connect(self.cal_thread.diffusion_calculation)
+        self.cal_thread.compute_plan_signal.connect(self._compute_plan_ready)
         self.cal_thread.calculating_progress_signal.connect(
             lambda current, total: self.processing_controller.progress(
                 "calculation", current, total, "寿命计算"
             )
         )
         self.cal_thread.processed_result.connect(self.processed_result)
-        # self.cal_thread.stop_thread_signal.connect(self.stop_thread)
-        self.cal_thread.cal_running_status.connect(self.btn_safety)
         self.cal_thread.update_status.connect(self.update_status)
         self.cal_thread.processing_error_signal.connect(
             lambda error: self._handle_processing_error(error, "calculation")
@@ -1492,6 +1607,7 @@ class MainWindow(QMainWindow):
         self.mass_data_processor = MassDataProcessor()
         self.mass_data_processor.moveToThread(self.avi_thread)
         self.mass_data_processor.processing_progress_signal.connect(self._mass_processing_progress)
+        self.mass_data_processor.compute_plan_signal.connect(self._compute_plan_ready)
         self.mass_data_processor.processed_result.connect(self.processed_result)
         self.pre_process_signal.connect(self.mass_data_processor.pre_process)
         self.stft_python_signal.connect(self.mass_data_processor.python_stft)
@@ -1886,6 +2002,111 @@ class MainWindow(QMainWindow):
             logging.info("设置已更新，请重新绘图")
         self.update_status("准备就绪", 'idle')
 
+    def _sync_lifetime_compute_controls(self):
+        if not hasattr(self, "cpu_use_input"):
+            return
+        from compute.settings import ComputeSettingsStore
+
+        preferences = ComputeSettingsStore(self.settings).load()
+        options = self.get_compute_options("lifetime_single")
+        self.cpu_use_input.setValue(max(1, int(options["cpu_workers"])))
+        manual = self.multiprocess_check.isChecked() and not preferences.auto_cpu
+        self.cpu_use_input.setEnabled(manual)
+        self.cpu_use_input.setToolTip(
+            "自动 CPU 分配已启用；这里显示本次建议配额。"
+            if preferences.auto_cpu
+            else "手动模式下可为下一次寿命计算临时调整并行工作数。"
+        )
+    def compute_settings_dialog(self):
+        """Open the shared compute policy and hardware status dialog."""
+        from compute.dialog import ComputeSettingsDialog
+
+        dialog = ComputeSettingsDialog(self.settings, parent=self)
+        if dialog.exec_():
+            self._sync_lifetime_compute_controls()
+
+    def get_compute_options(self, algorithm):
+        from compute.capabilities import (
+            get_cached_snapshot,
+            refresh_runtime_usage,
+            set_cached_snapshot,
+        )
+        from compute.resources import recommend_resources
+        from compute.settings import ComputeSettingsStore
+
+        preferences = ComputeSettingsStore(self.settings).load()
+        snapshot = refresh_runtime_usage(get_cached_snapshot())
+        if snapshot is not None:
+            set_cached_snapshot(snapshot)
+        recommendation = recommend_resources(snapshot)
+        logging.info("自动资源建议: %s", "；".join(recommendation.reasons))
+        cpu_workers = (
+            recommendation.cpu_workers
+            if preferences.auto_cpu else preferences.cpu_workers
+        )
+        host_memory_limit_mb = (
+            recommendation.host_memory_limit_mb
+            if preferences.auto_memory else preferences.host_memory_limit_mb
+        )
+        gpu_memory_percent = (
+            recommendation.gpu_memory_percent
+            if preferences.auto_gpu else preferences.gpu_memory_percent
+        )
+        preferred_device = (
+            recommendation.selected_device
+            if preferences.auto_gpu and recommendation.selected_device
+            else preferences.preferred_device
+        )
+        return {
+            "backend": preferences.backend_for(algorithm).value,
+            "precision": preferences.precision.value,
+            "allow_cpu_fallback": preferences.allow_cpu_fallback,
+            "auto_cpu": preferences.auto_cpu,
+            "auto_memory": preferences.auto_memory,
+            "auto_gpu": preferences.auto_gpu,
+            "cpu_workers": cpu_workers,
+            "host_memory_limit_mb": host_memory_limit_mb,
+            "gpu_memory_percent": gpu_memory_percent,
+            "preferred_device": preferred_device,
+            "capabilities": tuple(snapshot.devices) if snapshot is not None else (),
+            "resource_reasons": recommendation.reasons,
+            "cache_directory": self.tool_params.get("cache_directory") or self.default_cache_directory(),
+            "cache_threshold_mb": self.tool_params.get("cache_threshold_mb", 512),
+        }
+
+    def _compute_plan_ready(self, plan):
+        from compute.model import format_plan_log, plan_execution_details
+
+        details = plan_execution_details(plan)
+        log_method = (
+            logging.warning
+            if plan.requested_backend.value == "gpu" and plan.actual_backend == "cpu"
+            else logging.info
+        )
+        log_method(format_plan_log(plan))
+        category = (
+            "calculation"
+            if str(plan.request.algorithm).startswith("lifetime")
+            else "em_processing"
+        )
+        task = self.task_coordinator.registry.get(plan.request.task_id)
+        if task is None:
+            task = self.processing_controller.active(category)
+        if task is None:
+            return
+        self.task_coordinator.configure_execution(
+            task.task_id,
+            attempt_id=plan.request.attempt_id,
+            stage=plan.request.algorithm.upper(),
+            requested_backend=plan.requested_backend.value,
+            actual_backend=plan.actual_backend,
+            precision=plan.precision.policy.value,
+            device=details["device"],
+            backend_reason=details["backend_reason"],
+            resource_summary=details["resource_summary"],
+            execution_details=details,
+        )
+
     def plt_settings_edit_dialog(self):
         """绘图设置"""
         dialog = PltSettingsDialog(params=self.plot_params, parent=self)
@@ -2191,7 +2412,6 @@ class MainWindow(QMainWindow):
         # 如果线程没了，要开启
         if not self.is_thread_active("calc_thread"):
             self.cal_thread_open()
-        self.ensure_task_thread_running("calc_thread", "calculation")
         self.update_status('计算进行中...', 'working')
         self.time_step = float(self.time_step_input.value())
         center = (self.region_y_input.value(), self.region_x_input.value())
@@ -2204,6 +2424,7 @@ class MainWindow(QMainWindow):
             report_warning(self, "图像错误", "请先显示并选中一个画布")
             return False
         focus_canvas.add_fast_selection(*center, mask)
+        self.ensure_task_thread_running("calc_thread", "calculation")
         self.start_reg_cal_signal.emit(aim_data,self.time_step,mask,model_type)
         return None
 
@@ -2223,8 +2444,21 @@ class MainWindow(QMainWindow):
         post_cov = self.post_cov_combo.currentText() if self.post_cov_combo.currentIndex() != 0 else None
         pre_size = self.pre_cov_size.value() if self.pre_cov_combo.currentIndex() != 0 else None
         post_size = self.post_cov_size.value() if self.post_cov_combo.currentIndex() != 0 else None
-        self.start_dis_cal_signal.emit(aim_data,self.time_step,model_type,pre_cov,pre_size,post_cov,post_size,
-                                       self.multiprocess_check.isChecked(),self.cpu_use_input.value()-1)
+        algorithm = "lifetime_single" if model_type == "single" else "lifetime_double"
+        compute_options = self.get_compute_options(algorithm)
+        workers = (
+            (
+                max(1, int(compute_options["cpu_workers"]))
+                if compute_options.get("auto_cpu", True)
+                else max(1, int(self.cpu_use_input.value()))
+            )
+            if self.multiprocess_check.isChecked() else 1
+        )
+        compute_options["cpu_workers"] = workers
+        self.start_dis_cal_signal.emit(
+            aim_data, self.time_step, model_type, pre_cov, pre_size, post_cov, post_size,
+            workers > 1, workers, compute_options,
+        )
         return None
 
     def heat_transfer_start(self):
@@ -2243,8 +2477,21 @@ class MainWindow(QMainWindow):
         post_cov = self.post_cov_combo.currentText() if self.post_cov_combo.currentIndex() != 0 else None
         pre_size = self.pre_cov_size.value() if self.pre_cov_combo.currentIndex() != 0 else None
         post_size = self.post_cov_size.value() if self.post_cov_combo.currentIndex() != 0 else None
-        self.start_heat_cal_signal.emit(aim_data,self.time_step,model_type,pre_cov,pre_size,post_cov,post_size,
-                                       self.multiprocess_check.isChecked(),self.cpu_use_input.value())
+        algorithm = "lifetime_single" if model_type == "single" else "lifetime_double"
+        compute_options = self.get_compute_options(algorithm)
+        workers = (
+            (
+                max(1, int(compute_options["cpu_workers"]))
+                if compute_options.get("auto_cpu", True)
+                else max(1, int(self.cpu_use_input.value()))
+            )
+            if self.multiprocess_check.isChecked() else 1
+        )
+        compute_options["cpu_workers"] = workers
+        self.start_heat_cal_signal.emit(
+            aim_data, self.time_step, model_type, pre_cov, pre_size, post_cov, post_size,
+            workers > 1, workers, compute_options,
+        )
         return True
 
     def diffusion_calculation_start(self):
@@ -2277,7 +2524,10 @@ class MainWindow(QMainWindow):
             pass
         # 如果有线程在运算，要提示（不过目前不需要，保留语句）
         self.ensure_task_thread_running("avi_thread", "em_processing")
-        self.pre_process_signal.emit(data, self.bg_nums_input.value(), True)
+        self.pre_process_signal.emit(
+            data, self.bg_nums_input.value(), True,
+            self.get_compute_options("em_preprocess"),
+        )
         return True
 
     def quality_EM_stft(self):
@@ -2304,7 +2554,6 @@ class MainWindow(QMainWindow):
                                              self.EM_params['custom_nfft'],
                                              self.EM_params['stft_window_type'])
                 logging.info("请稍等，出图会有点慢")
-                # self.stft_quality_btn.setEnabled(False)
         else:
             logging.warning("查找不到预处理数据，请先对数据进行预处理")
             self.update_status("准备就绪")
@@ -2320,7 +2569,11 @@ class MainWindow(QMainWindow):
         # 窗函数选择转义
         window_dict = ['hann', 'hamming', 'gaussian', 'boxcar','blackman','blackmanharris']
         self.update_param('EM','stft_window_type',window_dict[self.stft_window_select.currentIndex()])
-        dialog = STFTComputePop(self.EM_params, 'process',time_length=data.timelength)
+        compute_options = self.get_compute_options("stft")
+        dialog = STFTComputePop(
+            self.EM_params, "process", parent=self, time_length=data.timelength,
+            compute_options=compute_options,
+        )
         if dialog.exec_():
             self.update_param('EM','target_freq',dialog.target_freq_input.value())
             self.update_param('EM', 'EM_fps', dialog.fps_input.value())
@@ -2337,10 +2590,10 @@ class MainWindow(QMainWindow):
                                          self.EM_params['stft_noverlap'],
                                          self.EM_params['custom_nfft'],
                                          self.EM_params['stft_window_type'],
-                                         dialog.multiprocess_check.isChecked(), # 目前加速计算的参数不保存上传，需要每次都确认
-                                         dialog.batch_size_input.value(),
-                                         dialog.cpu_use_input.value(),)
-            self.stft_process_btn.setEnabled(False)
+                                         False,
+                                         0,
+                                         compute_options["cpu_workers"],
+                                         dialog.selected_compute_options(),)
             return True
         return False
 
@@ -2364,7 +2617,6 @@ class MainWindow(QMainWindow):
                                          self.EM_params['EM_fps'],
                                          self.EM_params['cwt_total_scales'],
                                          self.EM_params['cwt_type'])
-            # self.cwt_quality_btn.setEnabled(False)
             return True
         else:
             return False
@@ -2374,7 +2626,10 @@ class MainWindow(QMainWindow):
         data = self.data_selection(['EM_pre_processed'])
         if data is None:
             return False
-        dialog = CWTComputePop(self.EM_params, 'signal')
+        compute_options = self.get_compute_options("cwt")
+        dialog = CWTComputePop(
+            self.EM_params, "signal", parent=self, compute_options=compute_options
+        )
         if dialog.exec_():
             self.update_status("CWT计算ing", 'working')
             self.update_param('EM', 'target_freq', dialog.target_freq_input.value())
@@ -2388,8 +2643,8 @@ class MainWindow(QMainWindow):
                                         self.EM_params['EM_fps'],
                                         self.EM_params['cwt_total_scales'],
                                         self.EM_params['cwt_type'],
-                                        self.EM_params['cwt_scale_range'])
-            self.cwt_process_btn.setEnabled(False)
+                                        self.EM_params['cwt_scale_range'],
+                                        dialog.selected_compute_options())
             return True
         else:
             return False
@@ -2483,7 +2738,6 @@ class MainWindow(QMainWindow):
             return False
         self.ensure_task_thread_running("avi_thread", "em_processing")
         self.atam_signal.emit(aim_data)
-        self.atam_btn.setEnabled(False)
         return True
 
     def process_tDgf(self):
@@ -2501,7 +2755,6 @@ class MainWindow(QMainWindow):
                                       self.EM_params['scs_zoom'],
                                       self.EM_params['scs_thr'],
                                       self.EM_params['thr_known'])
-                self.tDgf_btn.setEnabled(False)
         else:
             report_warning(self, "数据错误", "不支持的数据类型，请确认前序处理是否正确（是否确认ROI）")
             self.update_status("准备就绪", 'idle')
@@ -2522,7 +2775,6 @@ class MainWindow(QMainWindow):
                                       self.EM_params['scs_zoom'],
                                       self.EM_params['scs_thr'],
                                       self.EM_params['thr_known'])
-                self.sscs_btn.setEnabled(False)
         else:
             report_warning(self, "数据错误", "不支持的数据类型，请确认前序处理是否正确（是否确认ROI）")
             self.update_status("准备就绪", 'idle')
@@ -2631,9 +2883,9 @@ class MainWindow(QMainWindow):
         self.mass_data_processor.abortion = False
         task = self.task_coordinator.create_task(
             "多数据运算", "calculator", foreground=True, cancellable=True,
-            cancel_callback=self.mass_data_processor.stop,
         )
         self._calculator_task_id = task.task_id
+        self.mass_data_processor.enqueue_task_context(task.task_id, task.token)
         self.task_coordinator.start(task.task_id, 1, "正在执行多数据运算")
         self.update_status("多数据运算中...", "working")
         self.calculator_signal.emit(plan)
@@ -2642,18 +2894,26 @@ class MainWindow(QMainWindow):
     def _mass_processing_progress(self, current, total):
         calculator_id = getattr(self, "_calculator_task_id", None)
         calculator_task = self.task_coordinator.registry.get(calculator_id) if calculator_id else None
-        if calculator_task is not None and calculator_task.status in {
-            TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLING,
-        }:
+        if (
+            calculator_task is not None
+            and self.mass_data_processor.task_id == calculator_id
+            and calculator_task.status in {
+                TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLING,
+            }
+        ):
             self._calculator_progress(current, total)
             return
         self.processing_controller.progress("em_processing", current, total, "数据处理")
     def _mass_processing_cancelled(self):
         task_id = getattr(self, "_calculator_task_id", None)
         task = self.task_coordinator.registry.get(task_id) if task_id else None
-        if task is not None and task.status in {
-            TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLING,
-        }:
+        if (
+            task is not None
+            and self.mass_data_processor.task_id == task_id
+            and task.status in {
+                TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLING,
+            }
+        ):
             self.task_coordinator.cancelled(task_id, "多数据运算已取消")
             self._calculator_task_id = None
             dialog = getattr(self, "data_calculator", None)
@@ -2851,18 +3111,6 @@ class MainWindow(QMainWindow):
         """Register one operation and ensure its persistent worker thread is running."""
         self.processing_controller.begin(thread_name, task_key)
         return True
-
-    def btn_safety(self, cal_run=False):
-        """关闭按钮的功能"""
-        if cal_run:
-            self.analyze_btn.setEnabled(False)
-            self.analyze_region_btn.setEnabled(False)
-            self.heat_transfer_btn.setEnabled(False)
-        elif not cal_run:
-            self.analyze_btn.setEnabled(True)
-            self.analyze_region_btn.setEnabled(True)
-            self.heat_transfer_btn.setEnabled(True)
-        return
 
     def export_image(self):
         """导出热图为图片"""

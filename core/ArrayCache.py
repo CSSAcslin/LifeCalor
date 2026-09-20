@@ -33,6 +33,9 @@ class ArrayRef:
     nbytes: int
     created_at: float
     field_name: str
+    min_value: Any = None
+    max_value: Any = None
+    mean_value: Any = None
 
     def load(self, mmap_mode: str = "r+"):
         if not Path(self.path).exists():

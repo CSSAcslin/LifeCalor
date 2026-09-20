@@ -1,171 +1,22 @@
-import math
 import logging
+import shutil
+import uuid
+from pathlib import Path
 import numpy as np
 from PyQt5.QtWidgets import QMessageBox
 from scipy.ndimage import convolve
 from scipy.optimize import curve_fit
-from scipy.stats import pearsonr
 from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QElapsedTimer
 from DataManager import *
-from multiprocessing import shared_memory, Pool
-import traceback
 
 from diagnostics import AppError, format_exception_details
-from tasks import CancellationToken, TaskCancelled
-
-
-# --- 必须放在类外的 Worker 函数 ---
-def _lifetime_fit_worker(
-        shm_in_name, shape_in, dtype_in,
-        shm_out_name, shape_out, dtype_out,
-        row_range,
-        time_points,
-        data_type, model_type, fit_params  # 显式传入参数
-):
-    """
-    独立进程运行的寿命拟合函数
-    """
-    # 1. 连接共享内存
-    existing_shm_in = shared_memory.SharedMemory(name=shm_in_name)
-    existing_shm_out = shared_memory.SharedMemory(name=shm_out_name)
-
-    try:
-        # 2. 重构数组
-        # 输入: [Time, Height, Width]
-        aim_data = np.ndarray(shape_in, dtype=dtype_in, buffer=existing_shm_in.buf)
-        # 输出: [2, Height, Width]
-        map = np.ndarray(shape_out, dtype=dtype_out, buffer=existing_shm_out.buf)
-
-        start_row, end_row = row_range
-        _, height, width = shape_out
-
-        # 3. 参数解包
-        r_squared_min = fit_params['r_squared_min']
-        peak_range = fit_params['peak_range']
-        tau_range = fit_params['tau_range']
-        from_start_cal = fit_params['from_start_cal']
-
-        # 4. 逐像素计算 (仅计算分配到的行)
-        # 这里的循环是在 C 级别的进程中运行，利用多核并行
-        processed_count = 0
-
-        for i in range(start_row, end_row):
-            for j in range(width):
-                try:
-                    time_series = aim_data[:, i, j]
-
-                    # --- A. Pearson 校验 (保留原有逻辑) ---
-                    # 优化：提前判断全零或无效数据
-                    if np.max(np.abs(time_series)) < 1e-6:
-                        map[0, i, j] = 0
-                        map[1, i, j] = 0
-                        continue
-
-                    window_size = min(10, len(time_points) // 2)
-                    is_valid_signal = False
-
-                    # 快速检查：如果没有明显的衰减趋势，也许可以跳过？
-                    # 这里保留你的滑动窗口逻辑，但它其实挺慢的，建议将来考虑优化
-                    pr_list = []
-                    for k in range(len(time_series) - window_size):
-                        window = time_series[k:k + window_size]
-                        time_window = time_points[k:k + window_size]
-                        # 注意：pearsonr 在常数输入下会报警告或返回 nan
-                        if np.std(window) == 0:
-                            r = 0
-                        else:
-                            r, _ = pearsonr(time_window, window)
-
-                        if abs(r) >= 0.8:
-                            is_valid_signal = True
-                            break  # 只要有一段满足，就认为有效，直接跳出循环节省时间
-
-                    if not is_valid_signal:
-                        map[0, i, j] = 0
-                        map[1, i, j] = 0
-                        continue
-
-                    # --- B. 准备拟合数据 ---
-                    # 逻辑复刻 LifetimeCalculator.calculate_lifetime
-                    if data_type in ['central negative', 'central positive']:
-                        phy_signal = np.abs(time_series)
-                    else:
-                        phy_signal = time_series
-
-                    max_idx = np.argmax(phy_signal)
-
-                    if not from_start_cal:
-                        decay_signal = phy_signal[max_idx:]
-                        decay_time = time_points[max_idx:] - time_points[max_idx]
-                    else:
-                        decay_signal = phy_signal
-                        decay_time = time_points
-
-                    # 极短数据保护
-                    if len(decay_signal) < 3:
-                        map[0, i, j] = 0
-                        map[1, i, j] = 0
-                        continue
-
-                    # --- C. 执行 curve_fit ---
-                    A_guess = np.max(decay_signal) - np.min(decay_signal)
-                    tau_guess = (decay_time[-1] - decay_time[0]) / 5 if (decay_time[-1] - decay_time[0]) != 0 else 1
-                    C_guess = np.min(decay_signal)
-
-                    lifetime = 0
-                    r2 = 0
-
-                    # 单指数
-                    if model_type == 'single':
-                        if peak_range[0] <= max_idx <= peak_range[1]:
-                            try:
-                                popt, _ = curve_fit(
-                                    _single_exp_func,  # 使用模块级函数，避免 pickle 问题
-                                    decay_time,
-                                    decay_signal,
-                                    p0=[A_guess, tau_guess, C_guess],
-                                    bounds=([-np.inf, 0, -np.inf], [np.inf, np.inf, np.inf]),
-                                    maxfev=1000  # 限制迭代次数防止死循环
-                                )
-                                tau = popt[1]
-                                if tau_range[0] < tau < tau_range[1]:
-                                    # R方校验
-                                    y_pred = _single_exp_func(decay_time, *popt)
-                                    ss_res = np.sum((decay_signal - y_pred) ** 2)
-                                    ss_tot = np.sum((decay_signal - np.mean(decay_signal)) ** 2)
-                                    if ss_tot != 0:
-                                        r2 = 1 - (ss_res / ss_tot)
-                                        if r2 > r_squared_min:
-                                            lifetime = tau
-                            except (RuntimeError, ValueError, TypeError, FloatingPointError):
-                                pass  # 拟合失败 lifetime 保持 0
-
-                    # 双指数 (略，结构类似，为了代码简洁先只写单指数，你需要的话可以把你的双指数逻辑拷进来)
-                    elif model_type == 'double':
-                        # ... 你的双指数逻辑 ...
-                        pass
-
-                    map[0, i, j] = lifetime
-                    map[1, i, j] = r2
-
-                except Exception:
-                    # 单个像素失败不影响整体
-                    map[0, i, j] = 0
-                    map[1, i, j] = 0
-
-            # (可选) 可以在这里通过 Queue 发送 row 进度，但通常不需要那么细
-            pass
-
-    except Exception as e:
-        traceback.print_exc()
-    finally:
-        existing_shm_in.close()
-        existing_shm_out.close()
-
-
-# 为了 worker 能调用，必须定义在顶层
-def _single_exp_func(t, A, tau, C):
-    return A * np.exp(-t / tau) + C
+from tasks import CancellationToken, TaskCancelled, TaskContextQueue, task_scoped
+from compute import (
+    BackendPreference, ComputeRequest, PrecisionPolicy, ResourceBudget,
+    compatibility_metadata, execution_metadata, plan_compute, resolve_precision,
+)
+from compute.algorithms import fit_lifetime, has_correlated_window
+from compute.algorithms.lifetime_pipeline import run_lifetime_pipeline, spatial_kernel
 
 
 class LifetimeCalculator:
@@ -203,120 +54,26 @@ class LifetimeCalculator:
         return A1 * np.exp(-t / tau1) + A2 * np.exp(-t / tau2) + C
 
     @staticmethod
-    def calculate_lifetime(data_type, time_series, time_points, arg_bundle = None, model_type='single'):
-        """
-        计算载流子寿命
-        """
-        params = LifetimeCalculator._cal_params
-        from_start_cal = params['from_start_cal']
-        r_squared_min = params['r_squared_min']
-        peak_range = params['peak_range']
-        tau_range = params['tau_range']
-        
-
-        # 获得具有实际意义的信号序列
-        if data_type in ['central negative', 'central positive']:
-            phy_signal = np.abs(time_series)
-            max_idx = np.argmax(phy_signal)
-            if not from_start_cal:
-                decay_signal = phy_signal[max_idx:] # 全部正置 且从最大值之后开始拟合
-                decay_time = time_points[max_idx:] - time_points[max_idx]
-            else:
-                decay_signal = phy_signal
-                decay_time = time_points
-        elif data_type == 'sif':
-            phy_signal = time_series
-            max_idx = np.argmax(phy_signal)
-            if not from_start_cal:
-                decay_signal = phy_signal[max_idx:] # 全部正置 且从最大值之后开始拟合
-                decay_time = time_points[max_idx:] - time_points[max_idx]
-            else:
-                decay_signal = phy_signal
-                decay_time = time_points
-        else: # 不可能走到这里，我只是觉得代码高亮不舒服 所以加的 (在alpha 1.10.0时遇到了这个问题，于是乎打脸了）
-            phy_signal = time_series
-            max_idx = np.argmax(phy_signal)
-            if not from_start_cal:
-                decay_signal = phy_signal[max_idx:]  # 全部正置 且从最大值之后开始拟合
-                decay_time = time_points[max_idx:] - time_points[max_idx]
-            else:
-                decay_signal = phy_signal
-                decay_time = time_points
-
-        # 初始猜测
-        A_guess = np.max(decay_signal) - np.min(decay_signal)
-        tau_guess = (decay_time[-1] - decay_time[0]) / 5
-        C_guess = np.min(decay_signal)
-
-        try:
-            if model_type == 'single':
-                # 单指数拟合
-                if peak_range[0] <= max_idx <= peak_range[1]: # 峰值位置筛选
-                    popt, pcov = curve_fit(
-                        LifetimeCalculator.single_exponential,
-                        decay_time,
-                        decay_signal,
-                        p0=[A_guess, tau_guess, C_guess],
-                        bounds=([-np.inf, 0, -np.inf], [np.inf, np.inf, np.inf]))
-                    if popt[1] <= tau_range[0] or popt[1] >= tau_range[1]: # 寿命大小筛选
-                        lifetime = 0
-                        r_squared = np.nan
-                    else:
-                        # 计算R方
-                        y_pred = LifetimeCalculator.single_exponential(decay_time, *popt)
-                        ss_res = np.sum((decay_signal - y_pred) ** 2)
-                        ss_tot = np.sum((decay_signal - np.mean(decay_signal)) ** 2)
-                        r_squared = 1 - (ss_res / ss_tot)
-                        if r_squared <= r_squared_min: # R方筛选
-                            lifetime = 0
-                        else:
-                            lifetime = popt[1]  # tau
-                else:
-                    lifetime = 0
-                    r_squared = np.nan
-                    popt = [0,0,0]
-                return popt, lifetime, r_squared, phy_signal
-
-            elif model_type == 'double':
-                # 双指数拟合
-                if peak_range[0] <= max_idx <= peak_range[1]:  # 峰值位置筛选
-                    A2_guess = A_guess / 2
-                    tau2_guess = tau_guess * 2
-
-                    popt, pcov = curve_fit(
-                        LifetimeCalculator.double_exponential,
-                        decay_time,
-                        decay_signal,
-                        p0=[A_guess, tau_guess, A2_guess, tau2_guess, C_guess],
-                        bounds=([0, 0, 10, 10, -np.inf], [np.inf, np.inf, np.inf, np.inf, np.inf]))
-
-                    # 计算平均寿命
-                    A1, tau1, A2, tau2, C = popt
-                    # 计算R方
-                    if (tau1 <= tau_range[0] or tau1 >= tau_range[1]) and (tau2 <= tau_range[0] or tau2 >= tau_range[1]):  # 寿命大小筛选
-                        tau1,tau2 = (0,0)
-                        r_squared = np.nan
-                    else:
-                        y_pred = LifetimeCalculator.double_exponential(decay_time, *popt)
-                        ss_res = np.sum((decay_signal - y_pred) ** 2)
-                        ss_tot = np.sum((decay_signal - np.mean(decay_signal)) ** 2)
-                        r_squared = 1 - (ss_res / ss_tot)
-                        if r_squared <= r_squared_min: # R方筛选
-                            tau1,tau2 = (0,0)
-                        else:
-                            tau1,tau2 = (popt[1], popt[3]) # tau1 and 2
-                else:
-                    tau1,tau2 = (0,0)
-                    r_squared = np.nan
-                    popt = [0, 0, 0,0,0]
-                return popt, (tau1, tau2), r_squared, phy_signal
-
-        except Exception as e:
-            # 拟合失败时返回NaN
-            if model_type == 'single':
-                return [np.nan, np.nan, np.nan], np.nan, np.nan ,phy_signal
-            else:
-                return [np.nan, np.nan, np.nan, np.nan, np.nan], (np.nan, np.nan), np.nan ,phy_signal
+    def calculate_lifetime(data_type, time_series, time_points, arg_bundle=None, model_type='single'):
+        """使用冻结后的 CPU 参考契约计算一条寿命曲线。"""
+        # 兼容旧代码把 model_type 作为第 4 个位置参数传入的方式。
+        if isinstance(arg_bundle, str) and model_type == 'single':
+            model_type = arg_bundle
+            arg_bundle = None
+        params = arg_bundle if isinstance(arg_bundle, dict) else LifetimeCalculator._cal_params
+        result = fit_lifetime(
+            data_type,
+            time_series,
+            time_points,
+            params,
+            model_type=model_type,
+        )
+        return (
+            result.parameters,
+            result.lifetime,
+            result.r_squared,
+            result.physical_signal,
+        )
 
     @staticmethod
     def analyze_region(data, time_points,mask, model_type='single'):
@@ -340,7 +97,8 @@ class LifetimeCalculator:
         data_type = ((getattr(data,'parameters')if isinstance(data, Data) else getattr(data,'out_processed')) or {}).get('data_type', None)
 
         # 计算区域平均时间曲线
-        region_data = data.data_origin[:, mask]
+        source = data.data_origin if isinstance(data, Data) else data.data_processed
+        region_data = source[:, mask]
         avg_curve = np.mean(region_data, axis=1)
 
         # 计算寿命
@@ -504,13 +262,13 @@ class LifetimeCalculator:
 
 class CalculationThread(QObject):
     """仅在线程中使用，目前未加锁（仍无必要）"""
-    cal_running_status = pyqtSignal(bool)
     processed_result = pyqtSignal(ProcessedData)
     calculating_progress_signal = pyqtSignal(int, int)
     stop_thread_signal = pyqtSignal()
     update_status = pyqtSignal(str,str)
     processing_error_signal = pyqtSignal(object)
     processing_cancelled_signal = pyqtSignal()
+    compute_plan_signal = pyqtSignal(object)
 
 
     def __init__(self):
@@ -518,10 +276,31 @@ class CalculationThread(QObject):
         logging.info('计算线程已载入')
         self._is_calculating = False
         self.cancellation_token = CancellationToken()
+        self.task_id = None
+        self._task_contexts = TaskContextQueue()
 
     def set_cancellation_token(self, token):
         self.cancellation_token = token or CancellationToken()
         self._is_calculating = True
+    def set_task_context(self, task_id, token=None):
+        self.task_id = str(task_id or "") or None
+        if token is not None:
+            self.cancellation_token = token
+
+    def enqueue_task_context(self, task_id, token=None):
+        return self._task_contexts.enqueue(task_id, token)
+
+    def _activate_task_context(self):
+        context = self._task_contexts.next()
+        if context is None:
+            return True
+        self.task_id = context.task_id or None
+        self.cancellation_token = context.token
+        self._is_calculating = True
+        if context.token.is_cancelled:
+            self.processing_cancelled_signal.emit()
+            return False
+        return True
 
     def cancel(self):
         self._is_calculating = False
@@ -537,14 +316,118 @@ class CalculationThread(QObject):
             title, str(exc), stage=stage, severity="error", original=exc,
             details=format_exception_details(exc, stage, data),
             context={"data": data} if data is not None else {},
+            task_id=self.task_id,
         ))
 
+    def _run_planned_lifetime(
+        self,
+        data,
+        time_points,
+        model_type,
+        pre_cov,
+        pre_size,
+        is_multipro,
+        cpu_num,
+        compute_options,
+    ):
+        options = dict(compute_options or {})
+        values = object.__getattribute__(data, "__dict__")
+        storage_name = (
+            "_data_origin_storage" if isinstance(data, Data)
+            else "_data_processed_storage"
+        )
+        source = values.get(storage_name)
+        if source is None:
+            source = data.data_origin if isinstance(data, Data) else data.data_processed
+        shape = tuple(int(value) for value in source.shape)
+        if len(shape) != 3:
+            raise ValueError(f"寿命热图要求 THW 三维数据，实际 shape={shape}")
+        algorithm = "lifetime_single" if model_type == "single" else "lifetime_double"
+        backend = BackendPreference(options.get("backend", "auto"))
+        precision = PrecisionPolicy(options.get("precision", "compatibility"))
+        precision_info = resolve_precision(algorithm, source.dtype, precision)
+        workspace_per_pixel = shape[0] * (
+            np.dtype(source.dtype).itemsize
+            + np.dtype(precision_info.compute_dtype).itemsize
+        )
+        request = ComputeRequest(
+            task_id=self.task_id or f"lifetime-{uuid.uuid4().hex}",
+            attempt_id=0,
+            algorithm=algorithm,
+            data_id=str(getattr(data, "timestamp", getattr(data, "name", "data"))),
+            shape=shape,
+            dtype=source.dtype,
+            axes="THW",
+            source=source,
+            parameters={
+                "output_shape": shape[1:],
+                "workspace_bytes_per_spatial_item": workspace_per_pixel,
+                "max_spatial_items": 64,
+                "model_type": model_type,
+            },
+            backend=backend,
+            precision=precision,
+        )
+        cache_dir = Path(
+            options.get("cache_directory") or get_array_store().config.cache_dir
+        )
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        effective_workers = (
+            max(1, int(options.get("cpu_workers", cpu_num or 1)))
+            if is_multipro else 1
+        )
+        budget = ResourceBudget(
+            host_limit_bytes=max(
+                256, int(options.get("host_memory_limit_mb", 4096))
+            ) * 1024 ** 2,
+            disk_free_bytes=int(shutil.disk_usage(cache_dir).free),
+            cpu_workers=effective_workers,
+        )
+        plan = plan_compute(
+            request,
+            budget,
+            capabilities=tuple(options.get("capabilities", ())),
+            default_backend=BackendPreference.AUTO,
+            allow_cpu_fallback=bool(options.get("allow_cpu_fallback", True)),
+            disk_output_threshold_bytes=max(
+                1, int(options.get("cache_threshold_mb", 512))
+            ) * 1024 ** 2,
+        )
+        self.compute_plan_signal.emit(plan)
+        source_metadata = data.out_processed if isinstance(data, ProcessedData) else data.parameters
+        data_type = (source_metadata or {}).get("data_type")
+        kernel = spatial_kernel(pre_cov, pre_size) if pre_cov is not None else None
+        workers = max(1, int(plan.cpu_workers))
+
+        def report_progress(current, total, message):
+            self._raise_if_cancelled()
+            self.calculating_progress_signal.emit(int(current), int(total))
+
+        result = run_lifetime_pipeline(
+            plan,
+            data_type=data_type,
+            time_points=time_points,
+            fit_params=LifetimeCalculator._cal_params.copy(),
+            model_type=model_type,
+            pre_kernel=kernel,
+            cpu_workers=workers,
+            token=self.cancellation_token,
+            progress=report_progress,
+        )
+        metadata = execution_metadata(
+            result.plan,
+            execution="bounded_multiprocess" if workers > 1 else "bounded_cpu",
+            model=model_type,
+            cpu_workers=workers,
+            pre_convolution=pre_cov or "none",
+        )
+        return result, metadata
     @pyqtSlot(object, float, np.ndarray, str)
+    @task_scoped
     def region_analyze(self,data,time_unit,mask,model_type):
         """分析选定区域"""
         logging.info("开始计算选区载流子寿命...")
         self.calculating_progress_signal.emit(1, 3)
-        self.cal_running_status.emit(True)
         try:
             # 获取参数
             time_points = data.time_point * time_unit
@@ -565,7 +448,12 @@ class CalculationThread(QObject):
                                                                       'r_squared': r_squared,
                                                                       'model_type': model_type,
                                                                       'boundary': {'min':data.datamin, 'max':data.datamax},
-                                                                      **(data.out_processed if isinstance(data,ProcessedData) else data.parameters)}))
+                                                                      **(data.out_processed if isinstance(data,ProcessedData) else data.parameters),
+                                                                      'compute': compatibility_metadata(
+                                                                          'lifetime',
+                                                                          (data.data_processed if isinstance(data, ProcessedData) else data.data_origin).dtype,
+                                                                          backend='cpu', execution='curve_fit', model=model_type,
+                                                                      )}))
             logging.info("计算完成!")
             self.calculating_progress_signal.emit(3, 3)
         except TaskCancelled:
@@ -574,68 +462,72 @@ class CalculationThread(QObject):
             self._report_failure("寿命计算失败", "寿命计算", e, data)
         finally:
             self._is_calculating = False
-            self.cal_running_status.emit(False)
             self.stop_thread_signal.emit()
 
-    @pyqtSlot(object, float, str, str, int, str, int, bool, int)
-    def distribution_analyze(self,data,time_unit,model_type,pre_cov = None,pre_size = None,post_cov = None,post_size = None,is_multipro = False,cpu_num = 0):
-        """分析全图载流子寿命"""
+    @pyqtSlot(object, float, str, str, int, str, int, bool, int, object)
+    @task_scoped
+    def distribution_analyze(
+        self,
+        data,
+        time_unit,
+        model_type,
+        pre_cov=None,
+        pre_size=None,
+        post_cov=None,
+        post_size=None,
+        is_multipro=False,
+        cpu_num=0,
+        compute_options=None,
+    ):
+        """Analyze the full lifetime map with bounded task-owned spatial blocks."""
         self._is_calculating = True
-        self.cal_running_status.emit(True)
         try:
-
             time_points = data.time_point * time_unit
-            data_type = data.parameters['data_type'] if data.parameters is not None and 'data_type' in data.parameters else None
-            aim_data = data.data_origin.copy() if isinstance(data,Data) else data.data_processed.copy()
-            T = data.timelength
-
-            if pre_cov is not None:
-                for t in range(T):
-                    self._raise_if_cancelled()
-                    frame = aim_data[t, :, :]
-                    smoothed_frame = LifetimeCalculator.apply_custom_kernel(frame, kernel_type=pre_cov,half_size=pre_size)
-                    aim_data[t, :, :] = smoothed_frame
-                    self.calculating_progress_signal.emit(t, T)
-                self.calculating_progress_signal.emit(T,T)
-                logging.info("预卷积完成，下面开始计算")
-
-            if is_multipro:
-                lifetime_map, r_squared_map = self._run_multiprocess_lifetime_cal(aim_data, data_type, time_points, model_type, cpu_num)
-            else:
-                lifetime_map, r_squared_map = self.lifetime_map_cal(aim_data,data_type,time_points,model_type)
-            if isinstance(lifetime_map, np.ndarray):
-                pass
-            else:
-                raise Exception(lifetime_map)
-
-            # 显示结果
+            result, metadata = self._run_planned_lifetime(
+                data,
+                time_points,
+                model_type,
+                pre_cov,
+                pre_size,
+                is_multipro,
+                cpu_num,
+                compute_options,
+            )
+            lifetime_map = result.lifetime_map
+            r_squared_map = result.r_squared_map
             if post_cov is not None:
-                lifetime_map_cov = LifetimeCalculator.apply_custom_kernel(lifetime_map,post_cov,post_size)
+                lifetime_map_cov = LifetimeCalculator.apply_custom_kernel(
+                    lifetime_map, post_cov, post_size
+                )
                 logging.info("后卷积完成")
             else:
                 lifetime_map_cov = lifetime_map
-            self.processed_result.emit(ProcessedData(data.timestamp,
-                                                      f'{data.name}@d-lft',
-                                                      'lifetime_distribution',
-                                                     time_point=np.array([0]),
-                                                      data_processed=lifetime_map_cov,
-                                                     out_processed={'lifetime_map': lifetime_map_cov,
-                                                                    'r_squared_map': r_squared_map,
-                                                                    **(data.out_processed if isinstance(data,ProcessedData) else data.parameters)}))
+            inherited = data.out_processed if isinstance(data, ProcessedData) else data.parameters
+            self.processed_result.emit(ProcessedData(
+                data.timestamp,
+                f"{data.name}@d-lft",
+                "lifetime_distribution",
+                time_point=np.array([0]),
+                data_processed=lifetime_map_cov,
+                out_processed={
+                    "lifetime_map": lifetime_map_cov,
+                    "r_squared_map": r_squared_map,
+                    **(inherited or {}),
+                    "compute": metadata,
+                },
+            ))
         except TaskCancelled:
             self.processing_cancelled_signal.emit()
-        except Exception as e:
-            self._report_failure("寿命计算失败", "寿命计算", e, data)
+        except Exception as exc:
+            self._report_failure("寿命计算失败", "寿命计算", exc, data)
         finally:
             self._is_calculating = False
-            self.cal_running_status.emit(False)
             self.stop_thread_signal.emit()
-
     @pyqtSlot(object, float, float, float, str)
+    @task_scoped
     def diffusion_calculation(self,frame_data,time_unit,space_unit,timestamp,name):
         # 存储拟合方差结果 [时间, 方差]
         self._is_calculating = True
-        self.cal_running_status.emit(True)
 
         sigma_results = np.zeros((2, len(frame_data)))
         time_series = []
@@ -671,7 +563,6 @@ class CalculationThread(QObject):
         else:
             logging.info("计算终止")
             self.calculating_progress_signal.emit(total_l, total_l)  # 进度条更新
-            self.cal_running_status.emit(False)
             self.stop_thread_signal.emit()  # 目前来说，计算终止也会关闭线程，后续可考虑分开命令
             return
 
@@ -688,86 +579,80 @@ class CalculationThread(QObject):
                                                  data_processed=dif_data_dict['signal'],
                                                  out_processed=dif_data_dict))
         self._is_calculating = False
-        self.cal_running_status.emit(False)
         self.stop_thread_signal.emit()
 
-    @pyqtSlot(object, float, str, str, int, str, int, bool, int)
-    def heat_transfer_calculation(self,data,time_unit,model_type,pre_cov = None,pre_size = None,post_cov = None,post_size = None,is_multipro = False,cpu_num = 0):
-        """计算传热系数"""
+    @pyqtSlot(object, float, str, str, int, str, int, bool, int, object)
+    @task_scoped
+    def heat_transfer_calculation(
+        self,
+        data,
+        time_unit,
+        model_type,
+        pre_cov=None,
+        pre_size=None,
+        post_cov=None,
+        post_size=None,
+        is_multipro=False,
+        cpu_num=0,
+        compute_options=None,
+    ):
+        """Calculate heat transfer from an existing or newly fitted lifetime map."""
         self._is_calculating = True
-        self.cal_running_status.emit(True)
         try:
+            metadata = None
             if isinstance(data, ProcessedData) and data.type_processed == "lifetime_distribution":
-                aim_data = data.data_processed
-                # 向量化计算，极快，无需多进程
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    heat_transfer = np.where(aim_data >= 0.1, 42.72 / aim_data, 0)
-                if post_cov is not None:
-                    heat_transfer_cov = LifetimeCalculator.apply_custom_kernel(heat_transfer, post_cov, post_size)
-                    logging.info("后卷积完成")
-                else:
-                    heat_transfer_cov = heat_transfer
-                self.processed_result.emit(ProcessedData(data.timestamp,
-                                                         f'{data.name}@heat',
-                                                         'heat_transfer',
-                                                         time_point=np.array([0]),
-                                                         data_processed=heat_transfer_cov,
-                                                         out_processed={'heat_transfer_map': heat_transfer,
-                                                                        **(data.out_processed if isinstance(data,ProcessedData) else data.parameters)}))
-                return True
-            time_points = data.time_point * time_unit
-            data_type = data.parameters.get('data_type')
-            aim_data = data.data_origin.copy() if isinstance(data,Data) else data.data_processed.copy()
-            T = data.timelength
-
-            if pre_cov is not None:
-                for t in range(T):
-                    self._raise_if_cancelled()
-                    frame = aim_data[t, :, :]
-                    smoothed_frame = LifetimeCalculator.apply_custom_kernel(frame, kernel_type=pre_cov,half_size=pre_size)
-                    aim_data[t, :, :] = smoothed_frame
-                    self.calculating_progress_signal.emit(t, T)
-                self.calculating_progress_signal.emit(T,T)
-                logging.info("预卷积完成，下面开始传热计算")
-
-            # 拟合计算
-            if is_multipro:
-                lifetime_map, r_squared_map = self._run_multiprocess_lifetime_cal(aim_data, data_type, time_points, model_type,
-                                                                   cpu_num)
+                lifetime_map = data.data_processed
+                r_squared_map = data.out_processed.get("r_squared_map")
             else:
-                lifetime_map, r_squared_map = self.lifetime_map_cal(aim_data, data_type, time_points, model_type)
+                result, metadata = self._run_planned_lifetime(
+                    data,
+                    data.time_point * time_unit,
+                    model_type,
+                    pre_cov,
+                    pre_size,
+                    is_multipro,
+                    cpu_num,
+                    compute_options,
+                )
+                lifetime_map = result.lifetime_map
+                r_squared_map = result.r_squared_map
 
-            if isinstance(lifetime_map, np.ndarray):
-                pass
-            else:
-                raise Exception(lifetime_map)
-            # 向量化计算传热系数
-            with np.errstate(divide='ignore', invalid='ignore'):
+            with np.errstate(divide="ignore", invalid="ignore"):
                 heat_transfer = np.where(lifetime_map >= 0.1, 42.72 / lifetime_map, 0)
-
-            # 后卷积
-            if post_cov is not None:
-                heat_transfer_cov = LifetimeCalculator.apply_custom_kernel(heat_transfer,post_cov,post_size)
-                logging.info("后卷积完成")
-            else:
-                heat_transfer_cov = heat_transfer
-            self.processed_result.emit(ProcessedData(data.timestamp,
-                                                     f'{data.name}@heat',
-                                                     'heat_transfer',
-                                                     time_point=np.array([0]),
-                                                     data_processed=heat_transfer_cov,
-                                                     out_processed={'heat_transfer_map': heat_transfer_cov,
-                                                                    'r_squared_map':r_squared_map}))
+            heat_transfer_cov = (
+                LifetimeCalculator.apply_custom_kernel(heat_transfer, post_cov, post_size)
+                if post_cov is not None
+                else heat_transfer
+            )
+            inherited = data.out_processed if isinstance(data, ProcessedData) else data.parameters
+            out_processed = {
+                "heat_transfer_map": heat_transfer_cov,
+                "r_squared_map": r_squared_map,
+                **(inherited or {}),
+            }
+            if metadata is not None:
+                out_processed["compute"] = {
+                    **metadata,
+                    "derived_result": "heat_transfer",
+                }
+            self.processed_result.emit(ProcessedData(
+                data.timestamp,
+                f"{data.name}@heat",
+                "heat_transfer",
+                time_point=np.array([0]),
+                data_processed=heat_transfer_cov,
+                out_processed=out_processed,
+            ))
+            return True
         except TaskCancelled:
             self.processing_cancelled_signal.emit()
-        except Exception as e:
-            self._report_failure("传热计算失败", "传热计算", e, data)
+        except Exception as exc:
+            self._report_failure("传热计算失败", "传热计算", exc, data)
         finally:
             self._is_calculating = False
-            self.cal_running_status.emit(False)
             self.stop_thread_signal.emit()
-
     @pyqtSlot(object,str, object)
+    @task_scoped
     def easy_process(self,data,ptype, mask = None):
         if isinstance(data, ProcessedData):
             origin_data = data.data_processed
@@ -791,170 +676,58 @@ class CalculationThread(QObject):
         self.processed_result.emit(new_data)
         return True
 
-    def lifetime_map_cal(self,aim_data,data_type,time_points,model_type):
-        """纯寿命热图计算
-        :return 寿命τ值二维矩阵，R方矩阵"""
+    def lifetime_map_cal(self, aim_data, data_type, time_points, model_type):
+        """计算单指数寿命与 R² 二维图。"""
         try:
-            T, height, width = aim_data.shape
-            lifetime_map = np.zeros((height, width))
-            r_squared_map = np.zeros((height, width))
+            if model_type != 'single':
+                raise ValueError(
+                    "双指数热图尚未定义如何将两个寿命归约为单个像素值；"
+                    "请使用选区双指数拟合。"
+                )
+
+            values = np.asarray(aim_data)
+            times = np.asarray(time_points)
+            if values.ndim != 3 or values.shape[0] != times.size:
+                raise ValueError("寿命热图输入必须为与时间轴匹配的 THW 数据")
+
+            _, height, width = values.shape
+            lifetime_map = np.zeros((height, width), dtype=np.float64)
+            r_squared_map = np.zeros((height, width), dtype=np.float64)
             logging.info("开始拟合热图...")
 
-            loading_bar_value = 0  # 进度条
-            total_l = height * width
-            for i in range(height):
+            completed = 0
+            total = height * width
+            for row in range(height):
                 self._raise_if_cancelled()
-                if self._is_calculating:  # 线程关闭控制（目前仅针对长时计算）
-                    for j in range(width):
-                        time_series = aim_data[:, i, j]
-                        # 用皮尔逊系数判断噪音(滑动窗口法)
-                        window_size = min(10, len(time_points) // 2)
-                        pr = []
-                        for k in range(len(time_series) - window_size):
-                            window = time_series[k:k + window_size]
-                            time_window = time_points[k:k + window_size]
-                            r, _ = pearsonr(time_window, window)
-                            pr.append(r)
-                            if abs(r) >= 0.8:
-                                _, lifetime, r_squared, _ = LifetimeCalculator.calculate_lifetime(data_type, time_series,
-                                                                                                  time_points, model_type)
-                                continue
-                            else:
-                                pass
-                        if np.all(np.abs(pr) < 0.8):
-                            lifetime = np.nan
-                            r_squared = np.nan
-                        else:
-                            pass
-                        lifetime_map[i, j] = lifetime if not np.isnan(lifetime) else 0
-                        r_squared_map[i, j] = lifetime if not np.isnan(r_squared) else 0
-                        loading_bar_value += 1
-                        self.calculating_progress_signal.emit(loading_bar_value, total_l)
-                else:
-                    logging.info("计算终止")
-                    self.calculating_progress_signal.emit(total_l, total_l)  # 进度条更新
-                    return "线程终止"
+                for column in range(width):
+                    time_series = values[:, row, column]
+                    lifetime = 0.0
+                    r_squared = 0.0
+                    if has_correlated_window(time_series, times):
+                        _, lifetime, r_squared, _ = LifetimeCalculator.calculate_lifetime(
+                            data_type,
+                            time_series,
+                            times,
+                            model_type=model_type,
+                        )
+
+                    if np.isfinite(lifetime):
+                        lifetime_map[row, column] = lifetime
+                    if np.isfinite(r_squared):
+                        r_squared_map[row, column] = r_squared
+                    completed += 1
+                    self.calculating_progress_signal.emit(completed, total)
+
             logging.info("计算完成!")
-            return lifetime_map, r_squared_map,
-        except Exception as e:
-            return e
+            return lifetime_map, r_squared_map
+        except Exception as exc:
+            return exc
         finally:
-            self.cal_running_status.emit(False)
-            self.stop_thread_signal.emit()  # 目前来说，计算终止也会关闭线程，后续可考虑分开命令
-
-    def _run_multiprocess_lifetime_cal(self, aim_data, data_type, time_points, model_type, cpu_num):
-        """核心：驱动多进程进行 curve_fit"""
-        logging.info("将开启并行加速，进度条不代表实时进度，请稍等。。。")
-        shm_in = None
-        shm_out = None
-        pool = None
-        shm_in_name = "LifeCalor_lifetime_Input"
-        shm_out_name = "LifeCalor_lifetime_Output"
-
-        # --- 1. 自愈机制：清理上次可能残留的内存 ---
-        for name in [shm_in_name, shm_out_name]:
-            try:
-                # 尝试连接已存在的内存
-                temp_shm = shared_memory.SharedMemory(name=name)
-                # 如果能连上，说明它是僵尸内存，将其释放
-                temp_shm.unlink()
-                temp_shm.close()
-                logging.warning(f"发现并清理了异常残留的共享内存: {name}")
-            except FileNotFoundError:
-                # 这是好结果，说明没有残留
-                pass
-            except Exception as e:
-                logging.warning(f"清理共享内存警告: {e}")
-
-        try:
-            T, height, width = aim_data.shape
-            total_pixels = height * width
-
-            logging.info(f"开始多进程拟合: 尺寸 {width}x{height}, 帧数 {T}")
-            self.calculating_progress_signal.emit(0, 100)  # 假进度，表示开始
-            # 1. 创建共享内存
-            # 输入数据 SHM
-            shm_in = shared_memory.SharedMemory(create=True, size=aim_data.nbytes, name=shm_in_name)
-            shm_in_arr = np.ndarray(aim_data.shape, dtype=aim_data.dtype, buffer=shm_in.buf)
-            shm_in_arr[:] = aim_data[:]  # 复制数据
-
-            # 输出结果 SHM (2D map*2)
-            output_shape = (2, height, width)
-            output_dtype = np.float64  # lifetime通常用float64
-            # 计算字节数
-            out_size = int(np.prod(output_shape) * np.dtype(output_dtype).itemsize)
-            shm_out = shared_memory.SharedMemory(create=True, size=out_size, name=shm_out_name)
-            shm_out_arr = np.ndarray(output_shape, dtype=output_dtype, buffer=shm_out.buf)
-            shm_out_arr[:] = 0  # 初始化
-
-            # 2. 获取当前的拟合参数 (从 LifetimeCalculator 获取)
-            # 必须显式传递，因为子进程看不到主进程修改后的 _cal_params
-            fit_params = LifetimeCalculator._cal_params.copy()
-
-            # 3. 配置任务
-            # 按行(row)分割任务，避免切片太碎
-            num_cores = cpu_num
-            rows_per_core = math.ceil(height / num_cores)
-
-            tasks = []
-            for i in range(num_cores):
-                start_row = i * rows_per_core
-                end_row = min((i + 1) * rows_per_core, height)
-                if start_row >= end_row: break
-
-                tasks.append((
-                    shm_in.name, aim_data.shape, aim_data.dtype,
-                    shm_out.name, output_shape, output_dtype,
-                    (start_row, end_row),
-                    time_points,
-                    data_type, model_type, fit_params
-                ))
-
-            # 4. 启动进程池
-            pool = Pool(processes=len(tasks))
-            result_async = pool.starmap_async(_lifetime_fit_worker, tasks)
-            self.calculating_progress_signal.emit(1, 100)
-
-            # 5. 等待完成 (为了简单，这里用简单的轮询或者直接wait)
-            # 由于拟合非常耗时，且这里没法像STFT那样精确数像素(因为在C里循环)，
-            # 我们可以做一个简单的等待动画
-            while not result_async.ready():
-                if self.cancellation_token.is_cancelled or not self._is_calculating:
-                    pool.terminate()
-                    raise TaskCancelled("寿命计算已取消")
-                QThread.msleep(100)
-                # 可以在这里发信号让进度条滚来滚去
-
-            result_async.get()  # 检查错误
-
-            # 6. 取回结果
-            map = shm_out_arr.copy()  # Copy out
-            self.calculating_progress_signal.emit(99, 100)
-            logging.info("多进程拟合完成")
-            return map[0], map[1]
-
-        except Exception as e:
-            raise e
-        finally:
-            self.calculating_progress_signal.emit(100, 100)
-            if pool:
-                try:
-                    pool.close()
-                except ValueError:
-                    # terminate() already moved the pool out of the running state.
-                    pass
-                pool.join()
-            if shm_in:
-                shm_in.close()
-                shm_in.unlink()
-            if shm_out:
-                shm_out.close()
-                shm_out.unlink()
+            self.stop_thread_signal.emit()
 
     def stop(self):
         self._is_calculating = False
 
     def force_stop(self):
         self._is_calculating = False
-        self.cal_running_status.emit(False)
         self.stop_thread_signal.emit()
