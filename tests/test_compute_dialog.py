@@ -196,5 +196,24 @@ class ComputeDialogTests(unittest.TestCase):
         self.assertEqual(options["precision"], "double")
         self.assertEqual(dialog.cwt_size_input.minimum(), 1)
         dialog.close()
+
+    def test_cwt_dialog_normalizes_legacy_wavelet_whitespace(self):
+        params = {
+            "target_freq": 8.0,
+            "EM_fps": 100,
+            "cwt_total_scales": 4,
+            "cwt_scale_range": 2.0,
+            "cwt_type": "cmor8-3 ",
+        }
+        dialog = CWTComputePop(params, "signal")
+        self.addCleanup(dialog.close)
+
+        self.assertEqual(dialog.wavelet.currentText(), "cmor8-3")
+        self.assertNotIn("cmor8-3 ", [
+            dialog.wavelet.itemText(index)
+            for index in range(dialog.wavelet.count())
+        ])
+
+
 if __name__ == "__main__":
     unittest.main()

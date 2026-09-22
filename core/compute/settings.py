@@ -4,16 +4,10 @@ import os
 from dataclasses import dataclass
 
 from .model import BackendPreference, PrecisionPolicy
+from .registry import user_algorithm_keys
 
 
-ALGORITHM_KEYS = (
-    "stft",
-    "cwt",
-    "lifetime_single",
-    "lifetime_double",
-    "em_preprocess",
-    "fft2",
-)
+ALGORITHM_KEYS = user_algorithm_keys()
 
 
 @dataclass(frozen=True)
@@ -29,11 +23,15 @@ class ComputePreferences:
     gpu_memory_percent: int = 70
     preferred_device: str = ""
     algorithm_backends: tuple[tuple[str, BackendPreference], ...] = ()
+    algorithm_precisions: tuple[tuple[str, PrecisionPolicy], ...] = ()
 
     def backend_for(self, algorithm: str) -> BackendPreference:
         overrides = dict(self.algorithm_backends)
         selected = overrides.get(algorithm, BackendPreference.FOLLOW_GLOBAL)
         return self.default_backend if selected is BackendPreference.FOLLOW_GLOBAL else selected
+
+    def precision_for(self, algorithm: str) -> PrecisionPolicy:
+        return dict(self.algorithm_precisions).get(algorithm, self.precision)
 
 
 def _as_bool(value, default=True):
@@ -80,6 +78,7 @@ class ComputeSettingsStore:
             gpu_percent = 70
 
         overrides = []
+        precision_overrides = []
         for algorithm in ALGORITHM_KEYS:
             value = self.settings.value(
                 self._key(f"algorithms/{algorithm}/backend"),
@@ -89,6 +88,18 @@ class ComputeSettingsStore:
                 algorithm,
                 _enum_value(BackendPreference, value, BackendPreference.FOLLOW_GLOBAL),
             ))
+            precision_value = self.settings.value(
+                self._key(f"algorithms/{algorithm}/precision"), ""
+            )
+            if str(precision_value or ""):
+                precision_overrides.append((
+                    algorithm,
+                    _enum_value(
+                        PrecisionPolicy,
+                        precision_value,
+                        PrecisionPolicy.COMPATIBILITY,
+                    ),
+                ))
 
         return ComputePreferences(
             default_backend=_enum_value(
@@ -112,6 +123,7 @@ class ComputeSettingsStore:
             gpu_memory_percent=min(90, max(10, gpu_percent)),
             preferred_device=str(self.settings.value(self._key("preferred_device"), "") or ""),
             algorithm_backends=tuple(overrides),
+            algorithm_precisions=tuple(precision_overrides),
         )
 
     def save(self, preferences: ComputePreferences) -> ComputePreferences:
@@ -131,6 +143,11 @@ class ComputeSettingsStore:
                 for key, value in preferences.algorithm_backends
                 if key in ALGORITHM_KEYS
             ),
+            algorithm_precisions=tuple(
+                (key, PrecisionPolicy(value))
+                for key, value in preferences.algorithm_precisions
+                if key in ALGORITHM_KEYS
+            ),
         )
         self.settings.setValue(self._key("default_backend"), normalized.default_backend.value)
         self.settings.setValue(self._key("precision"), normalized.precision.value)
@@ -146,5 +163,13 @@ class ComputeSettingsStore:
             self.settings.setValue(
                 self._key(f"algorithms/{algorithm}/backend"), backend.value
             )
+        precision_overrides = dict(normalized.algorithm_precisions)
+        for algorithm in ALGORITHM_KEYS:
+            key = self._key(f"algorithms/{algorithm}/precision")
+            precision = precision_overrides.get(algorithm)
+            if precision is None:
+                self.settings.setValue(key, "")
+            else:
+                self.settings.setValue(key, precision.value)
         self.settings.sync()
         return normalized

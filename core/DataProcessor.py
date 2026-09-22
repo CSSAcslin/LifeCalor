@@ -2,6 +2,7 @@ import copy
 import logging
 import shutil
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 import cv2
@@ -25,7 +26,13 @@ from compute import (
     ResourceBudget, compatibility_metadata, execution_metadata, plan_compute,
     resolve_precision,
 )
-from compute.algorithms import cwt_frequency_trace, stft_frequency_trace
+from compute.algorithms import (
+    build_cwt_kernel_bank,
+    cwt_frequency_trace,
+    cwt_quality_spectrum,
+    stft_frequency_trace,
+)
+from compute.algorithms.cwt import cwt_axes
 from compute.algorithms.stft_pipeline import run_stft_pipeline
 from compute.algorithms.cwt_pipeline import run_cwt_pipeline
 from compute.algorithms.preprocess_pipeline import run_preprocess_pipeline
@@ -33,7 +40,11 @@ from compute.capabilities import (
     mark_algorithm_verified,
     update_cached_device_capability,
 )
-from compute.worker import probe_cuda_capability_isolated
+from compute.worker import (
+    CudaBackendError,
+    CudaWorkerClient,
+    probe_cuda_capability_isolated,
+)
 from tasks import CancellationToken, TaskCancelled, TaskContextQueue, task_scoped
 
 
@@ -787,7 +798,7 @@ class MassDataProcessor(QObject):
                 None,
             )
             if backend is BackendPreference.GPU and capability is None:
-                capability = probe_cuda_capability_isolated(device_index, timeout=15.0)
+                capability = probe_cuda_capability_isolated(device_index, timeout=45.0)
                 update_cached_device_capability(capability)
                 capabilities = [
                     device for device in capabilities
@@ -928,9 +939,18 @@ class MassDataProcessor(QObject):
         except Exception as e:
             logging.error(f'Window Fault:{e}')
 
-    @pyqtSlot(object,float,int,int,int,str)
+    @pyqtSlot(object, float, int, int, int, str, object)
     @task_scoped
-    def quality_cwt(self,data, target_freq: float,scale_range:int, fps: int, totalscales: int, wavelet: str = 'morl'):
+    def quality_cwt(
+        self,
+        data,
+        target_freq: float,
+        scale_range: int,
+        fps: int,
+        totalscales: int,
+        wavelet: str = "morl",
+        compute_options=None,
+    ):
         """
         CWT(连续小波变换)分析信号评估
         参数:
@@ -940,36 +960,176 @@ class MassDataProcessor(QObject):
             wavelet: 使用的小波类型(默认为'morl'墨西哥帽小波)
         """
         try:
+            options = dict(compute_options or {})
+            if int(totalscales) < 2:
+                raise ValueError("CWT 质量分析至少需要 2 个尺度")
             mean_signal = get_mean_time_trace(data, self.cancellation_token)
-            frame_size = data.framesize  # (宽度, 高度)
             cparam = 2 * pywt.central_frequency(wavelet) * totalscales
-            scales = cparam/np.arange(totalscales,1,-1)
-            # target_freqs = np.linspace(int(target_freq-5), int(target_freq+5), totalscales//4)
-            # scales = pywt.frequency2scale(wavelet, target_freqs * 1.0 / EM_fps)
+            scales = cparam / np.arange(totalscales, 1, -1)
             self.processing_progress_signal.emit(20, 100)
-            # 计算参数
             total_frames = int(data.timelength)
-            total_pixels = int(data.framesize[0] * data.framesize[1])
-            height, width = frame_size
-            self.processing_progress_signal.emit(40, 100)
-            # 计算平均信号的CWT (用于质量评估)
+            requested_backend = BackendPreference(
+                options.get("backend", "auto")
+            )
+            effective_backend = (
+                BackendPreference.CPU
+                if requested_backend is BackendPreference.AUTO
+                else requested_backend
+            )
+            precision = PrecisionPolicy(
+                options.get("precision", "compatibility")
+            )
+            precision_info = resolve_precision(
+                "cwt_quality", mean_signal.dtype, precision
+            )
+            preferred_device = str(options.get("preferred_device", "") or "")
+            try:
+                device_index = (
+                    int(preferred_device.rsplit(":", 1)[-1])
+                    if preferred_device else 0
+                )
+            except ValueError:
+                device_index = 0
+            capabilities = list(options.get("capabilities", ()))
+            capability = next(
+                (
+                    device for device in capabilities
+                    if device.kind == "gpu"
+                    and device.status is CapabilityStatus.AVAILABLE
+                    and "cwt_quality" in device.supported_algorithms
+                ),
+                None,
+            )
+            if effective_backend is BackendPreference.GPU and capability is None:
+                capability = probe_cuda_capability_isolated(
+                    device_index, timeout=45.0
+                )
+                update_cached_device_capability(capability)
+                capabilities = [
+                    device for device in capabilities
+                    if device.device_id != capability.device_id
+                ]
+                capabilities.append(capability)
 
-            coefficients, frequencies = pywt.cwt(mean_signal, scales, wavelet, sampling_period=1.0 / fps)
+            device_limit = 0
+            if capability is not None:
+                device_limit = max(
+                    0,
+                    min(
+                        int(
+                            capability.total_memory_bytes
+                            * int(options.get("gpu_memory_percent", 70))
+                            / 100
+                        ),
+                        capability.free_memory_bytes,
+                    ),
+                )
+            request = ComputeRequest(
+                task_id=self.task_id or f"cwt-quality-{uuid.uuid4().hex}",
+                attempt_id=0,
+                algorithm="cwt_quality",
+                data_id=str(getattr(data, "timestamp", data.name)),
+                shape=mean_signal.shape,
+                dtype=mean_signal.dtype,
+                axes="T",
+                source=mean_signal,
+                parameters={
+                    "output_shape": (len(scales), total_frames),
+                    "workspace_bytes_per_spatial_item": (
+                        len(scales)
+                        * total_frames
+                        * np.dtype(precision_info.output_dtype).itemsize
+                    ),
+                },
+                backend=effective_backend,
+                precision=precision,
+            )
+            plan = plan_compute(
+                request,
+                ResourceBudget(
+                    host_limit_bytes=max(
+                        256, int(options.get("host_memory_limit_mb", 4096))
+                    ) * 1024 ** 2,
+                    device_limit_bytes=device_limit,
+                    cpu_workers=1,
+                ),
+                capabilities=tuple(capabilities),
+                allow_cpu_fallback=bool(
+                    options.get("allow_cpu_fallback", True)
+                ),
+            )
+            self.compute_plan_signal.emit(plan)
+            self.processing_progress_signal.emit(40, 100)
+            worker = None
+            try:
+                if plan.actual_backend == "gpu":
+                    worker = CudaWorkerClient(device_index)
+                    spectrum, frequencies = worker.execute(
+                        "cwt_quality",
+                        task_id=request.task_id,
+                        attempt_id=request.attempt_id,
+                        block_id=0,
+                        values=mean_signal,
+                        scales=scales,
+                        wavelet=wavelet,
+                        fps=fps,
+                        compute_dtype=precision_info.compute_dtype,
+                        output_dtype=precision_info.output_dtype,
+                        token=self.cancellation_token,
+                    )
+                else:
+                    spectrum, frequencies = cwt_quality_spectrum(
+                        mean_signal,
+                        scales,
+                        wavelet,
+                        fps=fps,
+                        compute_dtype=precision_info.compute_dtype,
+                        output_dtype=precision_info.output_dtype,
+                    )
+            except CudaBackendError:
+                if not options.get("allow_cpu_fallback", True):
+                    raise
+                plan = replace(
+                    plan,
+                    actual_backend="cpu",
+                    backend_reason="CWT 质量分析 GPU 失败，已回退 CPU",
+                    peak_device_bytes=0,
+                )
+                self.compute_plan_signal.emit(plan)
+                spectrum, frequencies = cwt_quality_spectrum(
+                    mean_signal,
+                    scales,
+                    wavelet,
+                    fps=fps,
+                    compute_dtype=precision_info.compute_dtype,
+                    output_dtype=precision_info.output_dtype,
+                )
+            finally:
+                if worker is not None:
+                    worker.close()
             self.processing_progress_signal.emit(70, 100)
-            # 发送平均信号CWT结果
-            self.processed_result.emit(ProcessedData(data.timestamp,
-                                                     f'{data.name}@cwt_q',
-                                                     'cwt_quality',
-                                                     time_point=np.arange(total_frames) / fps,
-                                                     data_processed=np.abs(coefficients),
-                                                     out_processed={
-                                                         'frequencies' : frequencies,
-                                                         'time_series' : np.arange(total_frames) / fps,
-                                                         'target_freq' : target_freq,
-                                                         'scale_range' : scale_range,
-                                                         'total_scales' : totalscales,
-                                                         'wavelet_name' : wavelet,
-                                                     }))
+            if plan.actual_backend == "gpu":
+                mark_algorithm_verified(f"nvidia:{device_index}", "cwt")
+            self.processed_result.emit(ProcessedData(
+                data.timestamp,
+                f"{data.name}@cwt_q",
+                "cwt_quality",
+                time_point=np.arange(total_frames) / fps,
+                data_processed=spectrum,
+                out_processed={
+                    "frequencies": frequencies,
+                    "time_series": np.arange(total_frames) / fps,
+                    "target_freq": target_freq,
+                    "scale_range": scale_range,
+                    "total_scales": totalscales,
+                    "wavelet_name": wavelet,
+                    "compute": execution_metadata(
+                        plan,
+                        execution=f"quality_{plan.actual_backend}",
+                        requested_quality_backend=requested_backend.value,
+                    ),
+                },
+            ))
             self.processing_progress_signal.emit(100, 100)
             return True
         except Exception as e:
@@ -1005,12 +1165,20 @@ class MassDataProcessor(QObject):
                 "complex128" if np.dtype(precision_info.compute_dtype).itemsize > 8
                 else "complex64"
             )
+            planned_scales, _ = cwt_axes(
+                target_freq=target_freq,
+                scale_range=cwt_scale_range,
+                total_scales=totalscales,
+                wavelet=wavelet,
+                fps=fps,
+            )
+            kernel_bank = build_cwt_kernel_bank(
+                planned_scales, wavelet, precision_info.compute_dtype
+            )
+            max_kernel = max(len(kernel) for kernel in kernel_bank.kernels)
             workspace_per_pixel = (
-                int(totalscales) * shape[0] * complex_dtype.itemsize
-                + shape[0] * (
-                    np.dtype(precision_info.compute_dtype).itemsize
-                    + np.dtype(precision_info.output_dtype).itemsize
-                )
+                4 * (shape[0] + max_kernel) * complex_dtype.itemsize
+                + shape[0] * np.dtype(precision_info.output_dtype).itemsize
             )
             request = ComputeRequest(
                 task_id=self.task_id or f"cwt-{uuid.uuid4().hex}",
@@ -1038,10 +1206,64 @@ class MassDataProcessor(QObject):
                 options.get("cache_directory") or get_array_store().config.cache_dir
             )
             cache_dir.mkdir(parents=True, exist_ok=True)
+            preferred_device = str(options.get("preferred_device", "") or "")
+            try:
+                device_index = (
+                    int(preferred_device.rsplit(":", 1)[-1])
+                    if preferred_device else 0
+                )
+            except ValueError:
+                device_index = 0
+            capabilities = list(options.get("capabilities", ()))
+            capability = next(
+                (
+                    device for device in capabilities
+                    if device.kind == "gpu"
+                    and device.status is CapabilityStatus.AVAILABLE
+                    and "cwt" in device.supported_algorithms
+                    and (
+                        not preferred_device
+                        or device.device_id == preferred_device
+                    )
+                ),
+                None,
+            )
+            if backend is BackendPreference.GPU and capability is None:
+                capability = probe_cuda_capability_isolated(
+                    device_index, timeout=45.0
+                )
+                update_cached_device_capability(capability)
+                capabilities = [
+                    device for device in capabilities
+                    if device.device_id != capability.device_id
+                ]
+                capabilities.append(capability)
+                if capability.status is not CapabilityStatus.AVAILABLE:
+                    logging.warning("CUDA CWT 自检未通过: %s", capability.detail)
+
+            device_limit = 0
+            if (
+                capability is not None
+                and capability.status is CapabilityStatus.AVAILABLE
+            ):
+                percent = min(
+                    90, max(10, int(options.get("gpu_memory_percent", 70)))
+                )
+                reserve = max(
+                    1024 ** 3, int(capability.total_memory_bytes * 0.1)
+                )
+                available = max(
+                    0, capability.free_memory_bytes - reserve
+                )
+                device_limit = min(
+                    int(capability.total_memory_bytes * percent / 100),
+                    available,
+                )
             budget = ResourceBudget(
                 host_limit_bytes=max(
                     256, int(options.get("host_memory_limit_mb", 4096))
                 ) * 1024 ** 2,
+                device_limit_bytes=device_limit,
                 disk_free_bytes=int(shutil.disk_usage(cache_dir).free),
                 cpu_workers=max(1, int(options.get("cpu_workers", 1))),
             )
@@ -1049,7 +1271,7 @@ class MassDataProcessor(QObject):
             plan = plan_compute(
                 request,
                 budget,
-                capabilities=tuple(options.get("capabilities", ())),
+                capabilities=tuple(capabilities),
                 default_backend=BackendPreference.AUTO,
                 allow_cpu_fallback=allow_fallback,
                 disk_output_threshold_bytes=max(
@@ -1057,8 +1279,6 @@ class MassDataProcessor(QObject):
                 ) * 1024 ** 2,
             )
             self.compute_plan_signal.emit(plan)
-            if plan.actual_backend != "cpu":
-                raise RuntimeError("CWT CUDA 后端尚未通过科学一致性验证")
 
             params = {
                 "target_freq": float(target_freq),
@@ -1079,7 +1299,31 @@ class MassDataProcessor(QObject):
                 cache_dir=cache_dir,
                 token=self.cancellation_token,
                 progress=report_progress,
+                allow_cpu_fallback=allow_fallback,
+                device_index=device_index,
             )
+            if result.plan.actual_backend == "gpu":
+                verified = mark_algorithm_verified(
+                    f"nvidia:{device_index}", "cwt"
+                )
+                logging.info(
+                    "GPU 算法实际任务验证通过: algorithm=cwt "
+                    "device=%s backend=%s wavelet=%s scales=%s",
+                    (
+                        verified.name
+                        if verified is not None
+                        else f"nvidia:{device_index}"
+                    ),
+                    (
+                        verified.backend
+                        if verified is not None
+                        else "CuPy/CUDA"
+                    ),
+                    wavelet,
+                    totalscales,
+                )
+            if result.plan is not plan:
+                self.compute_plan_signal.emit(result.plan)
             inherited = {
                 key: value for key, value in (getattr(data, "out_processed", {}) or {}).items()
                 if key != "unfolded_data"
@@ -1087,8 +1331,15 @@ class MassDataProcessor(QObject):
             inherited.update(getattr(data, "parameters", {}) or {})
             metadata = execution_metadata(
                 result.plan,
-                execution="bounded_cpu",
+                execution=f"bounded_{result.plan.actual_backend}",
                 scale_reduction="normalized_mean",
+                fallback_reason=result.fallback_reason or (
+                    result.plan.backend_reason
+                    if backend is BackendPreference.GPU
+                    and result.plan.actual_backend == "cpu"
+                    else ""
+                ),
+                max_gpu_oom_retries=3,
             )
             processed = ProcessedData(
                 data.timestamp,

@@ -33,9 +33,6 @@ class CalculatorWorkspaceTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        for module_name in list(sys.modules):
-            if module_name == "matplotlib" or module_name.startswith("matplotlib."):
-                sys.modules.pop(module_name, None)
         Data.history.clear()
         ProcessedData.history.clear()
 

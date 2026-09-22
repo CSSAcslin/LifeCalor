@@ -24,6 +24,7 @@ from widget.DataFilterControls import (
     TagFilterButton, metadata_matches, style_filter_controls,
 )
 from dataio.classification import DataCategory, describe_source
+from compute.algorithms.cwt import SUPPORTED_CWT_WAVELETS, normalize_cwt_wavelet
 import re
 
 class ToolBucket:
@@ -785,15 +786,19 @@ class CWTComputePop(QDialog):
         self.fps_input.setValue(self.params['EM_fps'])
 
         self.cwt_size_input = QSpinBox()
-        self.cwt_size_input.setRange(1, 65536)
+        self.cwt_size_input.setRange(2 if self.case == "quality" else 1, 65536)
         if self.case == 'quality':
             self.cwt_size_input.setValue(256)
         else:
             self.cwt_size_input.setValue(1)
 
         self.wavelet = QComboBox()
-        self.wavelet.addItems(['cmor1-1.0','cmor1.5-1.0','cmor3-3','cmor8-3 ','cgau8','mexh','morl'])
-        self.wavelet.setCurrentText(self.params['cwt_type'])
+        self.wavelet.addItems(list(SUPPORTED_CWT_WAVELETS))
+        try:
+            selected_wavelet = normalize_cwt_wavelet(self.params["cwt_type"])
+        except ValueError:
+            selected_wavelet = "morl"
+        self.wavelet.setCurrentText(selected_wavelet)
 
         layout.addRow(QLabel("目标频率"),self.target_freq_input)
         layout.addRow(QLabel("小波类型"),self.wavelet)
@@ -806,15 +811,24 @@ class CWTComputePop(QDialog):
         self.cwt_scale_range.setSuffix(" Hz")
         layout.addRow(QLabel("处理跨度"), self.cwt_scale_range)
 
-        if self.case == 'signal':
+        if self.case in {"signal", "quality"}:
             self.backend_combo = QComboBox()
             for label, value in (("自动", "auto"), ("CPU", "cpu"), ("GPU", "gpu")):
                 self.backend_combo.addItem(label, value)
             backend = str(self.compute_options.get("backend", "auto"))
             index = self.backend_combo.findData(backend)
             self.backend_combo.setCurrentIndex(index if index >= 0 else 0)
+            capabilities = tuple(self.compute_options.get("capabilities", ()))
+            cwt_gpu = any(
+                getattr(device, "status", None).value == "available"
+                and "cwt" in getattr(device, "supported_algorithms", ())
+                for device in capabilities
+                if getattr(device, "status", None) is not None
+            )
             self.backend_combo.setToolTip(
-                "CWT 的 CUDA 后端尚未完成科学一致性验证；自动模式使用有界 CPU。"
+                "当前设备的 CWT CUDA 数值自检已通过；实际任务完成后会记录本次启动验证状态。"
+                if cwt_gpu
+                else "自动模式在没有通过 CWT 数值自检的 GPU 时使用 CPU；显式选择 GPU 会先执行隔离自检。"
             )
             layout.addRow(QLabel("计算后端"), self.backend_combo)
 
@@ -833,7 +847,9 @@ class CWTComputePop(QDialog):
                 "兼容现有保持 float32 输出；分块过程中不会建立完整尺度系数体。"
             )
             layout.addRow(QLabel("精度策略"), self.precision_combo)
-            self.apply_btn = QPushButton("执行CWT")
+            self.apply_btn = QPushButton(
+                "执行CWT" if self.case == "signal" else "执行质量评价"
+            )
         else:
             self.apply_btn = QPushButton("执行质量评价")
 
@@ -849,7 +865,7 @@ class CWTComputePop(QDialog):
 
     def selected_compute_options(self):
         options = dict(self.compute_options)
-        if self.case == "signal":
+        if self.case in {"signal", "quality"}:
             options["backend"] = self.backend_combo.currentData()
             options["precision"] = self.precision_combo.currentData()
         return options

@@ -5,7 +5,7 @@ from typing import Any, Mapping
 import numpy as np
 
 
-COMPUTE_CONTRACT_VERSION = "1.1-a1"
+COMPUTE_CONTRACT_VERSION = "1.1.1-a1"
 
 
 class PrecisionPolicy(str, Enum):
@@ -151,43 +151,10 @@ class ComputePlan:
     selected_device: str = "CPU"
 
 
-ALGORITHM_CONTRACTS = {
-    "stft": AlgorithmContract(
-        algorithm="stft",
-        input_axes="THW",
-        output_axes="T'HW",
-        accepts_complex=True,
-        compatibility_output_dtype="float32",
-        reduction="mean amplitude across selected frequency bins",
-    ),
-    "em_preprocess": AlgorithmContract(
-        algorithm="em_preprocess",
-        input_axes="THW",
-        output_axes="THW",
-        accepts_complex=False,
-        compatibility_output_dtype="float32",
-        reduction="exact leading-frame median background normalization",
-    ),    "cwt": AlgorithmContract(
-        algorithm="cwt",
-        input_axes="THW",
-        output_axes="THW",
-        accepts_complex=True,
-        compatibility_output_dtype="float32",
-        reduction="mean(2 * abs(coefficients) / sqrt(scale), axis=scale)",
-    ),
-    "lifetime": AlgorithmContract(
-        algorithm="lifetime",
-        input_axes="THW",
-        output_axes="HW",
-        accepts_complex=False,
-        compatibility_output_dtype="float64",
-        reduction="one fitted lifetime and R-squared per pixel",
-    ),
-}
-
-
 def compatibility_metadata(algorithm, input_dtype, **details):
     """Return serializable provenance for the frozen 1.1 compatibility path."""
+    from .registry import ALGORITHM_CONTRACTS
+
     contract = ALGORITHM_CONTRACTS[algorithm]
     metadata = {
         "contract_version": COMPUTE_CONTRACT_VERSION,

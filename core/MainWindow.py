@@ -48,6 +48,7 @@ from dataio.classification import DataCategory, describe_source
 from app_metadata import APP_VERSION
 from startup.logging_setup import ensure_file_logging, resolve_log_path, take_startup_messages
 from appearance import get_theme_manager
+from preferences import PreferencesController
 
 
 class MainWindow(QMainWindow):
@@ -67,7 +68,7 @@ class MainWindow(QMainWindow):
     pre_process_signal = pyqtSignal(object, int, bool, object)
     stft_quality_signal = pyqtSignal(object,float, int, int, int, int, int, str)
     stft_python_signal = pyqtSignal(object,object, int, int, int, int, int, str, bool, int, int, object)
-    cwt_quality_signal = pyqtSignal(object,float, int, int, int, str)
+    cwt_quality_signal = pyqtSignal(object, float, int, int, int, str, object)
     cwt_python_signal = pyqtSignal(object, float, int, int, str, float, object)
     mass_export_signal = pyqtSignal(np.ndarray, str, str, str, bool, dict)
     managed_export_signal = pyqtSignal(object, str, str, str, bool, dict)
@@ -124,6 +125,7 @@ class MainWindow(QMainWindow):
         self.selection_controller = SelectionController(self)
         self.export_controller = ExportController(self)
         self.history_controller = HistoryController(self)
+        self.preferences_controller = PreferencesController(self)
         self.canvas_signal_binder = CanvasSignalBinder(self)
         self.display_canvas_controller = DisplayCanvasController(self)
         self.log_file = self.get_log_path()
@@ -1166,7 +1168,19 @@ class MainWindow(QMainWindow):
     def setup_menus(self):
         """加入菜单栏"""
         self.menu = self.menuBar()
-        self.menu.addMenu('主窗口')
+        options_menu = self.menu.addMenu("选项")
+        for label, page in (
+            ("常规与更新...", PreferencesController.PAGE_GENERAL),
+            ("外观与画布...", PreferencesController.PAGE_APPEARANCE),
+            ("绘图默认值...", PreferencesController.PAGE_PLOT),
+            ("计算与加速...", PreferencesController.PAGE_COMPUTE),
+            ("寿命拟合默认值...", PreferencesController.PAGE_LIFETIME),
+            ("缓存与存储...", PreferencesController.PAGE_CACHE),
+        ):
+            action = options_menu.addAction(label)
+            action.triggered.connect(
+                lambda _checked=False, target=page: self.preferences_controller.show(target)
+            )
 
         # 控制台
         view_menu = self.menu.addMenu("控制台")
@@ -1176,57 +1190,20 @@ class MainWindow(QMainWindow):
         toggle_tasks.setToolTip("查看每个后台任务的独立进度、状态、耗时和取消入口")
         toggle_tasks.triggered.connect(lambda: self._toggle_activity_panel(self.task_panel))
 
-        # 编辑菜单
-        edit_menu = self.menu.addMenu("编辑")
-
-        theme_menu = edit_menu.addMenu("界面主题")
-        self.theme_action_group = QActionGroup(self)
-        self.theme_action_group.setExclusive(True)
+        # 高级操作
+        advanced_menu = self.menu.addMenu("高级操作")
         self.theme_actions = {}
         theme_manager = get_theme_manager(QApplication.instance())
-        current_theme = theme_manager.current_theme if theme_manager is not None else "light"
-        for theme_id, label in (("dark", "石墨深色"), ("light", "清爽浅色")):
-            action = theme_menu.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(theme_id == current_theme)
-            action.triggered.connect(
-                lambda checked, selected=theme_id: (
-                    checked and self._set_interface_theme(selected)
-                )
-            )
-            self.theme_action_group.addAction(action)
-            self.theme_actions[theme_id] = action
         if theme_manager is not None:
             theme_manager.themeChanged.connect(self._sync_theme_actions)
 
-        # 编辑菜单-坏点处理功能
-        bad_frame_edit = edit_menu.addAction("坏点处理")
+        bad_frame_edit = advanced_menu.addAction("坏点处理")
         bad_frame_edit.triggered.connect(self.bad_frame_edit_dialog)
 
-        # 编辑菜单-计算设置功能
-        cal_settings_edit = edit_menu.addAction("计算设置")
-        cal_settings_edit.triggered.connect(self.calculation_set_edit_dialog)
-
-        compute_settings_edit = edit_menu.addAction("计算与加速")
-        compute_settings_edit.setToolTip("设置计算后端、精度、资源预算并查看硬件状态")
-        compute_settings_edit.triggered.connect(self.compute_settings_dialog)
-
-        # 编辑菜单-绘图设置调整
-        plt_settings_edit = edit_menu.addAction("绘图设置")
-        plt_settings_edit.triggered.connect(self.plt_settings_edit_dialog)
-
-        # 编辑菜单-缓存设置调整
-        cache_settings_edit = edit_menu.addAction("缓存设置")
-        cache_settings_edit.triggered.connect(self.cache_settings_edit_dialog)
-
-        # 数据操作
-        data_manipulation_menu = self.menu.addMenu("数据操作")
-        # 数据操作——数据计算器
-        data_calculator = data_manipulation_menu.addAction('数据计算器')
+        data_calculator = advanced_menu.addAction('数据计算器')
         data_calculator.triggered.connect(self.process_math)
 
-        # 数据操作——数据切片器
-        data_cropper = data_manipulation_menu.addAction('数据切片器')
+        data_cropper = advanced_menu.addAction('数据切片器')
         data_cropper.triggered.connect(self.data_crop)
 
         # 历史数据管理
@@ -1262,13 +1239,15 @@ class MainWindow(QMainWindow):
 
     def _set_interface_theme(self, theme_id):
         manager = get_theme_manager(QApplication.instance())
-        if manager is None or not manager.set_theme(theme_id):
+        applied = manager is not None and manager.set_theme(theme_id)
+        if not applied:
             current = manager.current_theme if manager is not None else "light"
-            for action_id, action in self.theme_actions.items():
+            for action_id, action in getattr(self, "theme_actions", {}).items():
                 action.setChecked(action_id == current)
+        return applied
 
     def _sync_theme_actions(self, tokens):
-        for action_id, action in self.theme_actions.items():
+        for action_id, action in getattr(self, "theme_actions", {}).items():
             action.setChecked(action_id == tokens.theme_id)
 
     @staticmethod
@@ -1985,22 +1964,8 @@ class MainWindow(QMainWindow):
         self.update_status("准备就绪", 'idle')
 
     def calculation_set_edit_dialog(self):
-        """计算设置调整"""
-        # if self.data is None or self.processed_data is None:
-        #     logging.warning("无数据，请先加载数据文件")
-        #     return
-        self.update_status("计算设置ing", 'working')
-        dialog = CalculationSetDialog(self.cal_set_params, parent=self)
-        if dialog.exec_():
-            # self.time_label.setText(self.image_display.update_time_slice(0))
-            # self.time_slider.setValue(0)
-            self.cal_set_params = dialog.params
-            LifetimeCalculator.set_cal_parameters(self.cal_set_params)
-            # 同步修改绘图设置并传参
-            self.plot_params['_from_start_cal'] = self.cal_set_params['from_start_cal']
-            self.result_display.update_plot_settings(self.plot_params, update=False)
-            logging.info("设置已更新，请重新绘图")
-        self.update_status("准备就绪", 'idle')
+        """兼容旧入口：定位统一选项的寿命拟合页。"""
+        return self.preferences_controller.show(PreferencesController.PAGE_LIFETIME)
 
     def _sync_lifetime_compute_controls(self):
         if not hasattr(self, "cpu_use_input"):
@@ -2018,12 +1983,8 @@ class MainWindow(QMainWindow):
             else "手动模式下可为下一次寿命计算临时调整并行工作数。"
         )
     def compute_settings_dialog(self):
-        """Open the shared compute policy and hardware status dialog."""
-        from compute.dialog import ComputeSettingsDialog
-
-        dialog = ComputeSettingsDialog(self.settings, parent=self)
-        if dialog.exec_():
-            self._sync_lifetime_compute_controls()
+        """兼容旧入口：定位统一选项的计算与加速页。"""
+        return self.preferences_controller.show(PreferencesController.PAGE_COMPUTE)
 
     def get_compute_options(self, algorithm):
         from compute.capabilities import (
@@ -2059,7 +2020,7 @@ class MainWindow(QMainWindow):
         )
         return {
             "backend": preferences.backend_for(algorithm).value,
-            "precision": preferences.precision.value,
+            "precision": preferences.precision_for(algorithm).value,
             "allow_cpu_fallback": preferences.allow_cpu_fallback,
             "auto_cpu": preferences.auto_cpu,
             "auto_memory": preferences.auto_memory,
@@ -2108,19 +2069,12 @@ class MainWindow(QMainWindow):
         )
 
     def plt_settings_edit_dialog(self):
-        """绘图设置"""
-        dialog = PltSettingsDialog(params=self.plot_params, parent=self)
-        self.update_status("绘图设置ing", 'working')
-        if dialog.exec_():
-            # 将参数传递给ResultDisplayWidget
-            self.result_display.update_plot_settings(dialog.params)
-            self.plot_params = dialog.params
-            logging.info("绘图已更新")
-        self.update_status("准备就绪", 'idle')
+        """兼容旧入口：定位统一选项的绘图默认值页。"""
+        return self.preferences_controller.show(PreferencesController.PAGE_PLOT)
 
     def cache_settings_edit_dialog(self):
-        """缓存设置。Legacy CacheSettingsDialog 入口转到统一历史与缓存管理。"""
-        return self.history_cache_manager()
+        """兼容旧入口：定位统一选项的缓存与存储页。"""
+        return self.preferences_controller.show(PreferencesController.PAGE_CACHE)
 
     def cleanup_array_cache_orphans(self):
         """清理当前历史和可恢复索引都未引用的临时缓存文件。"""
@@ -2602,7 +2556,13 @@ class MainWindow(QMainWindow):
         data = self.data_selection(['EM_pre_processed'])
         if data is None:
             return False
-        dialog = CWTComputePop(self.EM_params,'quality')
+        compute_options = self.get_compute_options("cwt")
+        dialog = CWTComputePop(
+            self.EM_params,
+            "quality",
+            parent=self,
+            compute_options=compute_options,
+        )
 
         if dialog.exec_():
             self.update_param('EM', 'target_freq', dialog.target_freq_input.value())
@@ -2616,7 +2576,8 @@ class MainWindow(QMainWindow):
                                          int(self.EM_params['cwt_scale_range']),
                                          self.EM_params['EM_fps'],
                                          self.EM_params['cwt_total_scales'],
-                                         self.EM_params['cwt_type'])
+                                         self.EM_params['cwt_type'],
+                                         dialog.selected_compute_options())
             return True
         else:
             return False

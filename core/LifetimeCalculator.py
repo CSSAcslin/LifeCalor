@@ -12,11 +12,16 @@ from DataManager import *
 from diagnostics import AppError, format_exception_details
 from tasks import CancellationToken, TaskCancelled, TaskContextQueue, task_scoped
 from compute import (
-    BackendPreference, ComputeRequest, PrecisionPolicy, ResourceBudget,
+    BackendPreference, CapabilityStatus, ComputeRequest, PrecisionPolicy, ResourceBudget,
     compatibility_metadata, execution_metadata, plan_compute, resolve_precision,
 )
 from compute.algorithms import fit_lifetime, has_correlated_window
 from compute.algorithms.lifetime_pipeline import run_lifetime_pipeline, spatial_kernel
+from compute.capabilities import (
+    mark_algorithm_verified,
+    update_cached_device_capability,
+)
+from compute.worker import probe_cuda_capability_isolated
 
 
 class LifetimeCalculator:
@@ -364,6 +369,7 @@ class CalculationThread(QObject):
                 "workspace_bytes_per_spatial_item": workspace_per_pixel,
                 "max_spatial_items": 64,
                 "model_type": model_type,
+                "output_multiplier": 3 if model_type == "single" else 7,
             },
             backend=backend,
             precision=precision,
@@ -372,6 +378,60 @@ class CalculationThread(QObject):
             options.get("cache_directory") or get_array_store().config.cache_dir
         )
         cache_dir.mkdir(parents=True, exist_ok=True)
+        preferred_device = str(options.get("preferred_device", "") or "")
+        try:
+            device_index = (
+                int(preferred_device.rsplit(":", 1)[-1])
+                if preferred_device else 0
+            )
+        except ValueError:
+            device_index = 0
+        capabilities = list(options.get("capabilities", ()))
+        capability = next(
+            (
+                device for device in capabilities
+                if device.kind == "gpu"
+                and device.status is CapabilityStatus.AVAILABLE
+                and algorithm in device.supported_algorithms
+                and (
+                    not preferred_device
+                    or device.device_id == preferred_device
+                )
+            ),
+            None,
+        )
+        if backend is BackendPreference.GPU and capability is None:
+            capability = probe_cuda_capability_isolated(
+                device_index, timeout=45.0
+            )
+            update_cached_device_capability(capability)
+            capabilities = [
+                device for device in capabilities
+                if device.device_id != capability.device_id
+            ]
+            capabilities.append(capability)
+            if capability.status is not CapabilityStatus.AVAILABLE:
+                logging.warning(
+                    "CUDA 寿命拟合自检未通过: algorithm=%s detail=%s",
+                    algorithm,
+                    capability.detail,
+                )
+        device_limit = 0
+        if (
+            capability is not None
+            and capability.status is CapabilityStatus.AVAILABLE
+        ):
+            percent = min(
+                90, max(10, int(options.get("gpu_memory_percent", 70)))
+            )
+            reserve = max(
+                1024 ** 3, int(capability.total_memory_bytes * 0.1)
+            )
+            available = max(0, capability.free_memory_bytes - reserve)
+            device_limit = min(
+                int(capability.total_memory_bytes * percent / 100),
+                available,
+            )
         effective_workers = (
             max(1, int(options.get("cpu_workers", cpu_num or 1)))
             if is_multipro else 1
@@ -380,13 +440,14 @@ class CalculationThread(QObject):
             host_limit_bytes=max(
                 256, int(options.get("host_memory_limit_mb", 4096))
             ) * 1024 ** 2,
+            device_limit_bytes=device_limit,
             disk_free_bytes=int(shutil.disk_usage(cache_dir).free),
             cpu_workers=effective_workers,
         )
         plan = plan_compute(
             request,
             budget,
-            capabilities=tuple(options.get("capabilities", ())),
+            capabilities=tuple(capabilities),
             default_backend=BackendPreference.AUTO,
             allow_cpu_fallback=bool(options.get("allow_cpu_fallback", True)),
             disk_output_threshold_bytes=max(
@@ -413,13 +474,46 @@ class CalculationThread(QObject):
             cpu_workers=workers,
             token=self.cancellation_token,
             progress=report_progress,
+            cache_dir=cache_dir,
+            allow_cpu_fallback=bool(
+                options.get("allow_cpu_fallback", True)
+            ),
+            device_index=device_index,
         )
+        if result.plan.actual_backend == "gpu":
+            verified = mark_algorithm_verified(
+                f"nvidia:{device_index}", algorithm
+            )
+            logging.info(
+                "GPU 算法实际任务验证通过: algorithm=%s device=%s "
+                "backend=%s model=%s",
+                algorithm,
+                (
+                    verified.name
+                    if verified is not None
+                    else f"nvidia:{device_index}"
+                ),
+                (
+                    verified.backend
+                    if verified is not None
+                    else "CuPy/CUDA"
+                ),
+                model_type,
+            )
+        if result.plan is not plan:
+            self.compute_plan_signal.emit(result.plan)
         metadata = execution_metadata(
             result.plan,
-            execution="bounded_multiprocess" if workers > 1 else "bounded_cpu",
+            execution=(
+                "bounded_multiprocess"
+                if result.plan.actual_backend == "cpu" and workers > 1
+                else f"bounded_{result.plan.actual_backend}"
+            ),
             model=model_type,
             cpu_workers=workers,
             pre_convolution=pre_cov or "none",
+            fallback_reason=result.fallback_reason,
+            max_gpu_oom_retries=3,
         )
         return result, metadata
     @pyqtSlot(object, float, np.ndarray, str)
@@ -495,14 +589,46 @@ class CalculationThread(QObject):
             )
             lifetime_map = result.lifetime_map
             r_squared_map = result.r_squared_map
+            named_outputs = dict(result.named_outputs)
             if post_cov is not None:
-                lifetime_map_cov = LifetimeCalculator.apply_custom_kernel(
-                    lifetime_map, post_cov, post_size
+                lifetime_values = (
+                    lifetime_map.load(mmap_mode="r")
+                    if hasattr(lifetime_map, "load")
+                    else lifetime_map
                 )
+                lifetime_map_cov = LifetimeCalculator.apply_custom_kernel(
+                    lifetime_values, post_cov, post_size
+                )
+                primary_field = (
+                    "lifetime_map" if model_type == "single" else "tau1_map"
+                )
+                named_outputs[primary_field] = lifetime_map_cov
+                if model_type == "double":
+                    tau2_values = named_outputs["tau2_map"]
+                    if hasattr(tau2_values, "load"):
+                        tau2_values = tau2_values.load(mmap_mode="r")
+                    named_outputs["tau2_map"] = (
+                        LifetimeCalculator.apply_custom_kernel(
+                            tau2_values, post_cov, post_size
+                        )
+                    )
                 logging.info("后卷积完成")
             else:
                 lifetime_map_cov = lifetime_map
             inherited = data.out_processed if isinstance(data, ProcessedData) else data.parameters
+            result_fields = (
+                ("lifetime_map", "r_squared_map", "fit_status")
+                if model_type == "single"
+                else (
+                    "tau1_map",
+                    "tau2_map",
+                    "amplitude1_map",
+                    "amplitude2_map",
+                    "baseline_map",
+                    "r_squared_map",
+                    "fit_status",
+                )
+            )
             self.processed_result.emit(ProcessedData(
                 data.timestamp,
                 f"{data.name}@d-lft",
@@ -510,9 +636,11 @@ class CalculationThread(QObject):
                 time_point=np.array([0]),
                 data_processed=lifetime_map_cov,
                 out_processed={
-                    "lifetime_map": lifetime_map_cov,
-                    "r_squared_map": r_squared_map,
                     **(inherited or {}),
+                    **named_outputs,
+                    "model_type": model_type,
+                    "result_fields": result_fields,
+                    "active_result_field": result_fields[0],
                     "compute": metadata,
                 },
             ))
@@ -617,6 +745,8 @@ class CalculationThread(QObject):
                 lifetime_map = result.lifetime_map
                 r_squared_map = result.r_squared_map
 
+            if hasattr(lifetime_map, "load"):
+                lifetime_map = lifetime_map.load(mmap_mode="r")
             with np.errstate(divide="ignore", invalid="ignore"):
                 heat_transfer = np.where(lifetime_map >= 0.1, 42.72 / lifetime_map, 0)
             heat_transfer_cov = (
@@ -677,12 +807,11 @@ class CalculationThread(QObject):
         return True
 
     def lifetime_map_cal(self, aim_data, data_type, time_points, model_type):
-        """计算单指数寿命与 R² 二维图。"""
+        """Compatibility helper for direct single-exponential map calls."""
         try:
             if model_type != 'single':
                 raise ValueError(
-                    "双指数热图尚未定义如何将两个寿命归约为单个像素值；"
-                    "请使用选区双指数拟合。"
+                    "该兼容接口只返回单个寿命图；双指数请使用具名多结果流水线。"
                 )
 
             values = np.asarray(aim_data)

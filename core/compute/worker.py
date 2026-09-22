@@ -24,16 +24,24 @@ def _cuda_worker_main(connection, device_index):
             if operation == "shutdown":
                 return
             try:
-                from compute.backends.cuda import cuda_self_test, stft_block_cuda
+                from compute.backends.cuda import (
+                    cuda_capability_self_test,
+                    get_cuda_handler,
+                )
+                from compute.registry import get_algorithm_spec
 
                 if operation == "self_test":
-                    result = cuda_self_test(device_index)
-                elif operation == "stft":
-                    result = stft_block_cuda(
-                        message["block"], message["params"],
-                        compute_dtype=message["compute_dtype"],
-                        output_dtype=message["output_dtype"],
+                    result = cuda_capability_self_test(device_index)
+                elif operation == "execute":
+                    spec = get_algorithm_spec(message["algorithm_id"])
+                    if spec.cuda_handler is None:
+                        raise ValueError(
+                            f"{spec.algorithm_id} 尚无已验证的 CUDA handler"
+                        )
+                    handler = get_cuda_handler(spec.cuda_handler)
+                    result = handler(
                         device_index=device_index,
+                        **dict(message.get("payload") or {}),
                     )
                 else:
                     raise ValueError(f"未知 CUDA worker 操作: {operation}")
@@ -99,10 +107,31 @@ class CudaWorkerClient:
                 )
 
     def stft(self, block, params, *, compute_dtype, output_dtype, token=None):
+        return self.execute(
+            "stft", token=token, block=block, params=params,
+            compute_dtype=compute_dtype, output_dtype=output_dtype,
+        )
+
+    def execute(
+        self,
+        algorithm_id,
+        *,
+        task_id="",
+        attempt_id=0,
+        block_id=0,
+        token=None,
+        timeout=300.0,
+        **payload,
+    ):
         return self.request(
-            "stft", block=block, params=params,
-            compute_dtype=compute_dtype, output_dtype=output_dtype, token=token,
-            timeout=300.0,
+            "execute",
+            algorithm_id=str(algorithm_id),
+            task_id=str(task_id),
+            attempt_id=int(attempt_id),
+            block_id=str(block_id),
+            payload=payload,
+            token=token,
+            timeout=timeout,
         )
     def self_test(self, timeout=15.0):
         return self.request("self_test", timeout=timeout)
@@ -140,7 +169,7 @@ class CudaWorkerClient:
         return False
 
 
-def probe_cuda_capability_isolated(device_index=0, timeout=15.0):
+def probe_cuda_capability_isolated(device_index=0, timeout=45.0):
     try:
         with CudaWorkerClient(device_index) as worker:
             info = worker.self_test(timeout=timeout)
@@ -151,8 +180,8 @@ def probe_cuda_capability_isolated(device_index=0, timeout=15.0):
             free_memory_bytes=int(info["free_memory_bytes"]),
             driver=str(info["driver"]),
             backend=f"CuPy {info['cupy']} / CUDA {info['runtime']}",
-            detail="CUDA FFT 快速自检通过",
-            supported_algorithms=("stft", "fft2"),
+            detail=str(info.get("detail") or "CUDA 快速自检通过"),
+            supported_algorithms=tuple(info.get("supported_algorithms") or ("stft",)),
         )
     except Exception as exc:
         return DeviceCapability(

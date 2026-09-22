@@ -45,6 +45,13 @@ BACKEND_ITEMS = (
     ("CPU", BackendPreference.CPU),
     ("GPU", BackendPreference.GPU),
 )
+PRECISION_ITEMS = (
+    ("跟随全局", ""),
+    ("兼容现有", PrecisionPolicy.COMPATIBILITY.value),
+    ("保留输入精度", PrecisionPolicy.PRESERVE_INPUT.value),
+    ("单精度", PrecisionPolicy.SINGLE.value),
+    ("双精度", PrecisionPolicy.DOUBLE.value),
+)
 ALGORITHM_LABELS = {
     "stft": "STFT",
     "cwt": "CWT",
@@ -104,15 +111,14 @@ class CudaSelfTestThread(QThread):
         from compute.worker import probe_cuda_capability_isolated
 
         self.completed.emit(
-            probe_cuda_capability_isolated(self.device_index, timeout=15.0)
+            probe_cuda_capability_isolated(self.device_index, timeout=45.0)
         )
 
 
-class ComputeSettingsDialog(QDialog):
+class ComputeSettingsPage(QWidget):
     def __init__(self, settings, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("计算与加速")
-        self.setMinimumSize(820, 600)
+        self.setMinimumSize(760, 520)
         self.store = ComputeSettingsStore(settings)
         self.preferences = self.store.load()
         self.snapshot = get_cached_snapshot()
@@ -126,6 +132,7 @@ class ComputeSettingsDialog(QDialog):
         self._cuda_test_started = False
         self._cuda_device_index = 0
         self.algorithm_combos = {}
+        self.algorithm_precision_combos = {}
         self.algorithm_status_items = {}
         self._build_ui()
         self._load_preferences()
@@ -139,15 +146,6 @@ class ComputeSettingsDialog(QDialog):
         root.addWidget(self.tabs, 1)
         self.tabs.addTab(self._build_hardware_strategy_tab(), "硬件与策略")
         self.tabs.addTab(self._build_algorithms_tab(), "算法设置")
-
-        self.button_box = QDialogButtonBox(
-            QDialogButtonBox.Save | QDialogButtonBox.Cancel
-        )
-        self.button_box.button(QDialogButtonBox.Save).setText("保存")
-        self.button_box.button(QDialogButtonBox.Cancel).setText("取消")
-        self.button_box.accepted.connect(self._save)
-        self.button_box.rejected.connect(self.reject)
-        root.addWidget(self.button_box)
 
     def _build_hardware_strategy_tab(self):
         tab = QWidget()
@@ -249,9 +247,9 @@ class ComputeSettingsDialog(QDialog):
     def _build_algorithms_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        self.algorithm_table = QTableWidget(len(ALGORITHM_KEYS), 3)
+        self.algorithm_table = QTableWidget(len(ALGORITHM_KEYS), 4)
         self.algorithm_table.setHorizontalHeaderLabels(
-            ("算法", "后端偏好", "当前状态")
+            ("算法", "后端偏好", "精度覆盖", "当前状态")
         )
         self.algorithm_table.verticalHeader().setVisible(False)
         self.algorithm_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -262,7 +260,10 @@ class ComputeSettingsDialog(QDialog):
             1, QHeaderView.ResizeToContents
         )
         self.algorithm_table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.Stretch
+            2, QHeaderView.ResizeToContents
+        )
+        self.algorithm_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.Stretch
         )
         for row, algorithm in enumerate(ALGORITHM_KEYS):
             self.algorithm_table.setItem(
@@ -275,10 +276,25 @@ class ComputeSettingsDialog(QDialog):
                 "跟随全局使用默认策略；不可用或尚未验证的 GPU 选项会被禁用。"
             )
             self.algorithm_table.setCellWidget(row, 1, combo)
+            precision_combo = QComboBox()
+            for label, value in PRECISION_ITEMS:
+                precision_combo.addItem(label, value)
+            precision_combo.setToolTip(
+                "留空时跟随全局精度；寿命拟合目前仅开放已验证的双精度路径。"
+            )
+            if algorithm in {"lifetime_single", "lifetime_double"}:
+                _set_combo_item_enabled(
+                    precision_combo,
+                    PrecisionPolicy.SINGLE.value,
+                    False,
+                    "寿命拟合单精度尚未通过科学验收",
+                )
+            self.algorithm_table.setCellWidget(row, 2, precision_combo)
             status_item = QTableWidgetItem("CPU 可用；等待硬件检测")
-            self.algorithm_table.setItem(row, 2, status_item)
+            self.algorithm_table.setItem(row, 3, status_item)
             self.algorithm_status_items[algorithm] = status_item
             self.algorithm_combos[algorithm] = combo
+            self.algorithm_precision_combos[algorithm] = precision_combo
         layout.addWidget(self.algorithm_table)
         return tab
 
@@ -293,10 +309,18 @@ class ComputeSettingsDialog(QDialog):
         self.cpu_workers_spin.setValue(self._manual_cpu_workers)
         self.host_memory_spin.setValue(self._manual_host_memory_mb)
         self.gpu_memory_spin.setValue(self._manual_gpu_percent)
+        for combo in self.algorithm_combos.values():
+            self._select_data(combo, BackendPreference.FOLLOW_GLOBAL.value)
         for algorithm, backend in self.preferences.algorithm_backends:
             combo = self.algorithm_combos.get(algorithm)
             if combo is not None:
                 self._select_data(combo, backend.value)
+        for combo in self.algorithm_precision_combos.values():
+            self._select_data(combo, "")
+        precision_overrides = dict(self.preferences.algorithm_precisions)
+        for algorithm, combo in self.algorithm_precision_combos.items():
+            precision = precision_overrides.get(algorithm)
+            self._select_data(combo, precision.value if precision is not None else "")
         self._loading_preferences = False
         self._sync_resource_controls()
 
@@ -569,10 +593,15 @@ class ComputeSettingsDialog(QDialog):
         QApplication.clipboard().setText(text)
         self.probe_status.setText("诊断摘要已复制")
 
-    def _save(self):
+    def collect_preferences(self):
         overrides = tuple(
             (algorithm, BackendPreference(combo.currentData()))
             for algorithm, combo in self.algorithm_combos.items()
+        )
+        precision_overrides = tuple(
+            (algorithm, PrecisionPolicy(combo.currentData()))
+            for algorithm, combo in self.algorithm_precision_combos.items()
+            if str(combo.currentData() or "")
         )
         if not self.auto_cpu_check.isChecked():
             self._manual_cpu_workers = self.cpu_workers_spin.value()
@@ -580,7 +609,7 @@ class ComputeSettingsDialog(QDialog):
             self._manual_host_memory_mb = self.host_memory_spin.value()
         if not self.auto_gpu_check.isChecked():
             self._manual_gpu_percent = max(10, self.gpu_memory_spin.value())
-        preferences = ComputePreferences(
+        return ComputePreferences(
             default_backend=BackendPreference(self.backend_combo.currentData()),
             precision=PrecisionPolicy(self.precision_combo.currentData()),
             allow_cpu_fallback=self.fallback_check.isChecked(),
@@ -596,7 +625,30 @@ class ComputeSettingsDialog(QDialog):
                 else self.preferences.preferred_device
             ),
             algorithm_backends=overrides,
+            algorithm_precisions=precision_overrides,
         )
+
+    def has_changes(self):
+        return self.collect_preferences() != self.preferences
+
+    def changed_fields(self):
+        draft = self.collect_preferences()
+        return {
+            field: getattr(draft, field)
+            for field in draft.__dataclass_fields__
+            if getattr(draft, field) != getattr(self.preferences, field)
+        }
+
+    def conflicts(self):
+        current = self.store.load()
+        return [
+            field for field in self.changed_fields()
+            if getattr(current, field) != getattr(self.preferences, field)
+        ]
+
+    def save_preferences(self):
+        changes = self.changed_fields()
+        preferences = replace(self.store.load(), **changes)
         self.preferences = self.store.save(preferences)
         logging.info(
             "计算设置已保存: backend=%s precision=%s fallback=%s "
@@ -613,4 +665,44 @@ class ComputeSettingsDialog(QDialog):
             self.preferences.gpu_memory_percent,
             self.preferences.preferred_device or "auto",
         )
+        return self.preferences
+
+    def reset_defaults(self):
+        defaults = ComputePreferences()
+        self._manual_cpu_workers = defaults.cpu_workers
+        self._manual_host_memory_mb = defaults.host_memory_limit_mb
+        self._manual_gpu_percent = defaults.gpu_memory_percent
+        current = self.preferences
+        self.preferences = defaults
+        self._load_preferences()
+        self.preferences = current
+
+
+class ComputeSettingsDialog(QDialog):
+    """Compatibility shell for callers that still open compute settings directly."""
+
+    def __init__(self, settings, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("计算与加速")
+        self.setMinimumSize(820, 600)
+        layout = QVBoxLayout(self)
+        self.page = ComputeSettingsPage(settings, self)
+        layout.addWidget(self.page, 1)
+        self.button_box = QDialogButtonBox(
+            QDialogButtonBox.Save | QDialogButtonBox.Cancel
+        )
+        self.button_box.button(QDialogButtonBox.Save).setText("保存")
+        self.button_box.button(QDialogButtonBox.Cancel).setText("取消")
+        self.button_box.accepted.connect(self._save)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+
+    def __getattr__(self, name):
+        page = self.__dict__.get("page")
+        if page is not None and hasattr(page, name):
+            return getattr(page, name)
+        raise AttributeError(name)
+
+    def _save(self):
+        self.page.save_preferences()
         self.accept()

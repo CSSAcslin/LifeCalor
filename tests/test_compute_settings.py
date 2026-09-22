@@ -85,10 +85,15 @@ class ComputeSettingsTests(unittest.TestCase):
         self.assertIsInstance(snapshot, HardwareSnapshot)
         self.assertNotIn("cupy", sys.modules)
 
-    def test_mainwindow_exposes_shared_compute_settings_dialog(self):
+    def test_mainwindow_exposes_shared_compute_settings_page(self):
         source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
-        self.assertIn('edit_menu.addAction("计算与加速")', source)
-        self.assertIn("ComputeSettingsDialog(self.settings, parent=self)", source)
+        self.assertIn(
+            '("计算与加速...", PreferencesController.PAGE_COMPUTE)', source
+        )
+        self.assertIn(
+            "self.preferences_controller.show(PreferencesController.PAGE_COMPUTE)",
+            source,
+        )
 
     def test_hardware_refresh_preserves_session_cuda_validation(self):
         validated = DeviceCapability(

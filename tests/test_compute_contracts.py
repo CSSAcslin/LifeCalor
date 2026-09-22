@@ -180,14 +180,14 @@ class ComputeContractTests(unittest.TestCase):
         self.assertEqual(r_squared_map[0, 0], 0.91)
         self.assertEqual(calculate.call_args.kwargs["model_type"], "single")
 
-    def test_double_exponential_map_is_explicitly_deferred(self):
+    def test_legacy_single_map_helper_rejects_ambiguous_double_output(self):
         worker = CalculationThread()
         worker._is_calculating = True
         result = worker.lifetime_map_cal(
             np.ones((8, 1, 1)), "sif", np.arange(8), "double"
         )
         self.assertIsInstance(result, ValueError)
-        self.assertIn("两个寿命", str(result))
+        self.assertIn("具名多结果", str(result))
 
 
 if __name__ == "__main__":

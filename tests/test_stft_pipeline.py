@@ -92,7 +92,7 @@ class _FailingCudaWorker:
     def __init__(self, _device_index):
         pass
 
-    def stft(self, *args, **kwargs):
+    def execute(self, *args, **kwargs):
         raise CudaBackendError("simulated backend failure")
 
     def close(self):
@@ -105,7 +105,11 @@ class _SplittingCudaWorker:
     def __init__(self, _device_index):
         pass
 
-    def stft(self, block, params, *, compute_dtype, output_dtype, token):
+    def execute(
+        self, algorithm_id, *, block, params, compute_dtype, output_dtype, token,
+        task_id, attempt_id, block_id,
+    ):
+        self.assert_algorithm = algorithm_id
         type(self).calls += 1
         if block.shape[1] * block.shape[2] > 1:
             raise CudaBackendError("simulated OOM", out_of_memory=True)

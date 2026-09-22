@@ -82,6 +82,7 @@ class HistoryCacheManagerDialog(QDialog):
     batch_delete_history_requested = pyqtSignal(object)
     batch_recover_manifest_requested = pyqtSignal(object)
     batch_delete_manifest_requested = pyqtSignal(object)
+    cache_preferences_requested = pyqtSignal()
 
     def __init__(self, params, current_items=None, manifest_items=None, cache_summary=None, parent=None):
         super().__init__(parent)
@@ -246,40 +247,24 @@ class HistoryCacheManagerDialog(QDialog):
         summary_group.setLayout(summary_layout)
         layout.addWidget(summary_group)
 
-        settings_group = QGroupBox("缓存设置")
-        settings_layout = QFormLayout()
-
-        directory_layout = QHBoxLayout()
-        self.cache_directory_edit = QLineEdit(str(self.params.get("cache_directory", "")))
-        self.cache_directory_edit.setReadOnly(True)
-        self.browse_btn = QPushButton("浏览")
-        self.open_cache_dir_btn = QPushButton("打开目录")
-        self.browse_btn.clicked.connect(self.browse_cache_directory)
-        self.open_cache_dir_btn.clicked.connect(self.open_cache_directory)
-        directory_layout.addWidget(self.cache_directory_edit)
-        directory_layout.addWidget(self.browse_btn)
-        directory_layout.addWidget(self.open_cache_dir_btn)
-
-        self.cache_threshold_spin = QSpinBox()
-        self.cache_threshold_spin.setRange(1, 1024 * 1024)
-        self.cache_threshold_spin.setValue(int(self.params.get("cache_threshold_mb", 512)))
-        self.cache_threshold_spin.setSuffix(" MB")
-
-        self.memory_budget_spin = QSpinBox()
-        self.memory_budget_spin.setRange(256, 1024 * 1024)
-        self.memory_budget_spin.setValue(int(self.params.get("memory_budget_mb", 4096)))
-        self.memory_budget_spin.setSuffix(" MB")
-        self.memory_budget_spin.setToolTip(
-            "限制导入和处理中允许驻留内存的数据总量；超过预算时会在分配前给出提示。"
+        settings_group = QGroupBox("缓存配置")
+        settings_layout = QVBoxLayout(settings_group)
+        settings_note = QLabel(
+            "缓存目录、写入阈值、内存预算和启动清理已统一到“选项 → 缓存与存储”。"
         )
-        self.cache_cleanup_startup_check = QCheckBox()
-        self.cache_cleanup_startup_check.setChecked(bool(self.params.get("cache_cleanup_startup", True)))
-
-        settings_layout.addRow(QLabel("缓存目录:"), directory_layout)
-        settings_layout.addRow(QLabel("写入阈值:"), self.cache_threshold_spin)
-        settings_layout.addRow(QLabel("内存预算:"), self.memory_budget_spin)
-        settings_layout.addRow(QLabel("启动清理临时缓存:"), self.cache_cleanup_startup_check)
-        settings_group.setLayout(settings_layout)
+        settings_note.setWordWrap(True)
+        settings_layout.addWidget(settings_note)
+        settings_buttons = QHBoxLayout()
+        self.open_cache_dir_btn = QPushButton("打开当前目录")
+        self.open_cache_dir_btn.clicked.connect(self.open_cache_directory)
+        self.open_cache_preferences_btn = QPushButton("打开缓存与存储选项")
+        self.open_cache_preferences_btn.clicked.connect(
+            self.cache_preferences_requested.emit
+        )
+        settings_buttons.addWidget(self.open_cache_dir_btn)
+        settings_buttons.addWidget(self.open_cache_preferences_btn)
+        settings_buttons.addStretch()
+        settings_layout.addLayout(settings_buttons)
         layout.addWidget(settings_group)
 
         buttons = QHBoxLayout()
@@ -294,18 +279,8 @@ class HistoryCacheManagerDialog(QDialog):
         layout.addStretch()
         return tab
 
-    def browse_cache_directory(self):
-        directory = QFileDialog.getExistingDirectory(self, "选择缓存目录", self.cache_directory_edit.text(), QFileDialog.ShowDirsOnly)
-        if directory:
-            self.cache_directory_edit.setText(directory)
-
     def get_params(self):
-        params = dict(self.params)
-        params["cache_directory"] = self.cache_directory_edit.text().strip()
-        params["cache_threshold_mb"] = self.cache_threshold_spin.value()
-        params["memory_budget_mb"] = self.memory_budget_spin.value()
-        params["cache_cleanup_startup"] = self.cache_cleanup_startup_check.isChecked()
-        return params
+        return dict(self.params)
 
     def _install_edit_actions(self, tree, callback):
         action = QAction("编辑名称与标签", tree)
@@ -595,7 +570,7 @@ class HistoryCacheManagerDialog(QDialog):
             self.batch_tag_current_requested.emit(identities)
 
     def open_cache_directory(self):
-        directory = Path(self.cache_directory_edit.text().strip())
+        directory = Path(str(self.params.get("cache_directory", "")).strip())
         directory.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
 

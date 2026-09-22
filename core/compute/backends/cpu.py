@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import numpy as np
-import pywt
-
 from compute.algorithms import stft_frequency_trace
-from compute.algorithms.cwt import cwt_axes
+from compute.algorithms.cwt import (
+    build_cwt_kernel_bank,
+    cwt_axes,
+    normalize_cwt_wavelet,
+    reduce_cwt_traces_from_kernels,
+)
 
 
 def _pixel_traces(block):
@@ -40,27 +43,28 @@ def stft_block_cpu(block, params, *, compute_dtype, output_dtype):
 def cwt_block_cpu(block, params, *, compute_dtype, output_dtype):
     traces, height, width = _pixel_traces(block)
     traces = traces.astype(np.dtype(compute_dtype), copy=False)
+    wavelet = normalize_cwt_wavelet(params["wavelet"])
     scales, _ = cwt_axes(
         target_freq=params["target_freq"],
         scale_range=params.get("scale_range", 0.0),
         total_scales=params["total_scales"],
-        wavelet=params["wavelet"],
+        wavelet=wavelet,
         fps=params["fps"],
     )
-    coefficients, frequencies = pywt.cwt(
-        traces,
+    bank = build_cwt_kernel_bank(
         scales,
-        params["wavelet"],
-        sampling_period=1.0 / float(params["fps"]),
-        axis=-1,
+        wavelet,
+        np.dtype(compute_dtype),
+        precision=int(params.get("wavelet_precision", 10)),
     )
-    normalized = 2.0 * np.abs(coefficients) / np.sqrt(scales[:, None, None])
-    magnitude = np.mean(normalized, axis=0)
+    magnitude = reduce_cwt_traces_from_kernels(
+        traces, bank, output_dtype=output_dtype
+    )
     output = magnitude.T.reshape(magnitude.shape[-1], height, width)
     return (
         output.astype(np.dtype(output_dtype), copy=False),
         np.asarray(scales),
-        np.asarray(frequencies),
+        np.asarray(bank.frequencies) * float(params["fps"]),
     )
 
 def fft2_block_cpu(block, *, compute_dtype, output_dtype=None):

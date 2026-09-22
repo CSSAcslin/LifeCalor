@@ -7,6 +7,7 @@ import numpy as np
 from ArrayCache import ArrayRef
 from tasks.model import CancellationToken
 
+from .blocking import iter_block_plans
 from .io import ComputeNpySink
 
 
@@ -25,48 +26,58 @@ def _close_loaded_mapping(array, loaded_here):
         mapping.close()
 
 
+def split_spatial_tile(block, output_index):
+    """Split a THW spatial tile while preserving its global output coordinates."""
+    height, width = block.shape[1:]
+    if height <= 1 and width <= 1:
+        return ()
+    if height >= width and height > 1:
+        first = height // 2
+        row_slice = output_index[1]
+        middle = row_slice.start + first
+        return (
+            (
+                block[:, :first, :],
+                (output_index[0], slice(row_slice.start, middle), output_index[2]),
+            ),
+            (
+                block[:, first:, :],
+                (output_index[0], slice(middle, row_slice.stop), output_index[2]),
+            ),
+        )
+    first = width // 2
+    column_slice = output_index[2]
+    middle = column_slice.start + first
+    return (
+        (
+            block[:, :, :first],
+            (output_index[0], output_index[1], slice(column_slice.start, middle)),
+        ),
+        (
+            block[:, :, first:],
+            (output_index[0], output_index[1], slice(middle, column_slice.stop)),
+        ),
+    )
+
+
 def _chunk_ranges(plan):
     shape = plan.request.shape
     chunk_shape = plan.chunk_shape
     if len(shape) == 3:
-        _, height, width = shape
-        _, row_step, column_step = chunk_shape
-        for row_start in range(0, height, row_step):
-            row_stop = min(height, row_start + row_step)
-            for column_start in range(0, width, column_step):
-                column_stop = min(width, column_start + column_step)
-                input_index = (
-                    slice(None),
-                    slice(row_start, row_stop),
-                    slice(column_start, column_stop),
+        for block in iter_block_plans(shape, core_shape=chunk_shape):
+            if len(plan.output_shape) == 3:
+                output_index = block.output_slices
+            elif len(plan.output_shape) == 2:
+                output_index = block.output_slices[1:]
+            else:
+                raise ValueError(
+                    f"THW 输入无法映射到输出 shape={plan.output_shape}"
                 )
-                if len(plan.output_shape) == 3:
-                    output_index = (
-                        slice(None),
-                        slice(row_start, row_stop),
-                        slice(column_start, column_stop),
-                    )
-                elif len(plan.output_shape) == 2:
-                    output_index = (
-                        slice(row_start, row_stop),
-                        slice(column_start, column_stop),
-                    )
-                else:
-                    raise ValueError(
-                        f"THW 输入无法映射到输出 shape={plan.output_shape}"
-                    )
-                yield input_index, output_index
+            yield block.read_slices, output_index
         return
 
-    step = chunk_shape[0]
-    for start in range(0, shape[0], step):
-        stop = min(shape[0], start + step)
-        input_index = (slice(start, stop), *([slice(None)] * (len(shape) - 1)))
-        output_index = (
-            slice(start, stop),
-            *([slice(None)] * (len(plan.output_shape) - 1)),
-        )
-        yield input_index, output_index
+    for block in iter_block_plans(shape, core_shape=chunk_shape):
+        yield block.read_slices, block.output_slices
 
 def run_bounded_cpu(
     plan,

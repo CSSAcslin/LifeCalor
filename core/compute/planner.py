@@ -7,7 +7,6 @@ import numpy as np
 from memory.budget import array_nbytes
 
 from .model import (
-    ALGORITHM_CONTRACTS,
     BackendPreference,
     CapabilityStatus,
     ComputePlan,
@@ -17,13 +16,16 @@ from .model import (
     PrecisionPolicy,
     ResourceBudget,
 )
+from .registry import ALGORITHM_CONTRACTS, get_algorithm_spec
 
 
 DISK_OUTPUT_THRESHOLD_BYTES = 512 * 1024 * 1024
 
 
 def _contract_name(algorithm: str) -> str:
-    return "lifetime" if algorithm.startswith("lifetime") else algorithm
+    if algorithm == "lifetime":
+        return algorithm
+    return get_algorithm_spec(algorithm).algorithm_id
 
 
 def resolve_precision(algorithm: str, input_dtype, policy: PrecisionPolicy) -> PrecisionDescription:
@@ -37,7 +39,7 @@ def resolve_precision(algorithm: str, input_dtype, policy: PrecisionPolicy) -> P
         raise ValueError(f"{algorithm} 不接受复数输入，请先明确选择实部、幅值或功率")
 
     if policy is PrecisionPolicy.COMPATIBILITY:
-        if contract_name == "lifetime":
+        if contract_name.startswith("lifetime"):
             compute = accumulator = output = "float64"
         else:
             compute = "complex128" if dtype == np.dtype("complex128") else (
@@ -58,7 +60,7 @@ def resolve_precision(algorithm: str, input_dtype, policy: PrecisionPolicy) -> P
             "float64" if np.dtype(compute).itemsize > 8 or compute == "float64" else "float32"
         )
     elif policy is PrecisionPolicy.SINGLE:
-        if contract_name == "lifetime":
+        if contract_name.startswith("lifetime"):
             raise ValueError("寿命拟合尚未验证单精度求解，当前请使用兼容现有或双精度")
         compute = "complex64" if dtype.kind == "c" else "float32"
         accumulator = output = "float32"
@@ -122,7 +124,7 @@ def _output_shape(request: ComputeRequest) -> tuple[int, ...]:
     configured = request.parameters.get("output_shape")
     if configured:
         shape = tuple(int(value) for value in configured)
-    elif _contract_name(request.algorithm) == "lifetime" and len(request.shape) == 3:
+    elif _contract_name(request.algorithm).startswith("lifetime") and len(request.shape) == 3:
         shape = request.shape[1:]
     else:
         shape = request.shape
@@ -191,7 +193,12 @@ def plan_compute(
     precision = resolve_precision(request.algorithm, request.dtype, request.precision)
     output_shape = _output_shape(request)
     input_bytes = array_nbytes(request.shape, request.dtype)
-    output_bytes = array_nbytes(output_shape, precision.output_dtype)
+    output_multiplier = max(
+        1, int(request.parameters.get("output_multiplier", 1) or 1)
+    )
+    output_bytes = (
+        array_nbytes(output_shape, precision.output_dtype) * output_multiplier
+    )
     requested, actual, reason, selected_device = _select_backend(
         request, tuple(capabilities), default_backend, allow_cpu_fallback
     )

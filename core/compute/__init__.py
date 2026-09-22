@@ -1,7 +1,6 @@
 """Shared compute contracts used by CPU and optional accelerator backends."""
 
 from .model import (
-    ALGORITHM_CONTRACTS,
     COMPUTE_CONTRACT_VERSION,
     AlgorithmContract,
     BackendPreference,
@@ -17,6 +16,7 @@ from .model import (
     format_plan_log,
     plan_execution_details,
 )
+from .registry import ALGORITHM_CONTRACTS, AlgorithmSpec, ExecutionMode, OutputSpec
 from .planner import normalize_progress, plan_compute, resolve_precision
 from .settings import ComputePreferences, ComputeSettingsStore
 
@@ -24,6 +24,7 @@ __all__ = [
     "ALGORITHM_CONTRACTS",
     "COMPUTE_CONTRACT_VERSION",
     "AlgorithmContract",
+    "AlgorithmSpec",
     "BackendPreference",
     "CapabilityStatus",
     "ComputePlan",
@@ -31,6 +32,8 @@ __all__ = [
     "ComputeRequest",
     "ComputeSettingsStore",
     "DeviceCapability",
+    "ExecutionMode",
+    "OutputSpec",
     "PrecisionDescription",
     "PrecisionPolicy",
     "ResourceBudget",

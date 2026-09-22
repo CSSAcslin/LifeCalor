@@ -15,6 +15,9 @@ class PackagingSpecTests(unittest.TestCase):
         self.assertIn("'cupyx'", source)
         self.assertIn("'cupy_backends'", source)
         self.assertIn("'compute.backends.cuda'", source)
+        self.assertIn("'compute.backends.lifetime_cuda'", source)
+        self.assertIn("'appearance' / '*.qss'", source)
+        self.assertIn("'LifeCalor.ico'", source)
         self.assertIn("name='LifeCalor-CPU'", source)
         self.assertIsInstance(tree, ast.Module)
 

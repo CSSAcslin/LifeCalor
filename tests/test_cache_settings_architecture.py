@@ -12,22 +12,22 @@ class CacheSettingsArchitectureTests(unittest.TestCase):
         self.assertIn("memory_budget_mb", source)
         self.assertIn("cache_directory", source)
         self.assertIn("configure_array_cache", source)
-        self.assertIn("cache_settings_edit.triggered.connect(self.cache_settings_edit_dialog)", source)
-        self.assertIn("return self.history_cache_manager()", source)
+        self.assertIn('("缓存与存储...", PreferencesController.PAGE_CACHE)', source)
+        self.assertIn("PreferencesController.PAGE_CACHE", source)
         self.assertIn("cache_cleanup_startup", source)
         self.assertIn("self.cache_progress_signal.connect(self.cache_progress_update)", source)
         self.assertNotIn("QInputDialog", source)
 
-    def test_history_cache_dialog_owns_cache_and_memory_controls(self):
+    def test_history_cache_dialog_links_to_unified_preferences(self):
         source = (CORE / "history" / "dialog.py").read_text(encoding="utf-8")
-        self.assertIn("cache_directory_edit", source)
-        self.assertIn("cache_threshold_spin", source)
-        self.assertIn("memory_budget_spin", source)
+        self.assertNotIn("self.cache_directory_edit =", source)
+        self.assertNotIn("self.cache_threshold_spin =", source)
+        self.assertNotIn("self.memory_budget_spin =", source)
+        self.assertIn("cache_preferences_requested", source)
         self.assertIn("open_cache_directory", source)
         self.assertIn("clear_cache_btn", source)
-        self.assertIn('params["memory_budget_mb"]', source)
         controller = (CORE / "history" / "controller.py").read_text(encoding="utf-8")
-        self.assertIn('update_param("tool", "memory_budget_mb"', controller)
+        self.assertIn("open_cache_preferences", controller)
 
     def test_mainwindow_loads_cached_history_on_worker_thread(self):
         main_source = (CORE / "MainWindow.py").read_text(encoding="utf-8")

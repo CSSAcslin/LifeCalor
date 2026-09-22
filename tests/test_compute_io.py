@@ -13,7 +13,7 @@ if str(CORE) not in sys.path:
 
 from ArrayCache import ArrayRef
 from compute.executor import run_bounded_cpu
-from compute.io import ComputeNpySink, TaskProgressReporter
+from compute.io import ComputeNpySink, ComputeOutputSet, TaskProgressReporter
 from compute.model import BackendPreference, ComputeRequest, PrecisionPolicy, ResourceBudget
 from compute.planner import plan_compute
 from tasks.model import CancellationToken, TaskCancelled
@@ -28,6 +28,22 @@ class _Coordinator:
 
 
 class ComputeIoTests(unittest.TestCase):
+    def test_multi_output_set_commits_independent_named_arrays(self):
+        with tempfile.TemporaryDirectory() as directory:
+            outputs = {
+                "tau1_map": ((2, 3), "float64"),
+                "fit_status": ((2, 3), "int16"),
+            }
+            sink = ComputeOutputSet(directory, "fit", 2, outputs)
+            sink.write_block("tau1_map", (slice(None), slice(None)), np.full((2, 3), 2.5))
+            sink.write_block("fit_status", (slice(None), slice(None)), np.ones((2, 3), dtype=np.int16))
+
+            references = sink.commit()
+
+            self.assertEqual(set(references), set(outputs))
+            np.testing.assert_allclose(np.load(references["tau1_map"].path), 2.5)
+            np.testing.assert_array_equal(np.load(references["fit_status"].path), 1)
+
     def test_block_output_is_invisible_until_commit_and_returns_array_ref(self):
         with tempfile.TemporaryDirectory() as directory:
             final_path = None

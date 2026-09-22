@@ -1,13 +1,24 @@
-# CPU-only distribution derived from LifeCalor.spec. Keep the full spec unchanged.
+# CPU-only distribution derived from LifeCalor.spec.
 # -*- mode: python ; coding: utf-8 -*-
+
+from pathlib import Path
+
+
+PROJECT_DIR = Path(SPECPATH).resolve()
+
+datas = [
+    (str(PROJECT_DIR / 'style.qss'), '.'),
+    (str(PROJECT_DIR / 'appearance' / '*.qss'), 'appearance'),
+    (str(PROJECT_DIR / 'HTML' / '*.html'), 'HTML'),
+    (str(PROJECT_DIR / 'LifeCalor.ico'), '.'),
+]
 
 
 a = Analysis(
-    ['MainWindow.py'],
-    pathex=[],
+    [str(PROJECT_DIR / 'MainWindow.py')],
+    pathex=[str(PROJECT_DIR)],
     binaries=[],
-    datas=[('style.qss', '.'),
-    ('HTML/*.html', 'HTML')],
+    datas=datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -17,6 +28,9 @@ a = Analysis(
         'cupyx',
         'cupy_backends',
         'compute.backends.cuda',
+        'compute.backends.lifetime_cuda',
+        'cuda',
+        'cuda.pathfinder',
         'nvidia',
         'pynvml',
     ],
@@ -44,5 +58,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['LifeCalor.ico'],
+    icon=[str(PROJECT_DIR / 'LifeCalor.ico')],
 )

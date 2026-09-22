@@ -154,3 +154,73 @@ class ComputeNpySink:
         if exc_type is not None or self._committed_ref is None:
             self.abort()
         return False
+
+
+class ComputeOutputSet:
+    """Coordinate multiple independently addressable task outputs."""
+
+    def __init__(
+        self,
+        cache_dir,
+        task_id,
+        attempt_id,
+        outputs,
+        *,
+        token=None,
+    ):
+        self.token = token or CancellationToken()
+        self._sinks = {
+            str(field_name): ComputeNpySink(
+                cache_dir,
+                f"{task_id}-{field_name}",
+                attempt_id,
+                field_name,
+                shape,
+                dtype,
+                token=self.token,
+            )
+            for field_name, (shape, dtype) in dict(outputs).items()
+        }
+        if not self._sinks:
+            raise ValueError("多输出结果集至少需要一个输出")
+        self._committed = None
+
+    def write_block(self, field_name, index, values):
+        try:
+            sink = self._sinks[str(field_name)]
+        except KeyError as exc:
+            raise KeyError(f"未声明的计算输出: {field_name}") from exc
+        sink.write_block(index, values)
+
+    def commit(self):
+        if self._committed is not None:
+            return dict(self._committed)
+        committed = {}
+        try:
+            for field_name, sink in self._sinks.items():
+                self.token.raise_if_cancelled()
+                committed[field_name] = sink.commit()
+        except Exception:
+            for sink in self._sinks.values():
+                sink.abort()
+            for reference in committed.values():
+                Path(reference.path).unlink(missing_ok=True)
+            raise
+        self._committed = committed
+        return dict(committed)
+
+    def abort(self):
+        for sink in self._sinks.values():
+            sink.abort()
+        if self._committed is not None:
+            for reference in self._committed.values():
+                Path(reference.path).unlink(missing_ok=True)
+            self._committed = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type is not None or self._committed is None:
+            self.abort()
+        return False

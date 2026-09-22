@@ -2,7 +2,7 @@
 
 LifeCalor 是一套基于 PyQt5 的本地科学成像数据分析工具。它面向带时间轴的二维成像序列，覆盖数据导入、画布与 ROI 交互、载流子寿命分析、EM-iSCAT 时频分析、多数据数组运算、结果绘图、历史缓存和多格式导出。
 
-当前版本：`1.1.0`
+当前版本：`1.1.1`
 
 ## 快速开始
 
@@ -34,8 +34,8 @@ python core/MainWindow.py
 
 主菜单提供以下入口：
 
-- **编辑**：坏点处理、计算设置、绘图设置、缓存设置。
-- **数据操作**：多数据计算器、数据切片器。
+- **选项**：常规与更新、外观与画布、绘图、计算与加速、寿命拟合以及缓存默认设置。
+- **高级操作**：坏点处理、多数据计算器和数据切片器。
 - **历史数据**：历史与缓存管理、导入历史、处理历史及完整数据树。
 - **使用指南**：内置的通用、超快成像和 EM-iSCAT 帮助。
 - **检查更新**：查询 GitHub Release，并由用户决定是否下载更新。
@@ -116,7 +116,7 @@ LifeCalor 使用 `T/H/W/C` 描述时间、高度、宽度和通道轴。数据�
 
 寿命热图支持不使用卷积、smooth、gaussian、sharpen、edge、laplacian 和 average 等前后处理选项。
 
-目前请优先使用**单指数衰减**。双指数入口仅用于区域曲线的实验性验证，像素级双指数热图尚未形成可靠实现，不建议用于正式结果。
+单指数和双指数均支持区域曲线与像素级寿命热图。双指数热图保留 tau1、tau2、两个 amplitude、baseline、R² 和 fit_status，不会将两个寿命分量自动平均；结果页可切换字段，纯数据导出跟随当前字段。CPU 参考和自动化测试已完成，CUDA 路径在正式科学使用前仍需在目标 NVIDIA 设备上用真实数据验收。
 
 ## EM-iSCAT 分析
 
@@ -197,6 +197,8 @@ clip(abs(A), 0, 1)
 批量删除只弹出一次确认。选择同时删除缓存文件时，仍被其他索引、当前历史、当前焦点或画布引用的文件会保留。若缓存文件被外部删除，刷新后会显示缺失状态；清除无效或全部缓存时，相应索引也会同步更新。
 
 ### 缓存设置
+
+缓存参数统一位于“选项 -> 缓存与存储”。历史与缓存管理中的缓存页显示当前概览，保留打开目录、清除孤立缓存和清除全部缓存，并提供跳转到统一选项的入口。
 
 - **缓存目录**：可选择位置，也可点击“打开目录”直接查看文件。
 - **写入阈值**：默认 `512 MB`。按数组真实 `nbytes` 判断，正确区分 uint、float 和 complex dtype。
@@ -295,15 +297,18 @@ python -m unittest discover -s tests -v
 ```powershell
 python benchmarks/benchmark_compute_11.py --algorithm stft --size medium --backend cpu --repetitions 5
 python benchmarks/benchmark_compute_11.py --algorithm stft --size medium --backend gpu --repetitions 5
+python benchmarks/benchmark_compute_11.py --algorithm cwt --size medium --backend gpu --repetitions 5
+python benchmarks/benchmark_compute_11.py --algorithm lifetime_single --size medium --backend gpu --precision double --repetitions 5
+python benchmarks/benchmark_compute_11.py --algorithm lifetime_double --size medium --backend gpu --precision double --repetitions 5
 ```
 
 ## 计算与加速
 
-“编辑 → 计算与加速”统一管理默认后端、精度、CPU 配额、RAM/显存预算、回退策略和首选设备。设置只影响之后提交的任务，任务面板会显示请求后端、实际后端、精度和执行阶段。
+“选项 -> 计算与加速”统一管理默认后端、全局精度、按算法精度覆盖、CPU 配额、RAM/显存预算、回退策略和首选设备。设置只影响之后提交的任务，任务面板会显示请求后端、实际后端、精度和执行阶段。六类选项共用同一个非模态窗口；“取消”不写入草稿，“应用/确定”才保存。
 
-- STFT 已支持有界 CPU 和可选 CUDA。CUDA 在独立进程中延迟加载；请先在“硬件状态”页执行快速自检。
-- CWT、EM 预处理和单指数寿命热图已使用有界 CPU 分块，大输出可直接写入用户缓存目录。
-- CWT 和寿命 GPU 后端尚未开放；软件不会为显示“GPU 可用”而替换未经验证的小波或拟合定义。
+- STFT、CWT 已支持有界 CPU 和可选 CUDA。CUDA 在独立进程中延迟加载；请先在“硬件与策略”页执行快速自检。
+- CWT、EM 预处理和单/双指数寿命热图使用有界分块，大输出可直接写入用户缓存目录。
+- CWT 和单/双指数寿命已接入 CUDA worker；目标 GPU 上仍需执行数值一致性和真实性能验收，未完成实机验收前不会宣称正式加速交付。
 - Auto 只有在存在同设备、同算法、同精度的可信性能档案时才会选择 GPU；当前没有档案时保守使用 CPU。
 - “兼容现有”保持已验证的默认 dtype；后端选择和精度选择彼此独立。
 
@@ -317,7 +322,7 @@ python benchmarks/benchmark_compute_11.py --algorithm stft --size medium --backe
 - NumPy、SciPy、pandas
 - tifffile、Pillow、OpenCV
 - h5py、sif_parser、PyWavelets
-- CuPy（仅 NVIDIA CUDA STFT 可选；CPU-only 环境不需要）
+- CuPy（NVIDIA CUDA 版 STFT、CWT 和单/双指数寿命可选；CPU-only 环境不需要）
 - Matplotlib
 - emoji 2.14.1（完整表情标签校验）
 

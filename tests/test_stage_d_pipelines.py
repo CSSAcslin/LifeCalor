@@ -2,6 +2,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -14,11 +15,23 @@ from ArrayCache import ArrayRef
 from compute.algorithms import cwt_frequency_trace
 from compute.algorithms.cwt_pipeline import run_cwt_pipeline
 from compute.algorithms.preprocess_pipeline import run_preprocess_pipeline
-from compute.model import BackendPreference, ComputeRequest, PrecisionPolicy, ResourceBudget
+from compute.model import (
+    BackendPreference,
+    CapabilityStatus,
+    ComputeRequest,
+    DeviceCapability,
+    PrecisionPolicy,
+    ResourceBudget,
+)
 from compute.planner import plan_compute
+from compute.backends.cpu import cwt_block_cpu
+from compute.worker import CudaBackendError
 
 
-def make_plan(algorithm, source, parameters, *, threshold=10**9):
+def make_plan(
+    algorithm, source, parameters, *, threshold=10**9,
+    backend=BackendPreference.CPU, capability=None,
+):
     request = ComputeRequest(
         task_id=f"{algorithm}-test",
         attempt_id=0,
@@ -29,17 +42,63 @@ def make_plan(algorithm, source, parameters, *, threshold=10**9):
         axes="THW",
         source=source,
         parameters=parameters,
-        backend=BackendPreference.CPU,
+        backend=backend,
         precision=PrecisionPolicy.COMPATIBILITY,
     )
     return plan_compute(
         request,
-        ResourceBudget(host_limit_bytes=1024 * 1024, disk_free_bytes=1024 ** 3),
+        ResourceBudget(
+            host_limit_bytes=1024 * 1024,
+            device_limit_bytes=1024 * 1024,
+            disk_free_bytes=1024 ** 3,
+        ),
+        capabilities=(capability,) if capability is not None else (),
         disk_output_threshold_bytes=threshold,
     )
 
 
+class _CpuEquivalentCwtWorker:
+    def __init__(self, _device_index):
+        pass
+
+    def execute(
+        self, algorithm_id, *, block, params, compute_dtype, output_dtype,
+        token, task_id, attempt_id, block_id,
+    ):
+        if algorithm_id != "cwt":
+            raise AssertionError(algorithm_id)
+        return cwt_block_cpu(
+            block,
+            params,
+            compute_dtype=compute_dtype,
+            output_dtype=output_dtype,
+        )
+
+    def close(self):
+        pass
+
+
+class _FailingCwtWorker:
+    def __init__(self, _device_index):
+        pass
+
+    def execute(self, *args, **kwargs):
+        raise CudaBackendError("simulated CWT backend failure")
+
+    def close(self):
+        pass
+
+
 class StageDPipelineTests(unittest.TestCase):
+    def _gpu_capability(self):
+        return DeviceCapability(
+            "nvidia:0",
+            "gpu",
+            "Test GPU",
+            status=CapabilityStatus.AVAILABLE,
+            supported_algorithms=("stft", "cwt"),
+        )
+
     def test_cwt_tiles_match_trace_reference(self):
         fps = 64
         time = np.arange(64) / fps
@@ -91,6 +150,59 @@ class StageDPipelineTests(unittest.TestCase):
             result = run_cwt_pipeline(plan, params, cache_dir=directory)
             self.assertIsInstance(result.output, ArrayRef)
             self.assertEqual(np.load(result.output.path).shape, source.shape)
+
+    def test_cwt_gpu_worker_path_matches_cpu_contract(self):
+        source = np.arange(64 * 2 * 2, dtype=np.float32).reshape(64, 2, 2)
+        params = {
+            "target_freq": 8.0,
+            "scale_range": 2.0,
+            "total_scales": 3,
+            "wavelet": "morl",
+            "fps": 64,
+        }
+        plan = make_plan(
+            "cwt",
+            source,
+            {"output_shape": source.shape, "workspace_bytes_per_spatial_item": 2048},
+            backend=BackendPreference.GPU,
+            capability=self._gpu_capability(),
+        )
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "compute.algorithms.cwt_pipeline.CudaWorkerClient",
+            _CpuEquivalentCwtWorker,
+        ):
+            result = run_cwt_pipeline(plan, params, cache_dir=directory)
+        expected, _, _ = cwt_block_cpu(
+            source, params, compute_dtype="float32", output_dtype="float32"
+        )
+        self.assertEqual(result.plan.actual_backend, "gpu")
+        np.testing.assert_allclose(result.output, expected, rtol=1e-6, atol=1e-6)
+
+    def test_cwt_gpu_failure_restarts_from_clean_cpu_output(self):
+        source = np.ones((32, 2, 2), dtype=np.float32)
+        params = {
+            "target_freq": 4.0,
+            "scale_range": 0.0,
+            "total_scales": 1,
+            "wavelet": "morl",
+            "fps": 32,
+        }
+        plan = make_plan(
+            "cwt",
+            source,
+            {"output_shape": source.shape, "workspace_bytes_per_spatial_item": 1024},
+            backend=BackendPreference.GPU,
+            capability=self._gpu_capability(),
+        )
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "compute.algorithms.cwt_pipeline.CudaWorkerClient",
+            _FailingCwtWorker,
+        ):
+            result = run_cwt_pipeline(
+                plan, params, cache_dir=directory, allow_cpu_fallback=True
+            )
+        self.assertEqual(result.plan.actual_backend, "cpu")
+        self.assertIn("回退 CPU", result.fallback_reason)
 
     def test_preprocess_matches_exact_reference_and_can_stream_to_disk(self):
         source = np.arange(6 * 3 * 4, dtype=np.uint16).reshape(6, 3, 4) + 1

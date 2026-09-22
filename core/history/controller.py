@@ -213,20 +213,24 @@ class HistoryController:
         dialog.batch_delete_history_requested.connect(self.delete_current_history_items)
         dialog.batch_recover_manifest_requested.connect(self.restore_manifest_items)
         dialog.batch_delete_manifest_requested.connect(self.delete_manifest_items)
+        dialog.cache_preferences_requested.connect(
+            lambda: self.open_cache_preferences(dialog)
+        )
         self.window.update_status("历史与缓存管理", "working")
-        if dialog.exec_():
-            params = dialog.get_params()
-            old_directory = self.window.tool_params.get("cache_directory") or self.window.default_cache_directory()
-            new_directory = params["cache_directory"] or self.window.default_cache_directory()
-            self.window.update_param("tool", "cache_directory", new_directory)
-            self.window.update_param("tool", "cache_threshold_mb", params["cache_threshold_mb"])
-            self.window.update_param("tool", "memory_budget_mb", params["memory_budget_mb"])
-            self.window.update_param("tool", "cache_cleanup_startup", params["cache_cleanup_startup"])
-            self.window.apply_cache_settings()
-            if Path(old_directory) != Path(new_directory):
-                self.handle_cache_directory_change(old_directory, new_directory)
-            logging.info("历史与缓存设置已更新")
+        dialog.exec_()
         self.window.update_status("准备就绪", "idle")
+
+    def open_cache_preferences(self, dialog=None):
+        if dialog is not None:
+            dialog.accept()
+        from preferences import PreferencesController
+
+        QTimer.singleShot(
+            0,
+            lambda: self.window.preferences_controller.show(
+                PreferencesController.PAGE_CACHE
+            ),
+        )
 
     def handle_cache_directory_change(self, old_directory, new_directory):
         message = (

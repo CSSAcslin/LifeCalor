@@ -9,7 +9,15 @@ from PyQt5.QtCore import pyqtSignal
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QTabWidget, QApplication)
+from PyQt5.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 from DataManager import *
 
 
@@ -176,6 +184,8 @@ class ResultDisplayWidget(QTabWidget):
         if tab_type == 'heatmap':
             self.display_distribution_map(
                 raw_data['data'],
+                raw_data.get('ax_title'),
+                result_field=raw_data.get('result_field'),
                 reuse_current=True
             )
         elif tab_type == 'curve':
@@ -219,11 +229,64 @@ class ResultDisplayWidget(QTabWidget):
                 reuse_current=True
             )
 
-    def display_distribution_map(self, data, ax_title=None, reuse_current=False):
+    def display_distribution_map(
+        self,
+        data,
+        ax_title=None,
+        reuse_current=False,
+        result_field=None,
+    ):
         """显示寿命热图"""
         self.current_mode = "heatmap"
-        lifetime_map = data.data_processed
+        out_processed = getattr(data, "out_processed", {}) or {}
+        result_fields = tuple(out_processed.get("result_fields", ()))
+        result_field = (
+            result_field
+            or out_processed.get("active_result_field")
+            or (result_fields[0] if result_fields else None)
+        )
+        value = (
+            out_processed.get(result_field)
+            if result_field in result_fields
+            else data.data_processed
+        )
+        lifetime_map = (
+            np.asarray(value.load(mmap_mode="r"))
+            if hasattr(value, "load")
+            else np.asarray(value)
+        )
         figure, canvas, index, title, tab = self.create_tab(self.current_mode, '热', reuse_current)
+
+        if result_fields:
+            selector = tab.findChild(QComboBox, "lifetimeResultField")
+            if selector is None:
+                selector_row = QWidget(tab)
+                selector_layout = QHBoxLayout(selector_row)
+                selector_layout.setContentsMargins(0, 0, 0, 0)
+                selector_layout.addWidget(QLabel("显示字段"))
+                selector = QComboBox(selector_row)
+                selector.setObjectName("lifetimeResultField")
+                selector.setToolTip("切换本次寿命拟合的具名结果，不会重新计算")
+                selector_layout.addWidget(selector, 1)
+                tab.layout().insertWidget(0, selector_row)
+                selector.currentTextChanged.connect(
+                    lambda field, source=data, title_text=ax_title: (
+                        source.out_processed.__setitem__(
+                            "active_result_field", field
+                        ),
+                        self.display_distribution_map(
+                            source,
+                            title_text,
+                            reuse_current=True,
+                            result_field=field,
+                        ),
+                    )
+                )
+            selector.blockSignals(True)
+            selector.clear()
+            selector.addItems(list(result_fields))
+            selector.setCurrentText(result_field)
+            selector.blockSignals(False)
 
         cmap = self.plot_settings['heatmap_cmap']
         levels = self.plot_settings['contour_levels']
@@ -232,15 +295,23 @@ class ResultDisplayWidget(QTabWidget):
         # 显示热图
         im = ax.imshow(lifetime_map, cmap=cmap)
         ax_title = '指数衰减寿命分布热图' if ax_title is None else ax_title
-        figure.colorbar(im, ax=ax, label='lifetime')
-        ax.set_title(ax_title)
+        figure.colorbar(im, ax=ax, label=result_field or 'lifetime')
+        field_title = f"{ax_title} · {result_field}" if result_field else ax_title
+        ax.set_title(field_title)
         ax.axis('off')
         figure.tight_layout()
         canvas.draw()
 
         # 保存当前数据
         self.current_dataframe = pd.DataFrame(lifetime_map)
-        self.store_tab_data(tab, self.current_mode, lifetime_map=lifetime_map)
+        self.store_tab_data(
+            tab,
+            self.current_mode,
+            data=data,
+            ax_title=ax_title,
+            result_field=result_field,
+            lifetime_map=lifetime_map,
+        )
 
     def display_lifetime_curve(self, data, time_unit="ps", reuse_current=False):
         """显示区域分析结果"""

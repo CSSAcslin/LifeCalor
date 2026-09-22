@@ -7,7 +7,12 @@ import numpy as np
 from tasks.model import CancellationToken, TaskCancelled
 
 from compute.backends.cpu import stft_block_cpu
-from compute.executor import _chunk_ranges, _close_loaded_mapping, _source_array
+from compute.executor import (
+    _chunk_ranges,
+    _close_loaded_mapping,
+    _source_array,
+    split_spatial_tile,
+)
 from compute.io import ComputeNpySink
 from compute.worker import CudaBackendError, CudaWorkerClient
 
@@ -26,31 +31,6 @@ class StftRunResult:
 def _axes_match(reference, candidate):
     return reference.shape == candidate.shape and np.allclose(
         reference, candidate, rtol=1e-7, atol=1e-10
-    )
-
-
-def _split_gpu_tile(block, output_index):
-    height, width = block.shape[1:]
-    if height <= 1 and width <= 1:
-        return ()
-    if height >= width and height > 1:
-        first = height // 2
-        row_slice = output_index[1]
-        middle = row_slice.start + first
-        left_index = (output_index[0], slice(row_slice.start, middle), output_index[2])
-        right_index = (output_index[0], slice(middle, row_slice.stop), output_index[2])
-        return (
-            (block[:, :first, :], left_index),
-            (block[:, first:, :], right_index),
-        )
-    first = width // 2
-    column_slice = output_index[2]
-    middle = column_slice.start + first
-    left_index = (output_index[0], output_index[1], slice(column_slice.start, middle))
-    right_index = (output_index[0], output_index[1], slice(middle, column_slice.stop))
-    return (
-        (block[:, :, :first], left_index),
-        (block[:, :, first:], right_index),
     )
 
 
@@ -75,21 +55,30 @@ def _execute_stft(plan, params, *, cache_dir, token, progress, device_index):
             destination[output_index] = result
         whole_sum += np.asarray(result, dtype=np.float64).sum(axis=(1, 2))
 
-    def compute_gpu(block, output_index, retry=0):
+    def compute_gpu(block, output_index, block_id, retry=0):
         nonlocal frequencies, times, selected
         try:
-            result, block_frequencies, block_times, block_selected = worker.stft(
-                block,
-                params,
+            result, block_frequencies, block_times, block_selected = worker.execute(
+                "stft",
+                task_id=plan.request.task_id,
+                attempt_id=plan.request.attempt_id,
+                block_id=block_id,
+                block=block,
+                params=params,
                 compute_dtype=plan.precision.compute_dtype,
                 output_dtype=plan.precision.output_dtype,
                 token=token,
             )
         except CudaBackendError as exc:
-            split = _split_gpu_tile(block, output_index)
+            split = split_spatial_tile(block, output_index)
             if exc.out_of_memory and retry < 3 and split:
-                for child, child_index in split:
-                    compute_gpu(child, child_index, retry + 1)
+                for child_number, (child, child_index) in enumerate(split):
+                    compute_gpu(
+                        child,
+                        child_index,
+                        f"{block_id}.{child_number}",
+                        retry + 1,
+                    )
                 return
             raise
         if frequencies is None:
@@ -127,7 +116,7 @@ def _execute_stft(plan, params, *, cache_dir, token, progress, device_index):
             token.raise_if_cancelled()
             block = source[input_index]
             if plan.actual_backend == "gpu":
-                compute_gpu(block, output_index)
+                compute_gpu(block, output_index, completed - 1)
             else:
                 result, block_frequencies, block_times, block_selected = stft_block_cpu(
                     block,
