@@ -18,13 +18,17 @@ CORE = ROOT / "core"
 if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))
 
-from PyQt5.QtCore import QThread, Qt, qWarning
+from PyQt5.QtCore import QThread, Qt, qInstallMessageHandler, qWarning
 from PyQt5.QtWidgets import QApplication, QLabel, QMainWindow
 
 import resources_rc  # Register resources while the real Qt modules are active.
 
 from startup.bootstrap import TOTAL_STARTUP_STEPS, launch_main_window
-from startup.logging_setup import install_early_logging, take_startup_messages
+from startup.logging_setup import (
+    ensure_file_logging, install_early_logging, take_startup_messages,
+    uninstall_qt_file_logging,
+)
+from startup.shutdown import ApplicationResources
 from startup.splash import StartupSplash
 from launcher import _configure_application_icon, _configure_appearance
 
@@ -152,6 +156,7 @@ class StartupFlowTests(QtTestCase):
             messages = take_startup_messages()
             self.assertTrue(any("启动引导已开始" in message for message in messages))
 
+            uninstall_qt_file_logging()
             for handler in list(root.handlers):
                 if getattr(handler, "lifecalor_file_handler", False):
                     root.removeHandler(handler)
@@ -175,12 +180,80 @@ class StartupFlowTests(QtTestCase):
                 self.assertIn("LifeCalor native Qt diagnostic", path.read_text(encoding="utf-8"))
                 self.assertEqual(messages, [])
             finally:
+                uninstall_qt_file_logging()
                 root.removeHandler(gui_handler)
                 gui_handler.close()
                 for handler in tuple(root.handlers):
                     if isinstance(handler, logging.FileHandler):
                         root.removeHandler(handler)
                         handler.close()
+
+    def test_qt_logging_restores_previous_handler_and_supports_reinstallation(self):
+        uninstall_qt_file_logging()
+        messages = []
+
+        def previous_handler(_message_type, _context, message):
+            messages.append(message)
+
+        previous = qInstallMessageHandler(previous_handler)
+        handler = None
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "qt-handler-lifecycle.log"
+                handler = ensure_file_logging(path)
+                qWarning("first installed warning")
+                self.assertIn("first installed warning", path.read_text(encoding="utf-8"))
+                self.assertEqual(messages, [])
+
+                self.assertTrue(uninstall_qt_file_logging())
+                self.assertFalse(uninstall_qt_file_logging())
+                qWarning("restored previous warning")
+                self.assertEqual(messages, ["restored previous warning"])
+                self.assertNotIn("restored previous warning", path.read_text(encoding="utf-8"))
+
+                self.assertIs(ensure_file_logging(path), handler)
+                qWarning("reinstalled warning")
+                self.assertIn("reinstalled warning", path.read_text(encoding="utf-8"))
+                self.assertEqual(messages, ["restored previous warning"])
+                self.assertTrue(uninstall_qt_file_logging())
+                qWarning("restored again")
+                self.assertEqual(messages, ["restored previous warning", "restored again"])
+                logging.getLogger().removeHandler(handler)
+                handler.close()
+        finally:
+            uninstall_qt_file_logging()
+            qInstallMessageHandler(previous)
+            if handler is not None:
+                logging.getLogger().removeHandler(handler)
+                handler.close()
+
+    def test_prepare_quit_detaches_qt_callback_before_object_teardown(self):
+        uninstall_qt_file_logging()
+        messages = []
+
+        def previous_handler(_message_type, _context, message):
+            messages.append(message)
+
+        previous = qInstallMessageHandler(previous_handler)
+        handler = None
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                handler = ensure_file_logging(Path(directory) / "quit.log")
+                resources = ApplicationResources(self.app)
+                resources.prepare_quit()
+                resources.prepare_quit()
+                qWarning("Qt teardown warning")
+                self.assertEqual(messages, ["Qt teardown warning"])
+                self.assertFalse(uninstall_qt_file_logging())
+                resources.close()
+                logging.getLogger().removeHandler(handler)
+                handler.close()
+        finally:
+            uninstall_qt_file_logging()
+            qInstallMessageHandler(previous)
+            if handler is not None:
+                logging.getLogger().removeHandler(handler)
+                handler.close()
 
 
 if __name__ == "__main__":

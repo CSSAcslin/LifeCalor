@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import sys
@@ -15,6 +16,7 @@ _BUFFER_HANDLER_MARKER = "lifecalor_startup_buffer"
 _LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 _QT_FILE_HANDLER = None
 _QT_MESSAGE_HANDLER_INSTALLED = False
+_PREVIOUS_QT_MESSAGE_HANDLER = None
 
 
 def _qt_message_to_file(message_type, context, message):
@@ -45,13 +47,29 @@ def _qt_message_to_file(message_type, context, message):
 
 
 def _install_qt_file_logging(handler):
-    global _QT_FILE_HANDLER, _QT_MESSAGE_HANDLER_INSTALLED
+    global _QT_FILE_HANDLER, _QT_MESSAGE_HANDLER_INSTALLED, _PREVIOUS_QT_MESSAGE_HANDLER
     _QT_FILE_HANDLER = handler
     if not _QT_MESSAGE_HANDLER_INSTALLED:
         from PyQt5.QtCore import qInstallMessageHandler
 
-        qInstallMessageHandler(_qt_message_to_file)
+        _PREVIOUS_QT_MESSAGE_HANDLER = qInstallMessageHandler(_qt_message_to_file)
         _QT_MESSAGE_HANDLER_INSTALLED = True
+        atexit.register(uninstall_qt_file_logging)
+
+
+def uninstall_qt_file_logging():
+    """Detach the Python callback before Qt and Python tear down their objects."""
+    global _QT_FILE_HANDLER, _QT_MESSAGE_HANDLER_INSTALLED, _PREVIOUS_QT_MESSAGE_HANDLER
+    _QT_FILE_HANDLER = None
+    if not _QT_MESSAGE_HANDLER_INSTALLED:
+        return False
+    from PyQt5.QtCore import qInstallMessageHandler
+
+    qInstallMessageHandler(_PREVIOUS_QT_MESSAGE_HANDLER)
+    _PREVIOUS_QT_MESSAGE_HANDLER = None
+    _QT_MESSAGE_HANDLER_INSTALLED = False
+    atexit.unregister(uninstall_qt_file_logging)
+    return True
 
 
 class StartupBufferHandler(logging.Handler):

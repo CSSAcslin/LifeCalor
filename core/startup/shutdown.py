@@ -23,8 +23,10 @@ class ApplicationResources:
         if self._prepared:
             return
         self._prepared = True
+        from startup.logging_setup import uninstall_qt_file_logging
         from ConsoleUtils import ConsoleHandler
 
+        uninstall_qt_file_logging()
         root = logging.getLogger()
         for handler in tuple(root.handlers):
             if isinstance(handler, ConsoleHandler):
