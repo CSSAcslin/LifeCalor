@@ -22,6 +22,19 @@ from PyQt5.QtGui import QFont
 from PyQt5.QtWebEngineWidgets import QWebEngineView  # 用于渲染Markdown
 
 
+def current_application_path():
+    """Use the frozen executable even when argv[0] names an internal entry point."""
+    path = sys.executable if getattr(sys, "frozen", False) else sys.argv[0]
+    return os.path.abspath(path)
+
+
+def update_restart_path(app_path, update_file_path, latest_version):
+    """Restart the actual downloaded EXE; keep the existing ZIP layout contract."""
+    if str(update_file_path).lower().endswith(".exe"):
+        return os.path.join(os.path.dirname(app_path), os.path.basename(update_file_path))
+    return re.sub(r"-v\d+\.\d+\.\d+", f"-v{latest_version}", app_path, flags=re.IGNORECASE)
+
+
 class UpdateDialog(QDialog):
     """更新对话框"""
     download_progress = pyqtSignal(int, int)
@@ -293,10 +306,10 @@ class UpdateDialog(QDialog):
             self.log_message("开始应用更新")
 
             # 获取应用程序目录和路径
-            app_directory = os.path.dirname(os.path.abspath(sys.argv[0]))
-            app_path = sys.argv[0]
+            app_path = current_application_path()
+            app_directory = os.path.dirname(app_path)
             app_name = os.path.basename(app_path)
-            new_path = re.sub(r'-v\d+\.\d+\.\d+', f'-v{self.update_info['latest_version']}', app_path)
+            new_path = update_restart_path(app_path, update_file_path, self.update_info['latest_version'])
             # 创建临时目录用于解压
             temp_dir = tempfile.mkdtemp()
             self.log_message(f"创建临时目录: {temp_dir}")
@@ -447,11 +460,15 @@ class UpdateChecker(QThread):
             self.check_completed.emit(False)
 
     def find_download_asset(self, assets):
-        """在assets中查找合适的下载文件"""
-        # 优先查找zip文件，然后是exe文件
+        """Keep CPU-only and full distributions separate, including ZIP updates."""
+        app_name = os.path.basename(current_application_path()).lower()
+        cpu_build = bool(re.search(r"(?:^|[-_])cpu(?:[-_.]|$)", app_name))
         for asset in assets:
             name = asset.get('name', '').lower()
-            if name.endswith('.zip') or name.endswith('.exe'):
+            if not name.startswith("lifecalor") or not name.endswith((".zip", ".exe")):
+                continue
+            cpu_asset = bool(re.search(r"(?:^|[-_])cpu(?:[-_.]|$)", name))
+            if cpu_asset == cpu_build and asset.get('browser_download_url'):
                 return {
                     'name': asset.get('name'),
                     'url': asset.get('browser_download_url')
