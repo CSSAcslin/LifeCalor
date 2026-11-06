@@ -1,0 +1,43 @@
+{
+  "source_revision": "6652905f33840794b30997ed5935dd2b3cc0c9de",
+  "source_snapshot_sha256": "4e36cc6a24d35fd4202f30d42498acbbaff894219a6f61488533efbd0ad2948f",
+  "qt_platform": "offscreen",
+  "gui_package_checks_paused": true,
+  "diagnostic_traceback_interval_seconds": 60,
+  "checks": {
+    "pip-check-release-final": {
+      "exit_code": 0,
+      "wall_seconds": 1.594,
+      "log": ".venv/release-1.1.2/pip-check-release-final.log",
+      "summary": []
+    },
+    "tests-default-release-final": {
+      "exit_code": 0,
+      "wall_seconds": 28.219,
+      "log": ".venv/release-1.1.2/tests-default-release-final.log",
+      "summary": [
+        "Ran 518 tests in 21.593s",
+        "OK (skipped=9)"
+      ],
+      "tests_discovered": 518,
+      "unittest_seconds": 21.593,
+      "skipped": 9,
+      "passed": 509
+    },
+    "tests-cuda-release-final": {
+      "exit_code": 0,
+      "wall_seconds": 33.094,
+      "log": ".venv/release-1.1.2/tests-cuda-release-final.log",
+      "summary": [
+        "Ran 518 tests in 29.828s",
+        "OK"
+      ],
+      "tests_discovered": 518,
+      "unittest_seconds": 29.828,
+      "skipped": 0,
+      "passed": 518
+    }
+  },
+  "source_snapshot_after": "4e36cc6a24d35fd4202f30d42498acbbaff894219a6f61488533efbd0ad2948f",
+  "source_unchanged": true
+}

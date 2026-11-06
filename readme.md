@@ -4,7 +4,7 @@ LifeCalor 是一套基于 PyQt5 的本地科学成像数据分析工具。它面
 
 当前版本：`1.1.2`
 
-开发维护、代码入口、数值约定和验收状态见[项目总览与开发交接](AGENTS.md)。合并前 1.1.2 的测试、真实数据和 EXE 验证见 [1.1.2 验收记录](docs/testing/lifecalor-1.1.2-acceptance.md)，分析菜单集成后的验证见[菜单合并验收](docs/testing/lifecalor-analysis-merge.md)。
+开发维护、代码入口和数值约定见[项目总览与开发交接](AGENTS.md)。包含分析菜单、收尾修复及两种 EXE 的最终结果见 [1.1.2 正式发布验收](docs/testing/lifecalor-1.1.2-release.md)，开发阶段记录保留于[原 1.1.2 验收](docs/testing/lifecalor-1.1.2-acceptance.md)和[菜单合并验收](docs/testing/lifecalor-analysis-merge.md)。
 
 ## 快速开始
 
@@ -53,7 +53,7 @@ py -3.12 -m venv .venv
 
 从“分析与处理”选择寿命、传热、扩散或 EM 预处理时，会定位到左侧对应参数页。点击计算按钮后先确认输入数据，ROI 算法可从该数据对应的画布选择绘制区域、Anchor 或矩形。STFT/CWT 等入口复用各自的参数窗口。菜单和左面板共用同一提交路径，输入确认会显示实际历史项、shape、dtype、时间轴和单位。
 
-曲线分析复用“数据结果”绘图区的右键动作。功率谱密度采用 Welch 方法，并验证采样间隔与时间单位，频数分布按曲线幅值统计。区间主峰工具分析第一条可见曲线。坏帧处理、数据计算器、切片器和独立时空卷积工作台集中在“高级操作”。
+曲线分析复用“数据结果”绘图区的右键动作。功率谱密度采用 Welch 方法，并验证采样间隔与时间单位，频数分布按曲线幅值统计。区间主峰工具分析第一条可见曲线。坏点处理（坏帧检测与修复）、数据计算器、切片器和独立时空卷积工作台集中在“高级操作”。
 
 ## 数据导入
 
@@ -143,7 +143,7 @@ LifeCalor 使用 `T/H/W/C` 描述时间、高度、宽度和通道轴。数据�
 - CWT 连续小波变换及多种小波参数。
 - STFT/CWT 质量分析和时频结果快捷导出。
 - 全细胞电生理分析中的 ROI 信号均值和二维傅里叶变换。
-- 单通道电生理分析中的累积时间振幅图、ROI 二维高斯拟合和单通道提取。
+- 单通道电生理分析中的时间平均振幅图、ROI 二维高斯拟合和单通道提取。
 
 STFT 当前使用 Python 实现。CWT 界面保留 Python/Julia 选项，正式使用建议选择已经验证的 Python 路径。
 
@@ -376,6 +376,6 @@ PyWavelets 固定为 1.8.0，以匹配当前 CWT 核精度与数值回归基准�
 
 PyInstaller 完整版使用 `core/LifeCalor.spec`，CPU 精简版使用 `core/LifeCalor-CPU.spec`。构建环境与验收要求见[计算运行时与 EXE 分发](docs/packaging/lifecalor-compute-runtime.md)。
 
-现有 1.1.2 EXE 验收记录对应合并分析菜单之前的产物；本次菜单修改需要重新打包后才会出现在 EXE 中。
+正式版本从 [GitHub Releases](https://github.com/CSSAcslin/LifeCalor/releases/tag/v1.1.2) 下载。`LifeCalor-v1.1.2.exe` 是包含 CPU/CUDA 的完整版，`LifeCalor-CPU-v1.1.2.exe` 是 CPU 精简版；校验文件为 `SHA256SUMS.txt`。两个发布包均包含“分析与处理”菜单和时空卷积，构建与包内验证记录见[正式发布验收](docs/testing/lifecalor-1.1.2-release.md)。
 
 `build/`、`dist/`、`core/build/`、`core/dist/`、`__pycache__/`、日志、大型实验数据和临时图像均属于生成物或本地数据，不应作为核心源码维护或提交。

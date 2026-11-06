@@ -1,0 +1,105 @@
+{
+  "date": "2026-11-06",
+  "source_revision": "6652905f33840794b30997ed5935dd2b3cc0c9de",
+  "version": "1.1.2",
+  "environment": {
+    "python": "3.12.14",
+    "pyinstaller": "6.22.3",
+    "hooks_contrib": "2026.9"
+  },
+  "build_process_exit_codes": {
+    "cpu": 0,
+    "cuda": 0
+  },
+  "verification_process_exit_codes": {
+    "cpu": 0,
+    "cuda": 0,
+    "cuda_immediate_close": 0,
+    "cuda_after_probe_close": 0
+  },
+  "checks": {
+    "cpu": {
+      "executable": "D:\\coding\\L\\LifeCalor\\dist\\LifeCalor-CPU.exe",
+      "backend": "cpu",
+      "cuda_available": false,
+      "main_window_ready": true,
+      "normal_close_exit_code": 0,
+      "embedded_version": "1.1.2",
+      "analysis_modules": [
+        "analysis.catalog",
+        "analysis.controller",
+        "analysis.dialog"
+      ],
+      "updater_symbols": {
+        "current_application_path": true,
+        "update_restart_path": true
+      },
+      "scientific_time_axis_reference": true,
+      "qt_message_hook_cleanup_reference": true,
+      "qt_message_hook_uninstaller_defined": true,
+      "size_bytes": 239157578,
+      "sha256": "9c0168989cf6677e91ce7c11f95a592408cb77fbab1cf09c078ecd0a10af5f29"
+    },
+    "cuda": {
+      "executable": "D:\\coding\\L\\LifeCalor\\dist\\LifeCalor.exe",
+      "backend": "gpu",
+      "cuda_available": true,
+      "device": "NVIDIA GeForce RTX 5070 Ti",
+      "stft_max_absolute_error": 5.960464477539063e-08,
+      "fitted_lifetimes": {
+        "single": [
+          2.5000000000008966
+        ],
+        "double": [
+          2.4999999999559486,
+          11.999999999346791
+        ]
+      },
+      "main_window_ready": true,
+      "normal_close_exit_code": 0,
+      "embedded_version": "1.1.2",
+      "analysis_modules": [
+        "analysis.catalog",
+        "analysis.controller",
+        "analysis.dialog"
+      ],
+      "updater_symbols": {
+        "current_application_path": true,
+        "update_restart_path": true
+      },
+      "scientific_time_axis_reference": true,
+      "qt_message_hook_cleanup_reference": true,
+      "qt_message_hook_uninstaller_defined": true,
+      "size_bytes": 1343542785,
+      "sha256": "649f61b57246025d20b300c5198832ad8df884235b9593038845fd75649f182e"
+    },
+    "cuda_immediate_close": {
+      "executable": "D:\\coding\\L\\LifeCalor\\dist\\LifeCalor.exe",
+      "backend": "gpu",
+      "main_window_ready": true,
+      "normal_close_exit_code": 0
+    },
+    "cuda_after_probe_close": {
+      "executable": "D:\\coding\\L\\LifeCalor\\dist\\LifeCalor.exe",
+      "backend": "gpu",
+      "main_window_ready": true,
+      "normal_close_exit_code": 0
+    }
+  },
+  "earlier_failure_and_diagnostic_limits": {
+    "source_revision": "e168b52a2cad200af1c2417fe742b4afa32614b5",
+    "cuda_main_window_close_exit_code": 3221225477,
+    "exception_code_hex": "0xC0000005",
+    "observed_after": "normal WM_CLOSE and application log detachment",
+    "procdump_monitored_window_runs": 3,
+    "procdump_monitored_runs_exit_codes": [
+      0,
+      0,
+      0
+    ],
+    "native_dump_captured": false,
+    "faulting_module_identified": false,
+    "subsequent_change": "Restore the previous global Qt message handler before interpreter shutdown.",
+    "root_cause_limit": "The missing hook restoration was fixed and tested; the earlier native access violation was not reproduced under ProcDump and its exact native root cause remains unconfirmed."
+  }
+}
