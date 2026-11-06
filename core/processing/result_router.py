@@ -88,7 +88,11 @@ class ResultRouter:
     def _signal_average(self, data):
         values = data.data_processed
         self.window.result_display.plot_time_series(data.time_point, values[:, 1])
-        self.window.graph_plot.plot_data(values, name=data.name)
+        metadata = getattr(data, "out_processed", {}) or {}
+        self.window.graph_plot.plot_data(
+            values, name=data.name,
+            time_unit=metadata.get("time_axis_unit") or metadata.get("time_unit") or "frames",
+        )
 
     @staticmethod
     def _roi_applied(_data):

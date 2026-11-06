@@ -55,7 +55,8 @@ class MainWindowArchitectureTests(unittest.TestCase):
         self.assertIn("from history import HistoryController", self.source)
         self.assertIn("self.selection_controller.select_data(", self.source)
         self.assertIn("self.selection_controller.select_roi(", self.source)
-        self.assertIn("self.processing_controller.begin(thread_name, task_key)", self.source)
+        self.assertIn("task = self.processing_controller.begin(", self.source)
+        self.assertIn('"analysis_action_id": action.action_id', self.source)
         export_source = (CORE / "exporting" / "controller.py").read_text(encoding="utf-8")
         self.assertIn("save_dataframe(", export_source)
 

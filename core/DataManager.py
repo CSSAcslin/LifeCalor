@@ -701,6 +701,10 @@ class DataManager(QObject):
             out_processed = data.out_processed
         else:
             raise ValueError("不可能错误，数据类型有误")
+        out_processed = dict(out_processed or {})
+        source_format = getattr(data, "format_import", None)
+        if source_format:
+            out_processed.setdefault("source_format_import", source_format)
         total_frames = data.timelength
         self.data_progress_signal.emit(0, total_frames)
         if is_crop:

@@ -22,6 +22,7 @@ from compute.capabilities import (
     update_cached_device_capability,
 )
 from compute.worker import probe_cuda_capability_isolated
+from processing.time_axis import scientific_time_axis, source_time_metadata
 
 
 class LifetimeCalculator:
@@ -653,61 +654,70 @@ class CalculationThread(QObject):
             self.stop_thread_signal.emit()
     @pyqtSlot(object, float, float, float, str)
     @task_scoped
-    def diffusion_calculation(self,frame_data,time_unit,space_unit,timestamp,name):
-        # 存储拟合方差结果 [时间, 方差]
+    def diffusion_calculation(self, frame_data, time_unit, space_unit, timestamp, name):
+        """Publish diffusion fits only when at least two valid times remain."""
         self._is_calculating = True
-
-        sigma_results = np.zeros((2, len(frame_data)))
-        time_series = []
-        loading_bar_value =0 #进度条
-        total_l = len(frame_data)
-        fitting_result = []
-        signal_series = []
-        if self._is_calculating:  # 线程关闭控制（目前仅针对循环计算）
-            for i, (frame_idx, data) in enumerate(frame_data.items()):
-                if self.cancellation_token.is_cancelled or not self._is_calculating:
-                    self.processing_cancelled_signal.emit()
-                    return False
-                positions = data[:, 0] * space_unit # 此处合并单位长度
-                intensities = data[:, 1]
-
-                # 高斯拟合
+        try:
+            if not isinstance(frame_data, dict) or len(frame_data) < 2:
+                raise ValueError("扩散系数分析至少需要两个选定时刻")
+            if not np.isfinite(time_unit) or time_unit <= 0 or not np.isfinite(space_unit) or space_unit <= 0:
+                raise ValueError("时间步长与空间步长必须为有限正数")
+            times, variances, signals, fits, rejected = [], [], [], [], []
+            self.calculating_progress_signal.emit(0, len(frame_data))
+            for completed, (frame_index, profile) in enumerate(sorted(frame_data.items()), 1):
+                self._raise_if_cancelled()
+                if isinstance(frame_index, bool) or int(frame_index) != frame_index or frame_index < 0:
+                    raise ValueError("帧编号必须为非负整数")
+                values = np.asarray(profile)
+                if values.ndim != 2 or values.shape[1] != 2 or len(values) < 3 or np.iscomplexobj(values):
+                    raise ValueError("每帧需要至少三个实数 [位置, 强度] 采样点")
+                if not np.all(np.isfinite(values)):
+                    raise ValueError("空间剖面包含非有限数值")
+                positions = values[:, 0].astype(np.float64) * space_unit
+                intensities = values[:, 1].astype(np.float64)
+                if np.unique(positions).size < 3:
+                    raise ValueError("高斯拟合至少需要三个不同的位置")
                 try:
-                    popt, pcov = LifetimeCalculator.gaussian_fit(positions, intensities)
-                    fit_curve = LifetimeCalculator.gaussian_func(positions, *popt)
-
-                    # 保存拟合结果
-                    sigma_results[0, i] = frame_idx * time_unit # 此处合并单位时间
-                    sigma_results[1, i] = popt[2] ** 2  # 保存方差
-                    time_series.append(frame_idx * time_unit)  # 时间点单独算
-                    fitting_result.append(np.stack((positions,fit_curve),axis=0))
-                    signal_series.append(np.stack((positions,intensities),axis=0))
-                except Exception as e:
-                    logging.error(f"拟合失败,报错{e}")
-                    self.update_status.emit(f'扩散拟合失败:{e}', 'error')
-                    self.stop_thread_signal.emit()
-                loading_bar_value += 1
-                self.calculating_progress_signal.emit(loading_bar_value, total_l)
-        else:
-            logging.info("计算终止")
-            self.calculating_progress_signal.emit(total_l, total_l)  # 进度条更新
-            self.stop_thread_signal.emit()  # 目前来说，计算终止也会关闭线程，后续可考虑分开命令
-            return
-
-        dif_data_dict = {
-            'sigma': np.stack(sigma_results, axis=0),
-            'signal': np.stack(signal_series, axis=0),
-            'fitting': np.stack(fitting_result, axis=0),
-            'time_series': np.stack(time_series, axis=0),
-        }
-        self.processed_result.emit(ProcessedData(timestamp,
-                                                 f'{name}@dif',
-                                                 'diffusion',
-                                                 time_point=dif_data_dict['time_series'],
-                                                 data_processed=dif_data_dict['signal'],
-                                                 out_processed=dif_data_dict))
-        self._is_calculating = False
-        self.stop_thread_signal.emit()
+                    parameters, _ = LifetimeCalculator.gaussian_fit(positions, intensities)
+                    curve = LifetimeCalculator.gaussian_func(positions, *parameters)
+                    variance = float(parameters[2] ** 2)
+                    if not np.all(np.isfinite(parameters)) or not np.isfinite(variance) or variance <= 0:
+                        raise ValueError("高斯拟合产生无效方差")
+                except (RuntimeError, ValueError, FloatingPointError) as exc:
+                    rejected.append({"frame": int(frame_index), "reason": str(exc)})
+                else:
+                    times.append(float(frame_index) * time_unit)
+                    variances.append(variance)
+                    signals.append(np.stack((positions, intensities)))
+                    fits.append(np.stack((positions, curve)))
+                self.calculating_progress_signal.emit(completed, len(frame_data))
+            self._raise_if_cancelled()
+            if len(times) < 2 or np.unique(times).size < 2:
+                raise ValueError("有效高斯拟合不足两个不同时刻，扩散结果未提交")
+            slope, intercept = np.polyfit(np.asarray(times), np.asarray(variances), 1)
+            result = {
+                "sigma": np.asarray((times, variances), dtype=np.float64),
+                "signal": np.stack(signals), "fitting": np.stack(fits),
+                "time_series": np.asarray(times, dtype=np.float64),
+                "diffusion_coefficient": float(slope / 2),
+                "variance_slope": float(slope), "variance_intercept": float(intercept),
+                "rejected_frames": rejected,
+            }
+            self._raise_if_cancelled()
+            self.processed_result.emit(ProcessedData(
+                timestamp, f"{name}@dif", "diffusion", time_point=result["time_series"],
+                data_processed=result["signal"], out_processed=result,
+            ))
+            return True
+        except TaskCancelled:
+            self.processing_cancelled_signal.emit()
+            return False
+        except Exception as exc:
+            self._report_failure("扩散计算失败", "扩散计算", exc)
+            return False
+        finally:
+            self._is_calculating = False
+            self.stop_thread_signal.emit()
 
     @pyqtSlot(object, float, str, str, int, str, int, bool, int, object)
     @task_scoped
@@ -781,30 +791,62 @@ class CalculationThread(QObject):
         finally:
             self._is_calculating = False
             self.stop_thread_signal.emit()
-    @pyqtSlot(object,str, object)
+    @pyqtSlot(object, str, object)
     @task_scoped
-    def easy_process(self,data,ptype, mask = None):
-        if isinstance(data, ProcessedData):
-            origin_data = data.data_processed
-        else:
-            origin_data = data.data_origin
-        time_point = data.time_point
-        name = f'{data.name}@avg'
-        if mask is not None: # 内置mask是仅仅用于快速计算的
-            origin_data = np.where(mask[np.newaxis,:,:],origin_data,0)
-            name = f'{data.name}@ROI_avg'
-        if ptype in ['avg', 'mean']:
-            data_processed = np.mean(origin_data, axis=(1, 2))
-            new_data = ProcessedData(data.timestamp,
-                                     name,
-                                     'signal_average',
-                                     time_point=time_point,
-                                     data_processed=np.column_stack((time_point, data_processed)),)
-        else:
+    def easy_process(self, data, ptype, mask=None):
+        """Reduce actual ROI pixels rather than padding outside pixels with zeros."""
+        opened_mapping = None
+        try:
+            if ptype not in {"avg", "mean"}:
+                raise ValueError(f"不支持的统计方法: {ptype}")
+            storage_name = "_data_processed_storage" if isinstance(data, ProcessedData) else "_data_origin_storage"
+            source = vars(data).get(storage_name)
+            if isinstance(source, ArrayRef):
+                values = source.load(mmap_mode="r")
+                opened_mapping = getattr(values, "_mmap", None)
+            else:
+                values = data.data_processed if isinstance(data, ProcessedData) else data.data_origin
+            if values.ndim != 3 or any(size == 0 for size in values.shape):
+                raise ValueError("空间平均时序需要非空 THW 数组")
+            if mask is not None:
+                mask = np.asarray(mask, dtype=bool)
+                if mask.shape != values.shape[1:] or not np.any(mask):
+                    raise ValueError("ROI 必须与帧尺寸一致且包含有效像素")
+            count = int(np.count_nonzero(mask)) if mask is not None else values.shape[1] * values.shape[2]
+            totals = np.zeros(values.shape[0], dtype=np.result_type(values.dtype, np.float64))
+            for first in range(0, values.shape[1], 32):
+                self.cancellation_token.raise_if_cancelled()
+                last = min(values.shape[1], first + 32)
+                block = values[:, first:last, :]
+                if mask is None:
+                    totals += np.sum(block, axis=(1, 2), dtype=totals.dtype)
+                else:
+                    totals += np.sum(block, axis=(1, 2), dtype=totals.dtype, where=mask[np.newaxis, first:last, :])
+            series = totals / count
+            time_point, time_unit = scientific_time_axis(data, len(series))
+            source_metadata = source_time_metadata(data)
+            metadata = {
+                key: source_metadata[key]
+                for key in ("fps", "time_step", "time_basis", "window_step", "source_format_import")
+                if key in source_metadata
+            }
+            metadata.update(time_unit=time_unit, time_axis_unit=time_unit, time_axis_kind="physical")
+            self.cancellation_token.raise_if_cancelled()
+            name = f"{data.name}@ROI_avg" if mask is not None else f"{data.name}@avg"
+            self.processed_result.emit(ProcessedData(
+                data.timestamp, name, "signal_average", time_point=time_point,
+                data_processed=np.column_stack((time_point, series)), out_processed=metadata,
+            ))
+            return True
+        except TaskCancelled:
+            self.processing_cancelled_signal.emit()
             return False
-
-        self.processed_result.emit(new_data)
-        return True
+        except Exception as exc:
+            self._report_failure("平均信号提取失败", "空间平均时序", exc, data)
+            return False
+        finally:
+            if opened_mapping is not None:
+                opened_mapping.close()
 
     def lifetime_map_cal(self, aim_data, data_type, time_points, model_type):
         """Compatibility helper for direct single-exponential map calls."""

@@ -2,14 +2,16 @@ import copy
 import logging
 import shutil
 import uuid
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
 import pywt
 import h5py
-from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot, QElapsedTimer, QThread
+from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot, QElapsedTimer, QThread, QSettings
 from typing import List
 from scipy import signal
 from scipy.optimize import curve_fit
@@ -46,6 +48,46 @@ from compute.worker import (
     probe_cuda_capability_isolated,
 )
 from tasks import CancellationToken, TaskCancelled, TaskContextQueue, task_scoped
+from memory import MemoryBudget, array_nbytes, estimate_resident_bytes
+from processing.time_axis import scientific_time_axis
+
+
+@contextmanager
+def _array_view(source):
+    """Release only mappings opened for this operation."""
+    if source is None:
+        raise ValueError("没有可处理的科学数组")
+    loaded_here = isinstance(source, ArrayRef)
+    array = source.load(mmap_mode="r") if loaded_here else np.asanyarray(source)
+    try:
+        yield array
+    finally:
+        if loaded_here:
+            mapping = getattr(array, "_mmap", None)
+            if mapping is not None:
+                mapping.close()
+
+
+def _ensure_working_memory(data, additional_bytes, operation):
+    budget_mb = QSettings().value("tool/memory_budget_mb", 4096)
+    return MemoryBudget.from_megabytes(budget_mb).ensure(
+        additional_bytes,
+        estimate_resident_bytes([data, *Data.history, *ProcessedData.history]),
+        operation=operation,
+    )
+
+
+def _frame_stack(array):
+    if array.ndim not in (2, 3) or any(size == 0 for size in array.shape):
+        raise ValueError(f"需要非空 HW 或 THW 数组，实际 shape={array.shape}")
+    if array.dtype.kind not in "biufc":
+        raise ValueError("仅支持数值数组")
+    return array[np.newaxis, ...] if array.ndim == 2 else array
+
+
+def _analysis_metadata(data):
+    metadata = getattr(data, "out_processed", None) or getattr(data, "parameters", None)
+    return dict(metadata or {})
 
 
 def _primary_data_source(data):
@@ -109,6 +151,9 @@ class DataProcessor(QObject):
     plot_singal = pyqtSignal(np.ndarray,dict)
     plot_series_signal = pyqtSignal(np.ndarray, str)
     processing_error_signal = pyqtSignal(object)
+    bad_frames_detected = pyqtSignal(object)
+    bad_frames_fixed = pyqtSignal(object)
+    bad_frame_failed = pyqtSignal(object)
     def __init__(self):
         super().__init__()
         logging.info("例外数据处理线程已启动")
@@ -116,11 +161,13 @@ class DataProcessor(QObject):
     @staticmethod
     def process_data(data, max_all, min_all, vmean_array):
         process_show = []
+        span = max_all - min_all
+        denominator = span if span != 0 else 1.0
         if np.abs(min_all) > np.abs(max_all):
             # n-type 信号中心为黑色，最强值为负
             data_type = 'central negative'
             for every_data in data:
-                normalized_data = (every_data - min_all) / (max_all - min_all)
+                normalized_data = (every_data - min_all) / denominator
                 process_show.append(normalized_data)
             max_mean = np.min(vmean_array)
             phy_max = -min_all
@@ -129,7 +176,7 @@ class DataProcessor(QObject):
             # p-type 信号中心为白色，最强值为正
             data_type = 'central positive'
             for every_data in data:
-                normalized_data = (max_all - every_data) / (max_all - min_all)
+                normalized_data = (max_all - every_data) / denominator
                 process_show.append(normalized_data)
             max_mean = np.max(vmean_array)
             phy_max = max_all
@@ -158,81 +205,114 @@ class DataProcessor(QObject):
             'image_import': np.stack(images_show, axis=0),
         }
 
-    @pyqtSlot(np.ndarray,float)
+    @pyqtSlot(np.ndarray, float)
     def detect_bad_frames_auto(self, data: np.ndarray, threshold: float = 3.0) -> List[int]:
-        """
-        自动检测坏帧
-        基于帧间差异和均值离群值检测
-        """
-        # 计算每帧的均值
-        frame_means = np.mean(data, axis=(1, 2))
-
-        # 计算帧间差异
-        frame_diff = np.abs(np.diff(frame_means))
-        median_diff = np.median(frame_diff)
-        mad_diff = 1.4826 * np.median(np.abs(frame_diff - median_diff))
-
-        # 找出异常帧
-        z_scores = np.abs((frame_diff - median_diff) / mad_diff)
-        potential_bad = np.where(z_scores > threshold)[0]
-
-        # 合并相邻坏帧
-        bad_frames = []
-        for i in potential_bad:
-            if not bad_frames or i > bad_frames[-1] + 1:
-                bad_frames.extend([i, i + 1])  # 标记差异大的前后两帧
-            elif i == bad_frames[-1] + 1:
-                bad_frames.append(i + 1)
-
-        return sorted(list(set(bad_frames)))
+        """Detect abrupt frame-mean differences and publish the asynchronous result."""
+        try:
+            values = np.asanyarray(data)
+            if values.ndim != 3 or any(size == 0 for size in values.shape):
+                raise ValueError("坏帧检测需要非空 THW 数据")
+            if values.dtype.kind not in "biuf":
+                raise ValueError("坏帧检测需要有限的实数数据")
+            if not np.isfinite(threshold) or float(threshold) <= 0:
+                raise ValueError("检测阈值必须为有限正数")
+            means = np.empty(values.shape[0], dtype=np.float64)
+            for index, frame in enumerate(values):
+                if not np.all(np.isfinite(frame)):
+                    raise ValueError("坏帧检测需要有限的实数数据")
+                means[index] = np.mean(frame, dtype=np.float64)
+            differences = np.abs(np.diff(means))
+            if differences.size == 0:
+                bad_frames = []
+            else:
+                median = np.median(differences)
+                mad = 1.4826 * np.median(np.abs(differences - median))
+                tolerance = np.finfo(np.float64).eps * max(1.0, float(np.max(np.abs(means)))) * 16
+                if mad > tolerance:
+                    outliers = np.abs(differences - median) / mad > float(threshold)
+                else:
+                    outliers = np.abs(differences - median) > tolerance
+                bad_indices = set()
+                for index in np.flatnonzero(outliers):
+                    bad_indices.update((int(index), int(index) + 1))
+                bad_frames = sorted(bad_indices)
+            self.bad_frames_detected.emit(bad_frames)
+            return bad_frames
+        except Exception as exc:
+            self.bad_frame_failed.emit(AppError(
+                "坏帧检测失败", str(exc), stage="坏帧检测", original=exc,
+                details=format_exception_details(exc, "坏帧检测"),
+            ))
+            return None
 
     @pyqtSlot(object, list, int)
-    def fix_bad_frames(self, data: ProcessedData|Data, bad_frames: List[int], n_frames: int = 2) -> np.ndarray:
-        """
-        修复坏帧 - 使用前后n帧的平均值替换
-        """
-        aim_data = data.data_origin
-        fixed_data = aim_data.copy()
-        total_frames = len(aim_data)
-
-        for frame_idx in bad_frames:
-            # 计算前后n帧的范围
-            start = max(0, frame_idx - n_frames)
-            end = min(total_frames, frame_idx + n_frames + 1)
-
-            # 排除坏帧本身
-            valid_frames = [i for i in range(start, end)
-                            if i != frame_idx and i not in bad_frames]
-
-            if valid_frames:
-                # 计算平均值
-                fixed_data[frame_idx] = np.mean(aim_data[valid_frames], axis=0)
-            else:
-                print(f"警告: 无法修复帧 {frame_idx} - 无有效参考帧")
-
-        data.update_data(**self.amend_data(fixed_data))
-
-    @pyqtSlot(np.ndarray,str,object)
-    def plot_data_prepare(self, data: np.ndarray,name:str, father_obj: Data| ProcessedData ):
-        """完成plot数据的准备操作"""
+    def fix_bad_frames(self, data, bad_frames: List[int], n_frames: int = 2):
+        """Build the complete repair before publishing a derived Data object."""
         try:
-            time_point = father_obj.time_point
-            father_dict = father_obj.parameters if isinstance(father_obj, Data) else father_obj.out_processed
-            if data.ndim == 2:
-                self.plot_singal.emit(data,{'name':name})
+            if not isinstance(data, Data):
+                raise ValueError("坏帧修复需要原始 Data 数据")
+            if isinstance(n_frames, bool) or int(n_frames) != n_frames or n_frames < 1:
+                raise ValueError("参考帧范围必须为正整数")
+            with _array_view(_primary_data_source(data)) as values:
+                if values.ndim != 3 or any(size == 0 for size in values.shape):
+                    raise ValueError("坏帧修复需要非空 THW 数据")
+                if values.dtype.kind not in "biuf" or not all(np.all(np.isfinite(frame)) for frame in values):
+                    raise ValueError("坏帧修复需要有限的实数数据")
+                indices = set()
+                for index in bad_frames:
+                    if isinstance(index, bool) or int(index) != index or not 0 <= int(index) < len(values):
+                        raise ValueError(f"坏帧编号超出有效范围: {index}")
+                    indices.add(int(index))
+                dtype = np.result_type(values.dtype, np.float32)
+                _ensure_working_memory(data, int(values.size) * np.dtype(dtype).itemsize * 4, "坏帧修复")
+                fixed_data = np.array(values, dtype=dtype, copy=True)
+                for index in sorted(indices):
+                    first = max(0, index - int(n_frames))
+                    last = min(len(values), index + int(n_frames) + 1)
+                    neighbors = [frame for frame in range(first, last) if frame not in indices]
+                    if not neighbors:
+                        raise ValueError(f"第 {index} 帧附近没有有效参考帧，修复未提交")
+                    fixed_data[index] = np.mean(values[neighbors], axis=0, dtype=np.float64)
+            amended = self.amend_data(fixed_data)
+            parameters = dict(data.parameters or {})
+            parameters.update(
+                bad_frame_source_timestamp=data.timestamp,
+                bad_frame_source_serial_number=data.serial_number,
+                bad_frame_indices=sorted(indices),
+            )
+            repaired = data.update_data(**amended, parameters=parameters)
+            self.bad_frames_fixed.emit(repaired)
+            return repaired
+        except Exception as exc:
+            self.bad_frame_failed.emit(AppError(
+                "坏帧修复失败", str(exc), stage="坏帧修复", original=exc,
+                details=format_exception_details(exc, "坏帧修复", data),
+            ))
+            return None
+
+    @pyqtSlot(np.ndarray, str, object)
+    def plot_data_prepare(self, data: np.ndarray, name: str, father_obj):
+        """Attach physical time units to actual temporal curve data."""
+        try:
+            values = np.asarray(data)
+            kwargs = {"name": name, "time_unit": "unknown"}
+            if values.ndim == 1:
+                axis, unit = scientific_time_axis(father_obj, len(values))
+                plot_data = np.column_stack((axis, values))
+                kwargs["time_unit"] = unit
+            elif values.ndim == 2 and values.shape[1] >= 2:
+                plot_data = values
+                axis, unit = scientific_time_axis(father_obj, len(values))
+                source_axis = getattr(father_obj, "time_point", None)
+                if source_axis is not None and np.size(source_axis) == len(values) and np.allclose(values[:, 0], axis):
+                    kwargs["time_unit"] = unit
             else:
-                if time_point is None or time_point.shape != data.shape:
-                    if hasattr(father_dict, 'fps'):
-                        self.plot_singal.emit(self.add_time_from_fps(data,father_dict['fps']),
-                                              {'name':name, 'time_unit':'s'})
-                    else:
-                        self.plot_singal.emit(self.add_time_simple(data,father_dict['time_step']),
-                                              {'name':name, 'time_unit':father_dict.get('time_unit',None)})
-                else:
-                    self.plot_singal.emit(np.column_stack((time_point,data)),
-                                          {'name':name, 'time_unit':father_dict.get('time_unit',None)})
-        except Exception as e:
-            logging.error(f'数据无法被绘制由于：{e}')
+                raise ValueError("曲线数据必须是一维序列或二维 XY 数组")
+            self.plot_singal.emit(plot_data, kwargs)
+            return plot_data
+        except Exception as exc:
+            logging.error("数据无法被绘制由于：%s", exc)
+            return None
 
     @staticmethod
     def add_time_from_fps(data: np.ndarray, sampling_rate: float,start_time: float = 0.0) -> np.ndarray:
@@ -269,98 +349,43 @@ class DataProcessor(QObject):
 
     @staticmethod
     def aligned_time_axis(data, length: int) -> np.ndarray:
-        """Return an axis matching a temporal result, including restored legacy data."""
-        axis = getattr(data, "time_point", None)
-        if axis is not None:
-            axis = np.asarray(axis).reshape(-1)
-            if axis.size == length:
-                return axis
-
-        metadata = getattr(data, "out_processed", None) or getattr(data, "parameters", None) or {}
-        candidate = metadata.get("time_series")
-        if isinstance(candidate, np.ndarray) and candidate.size == length:
-            return candidate.reshape(-1)
-        try:
-            fps = float(metadata.get("fps", 0))
-        except (TypeError, ValueError):
-            fps = 0.0
-        try:
-            window_step = float(metadata.get("window_step", 0))
-        except (TypeError, ValueError):
-            window_step = 0.0
-        if fps > 0 and window_step > 0:
-            rebuilt = np.arange(length, dtype=np.float64) * window_step / fps
-        else:
-            try:
-                time_step = float(metadata.get("time_step", 0))
-            except (TypeError, ValueError):
-                time_step = 0.0
-            if time_step > 0:
-                rebuilt = np.arange(length, dtype=np.float64) * time_step
-            elif fps > 0:
-                rebuilt = np.arange(length, dtype=np.float64) / fps
-            else:
-                rebuilt = np.arange(length, dtype=np.float64)
-        logging.warning(
-            "数据时间轴长度与结果不匹配，已重建: name=%s, axis=%s, result=%s",
-            getattr(data, "source_name", getattr(data, "name", "")),
-            0 if axis is None else axis.size,
-            length,
-        )
-        return rebuilt
+        """Keep the public array-only interface while resolving physical scales."""
+        return scientific_time_axis(data, length)[0]
 
     @pyqtSlot(object, np.ndarray, str, str)
-    def get_fast_selection(self,data, mask, method:str, name:str):
-        """本函数是获取快速选取数据并发射的函数"""
+    def get_fast_selection(self, data, mask, method: str, name: str):
+        """Compute one ROI statistic per scientific frame with floating output."""
         try:
-            aim_data = data.image_backup
-            T, H, W = aim_data.shape
-            mask_flat = mask.reshape(-1)
-
-            # 获取蒙版内的索引
-            mask_indices = np.where(mask_flat)[0]
-
-            # 重塑数据以便于提取蒙版区域
-            data_reshaped = aim_data.reshape(T, -1)
-
-            # 提取蒙版内的数据
-            masked_data = data_reshaped[:, mask_indices]
-
-            # 根据不同的统计方法计算结果
-            result = np.zeros(T, dtype=aim_data.dtype)
-
-            for t in range(T):
-                frame_data = masked_data[t, :]
-
-                if len(frame_data) == 0:
-                    result[t] = np.nan
-                    continue
-
-                if method == 'mean':
-                    result[t] = np.mean(frame_data)
-                elif method == 'max':
-                    result[t] = np.max(frame_data)
-                elif method == 'min':
-                    result[t] = np.min(frame_data)
-                elif method == 'median':
-                    result[t] = np.median(frame_data)
-                elif method == 'quantile_075':
-                    result[t] = np.quantile(frame_data, 0.75)
-                elif method == 'std':
-                    result[t] = np.std(frame_data)
-                elif method == 'sum':
-                    result[t] = np.sum(frame_data)
-                elif method == 'var':
-                    result[t] = np.var(frame_data)
-                else:
-                    raise ValueError(f"不支持的统计方法: {method}。"
-                                     f"支持的方法: mean, max, min, median, quantile_075, std, sum, var")
-
-            plot_data = np.column_stack((self.aligned_time_axis(data, T), result))
+            source = getattr(data, "image_backup", None)
+            if source is None:
+                source = _primary_data_source(data)
+            methods = {
+                "mean": np.mean, "max": np.max, "min": np.min,
+                "median": np.median, "quantile_075": lambda values: np.quantile(values, 0.75),
+                "std": np.std, "sum": np.sum, "var": np.var,
+            }
+            if method not in methods:
+                raise ValueError(f"不支持的统计方法: {method}")
+            with _array_view(source) as values:
+                if values.ndim != 3 or any(size == 0 for size in values.shape):
+                    raise ValueError("时序统计需要非空 THW 数据")
+                mask = np.asarray(mask, dtype=bool)
+                if mask.shape != values.shape[1:] or not np.any(mask):
+                    raise ValueError("ROI 必须与帧尺寸一致且包含有效像素")
+                output = np.empty(values.shape[0], dtype=np.result_type(values.dtype, np.float64))
+                for frame_index in range(values.shape[0]):
+                    output[frame_index] = methods[method](values[frame_index][mask])
+                time_axis, time_unit = scientific_time_axis(data, values.shape[0])
+                plot_data = np.column_stack((time_axis, output))
+            self.plot_singal.emit(plot_data, {"name": name, "time_unit": time_unit})
             self.plot_series_signal.emit(plot_data, name)
+            return plot_data
         except Exception as exc:
-            details = format_exception_details(exc, "anchor 快速提取", data)
-            self.processing_error_signal.emit(AppError("快速提取失败", str(exc), stage="anchor 快速提取", details=details))
+            details = format_exception_details(exc, "ROI 时序统计", data)
+            self.processing_error_signal.emit(AppError(
+                "快速提取失败", str(exc), stage="ROI 时序统计", details=details,
+            ))
+            return None
 
     @staticmethod
     def value_distribution_from_frame(frame: np.ndarray, mask: np.ndarray, bins="auto", value_range=None):
@@ -617,6 +642,9 @@ class MassDataProcessor(QObject):
             )
             parameters = dict(
                 data.parameters if isinstance(data, Data) else data.out_processed
+            )
+            parameters.setdefault(
+                "source_format_import", getattr(data, "format_import", "")
             )
             metadata = execution_metadata(
                 result.plan,
@@ -1367,16 +1395,31 @@ class MassDataProcessor(QObject):
             return self._emit_failure("数据处理失败", "ROI_cwt", exc, data)
     @pyqtSlot(object)
     @task_scoped
-    def accumulate_amplitude(self,data):
-        """累计时间振幅图"""
-        self.processed_result.emit(ProcessedData(data.timestamp,
-                                         f'{data.name}@atam',
-                                         "Accumulated_time_amplitude_map",
-                                         time_point=data.time_point, # 忘记为什么0.12.1要改这个了，改这个就没法处理单通道了
-                                         data_processed=np.mean(data.data_processed if isinstance(data,ProcessedData) else data.data_origin, axis=0),
-                                         out_processed={**(data.out_processed if isinstance(data,ProcessedData) else data.parameters),}
-                                                             ))
-        logging.info("累计时间振幅计算已完成")
+    def accumulate_amplitude(self, data):
+        """Return the temporal mean of a scientific THW sequence."""
+        try:
+            self.cancellation_token.raise_if_cancelled()
+            with _array_view(_primary_data_source(data)) as values:
+                if values.ndim != 3 or any(size == 0 for size in values.shape):
+                    raise ValueError("时间平均振幅图需要非空 THW 序列")
+                dtype = np.result_type(values.dtype, np.float64)
+                _ensure_working_memory(data, array_nbytes(values.shape[1:], dtype) * 2, "时间平均振幅")
+                result = np.zeros(values.shape[1:], dtype=dtype)
+                for frame in values:
+                    self.cancellation_token.raise_if_cancelled()
+                    result += frame / values.shape[0]
+            metadata = _analysis_metadata(data)
+            metadata.update(scientific_axes="HW", source_axes="HW", reduction="mean_over_time")
+            self.cancellation_token.raise_if_cancelled()
+            self.processed_result.emit(ProcessedData(
+                data.timestamp, f"{data.name}@atam", "Accumulated_time_amplitude_map",
+                time_point=np.array([0]), data_processed=result, out_processed=metadata,
+            ))
+            return True
+        except TaskCancelled:
+            return self._emit_cancelled()
+        except Exception as exc:
+            return self._emit_failure("时间平均振幅计算失败", "时间平均振幅", exc, data)
 
     @staticmethod
     def D2GaussFunction(xy, A, x0, sigmax, y0, sigmay, b):
@@ -1568,289 +1611,194 @@ class MassDataProcessor(QObject):
 
     @pyqtSlot(object)
     @task_scoped
-    def twoD_fourier_transform(self,data,):
-        """
-            对3D时序视频数据进行2D傅里叶变换
-
-            参数:
-            video_data: 形状为 (帧数, 高度, 宽度) 的numpy数组
-
-            返回:
-            magnitude_spectra: 傅里叶幅度谱数组
-            magnitude_log: 幅度谱的log（默认主参数）
-            phase_spectra: 傅里叶相位谱数组
-            """
-        if isinstance(data, ProcessedData):
-            pure_data = data.data_processed
-        else:
-            pure_data = data.data_origin
-            pass
+    def twoD_fourier_transform(self, data):
+        """Transform spatial axes while preserving HW, 1HW and THW shapes."""
         try:
-            if data.timelength == 1:
-                frames = 1
-                height, width = data.datashape
-            else:
-                frames, height, width = data.datashape
-            tfshift = np.zeros((frames, height, width),dtype=np.complex64)
-            magnitude_spectra = np.zeros((frames, height, width))
-            magnitude_log = np.zeros((frames, height, width))
-            phase_spectra = np.zeros((frames, height, width))
-            self.processing_progress_signal.emit(0,frames)
-            for i in range(frames):
-                # 2D傅里叶变换
-                f = np.fft.fft2(pure_data[i])
-                fshift = np.fft.fftshift(f)  # 将低频移到中心
-
-                tfshift[i] = fshift.copy()
-                # 幅度谱
-                magnitude_spectra[i] = np.abs(fshift)
-
-                # 相位谱
-                phase_spectra[i] = np.angle(fshift)
-                self.processing_progress_signal.emit(i, frames)
-
-                magnitude_log[i] = np.log(magnitude_spectra[i]+1)
-
-            self.processed_result.emit(ProcessedData(data.timestamp,
-                                       f'{data.name}@2DFT',
-                                       "2D_Fourier_transform",
-                                       time_point = data.time_point,
-                                       data_processed=np.squeeze(magnitude_log),
-                                       out_processed={'twoD_FFT':np.squeeze(tfshift),
-                                                      'magnitude_spectra': np.squeeze(magnitude_spectra),
-                                                      'phase_spectra': np.squeeze(phase_spectra),**data.out_processed}))
-            self.processing_progress_signal.emit(frames, frames)
+            self.cancellation_token.raise_if_cancelled()
+            with _array_view(_primary_data_source(data)) as values:
+                frames = _frame_stack(values)
+                complex_dtype = np.result_type(values.dtype, np.complex64)
+                real_dtype = np.empty((), dtype=complex_dtype).real.dtype
+                output_bytes = values.size * (np.dtype(complex_dtype).itemsize + 3 * real_dtype.itemsize)
+                _ensure_working_memory(data, output_bytes * 2, "二维傅里叶变换")
+                spectrum = np.empty(values.shape, dtype=complex_dtype)
+                output_frames = spectrum[np.newaxis, ...] if values.ndim == 2 else spectrum
+                self.processing_progress_signal.emit(0, len(frames))
+                for index, frame in enumerate(frames):
+                    self.cancellation_token.raise_if_cancelled()
+                    output_frames[index] = np.fft.fftshift(np.fft.fft2(frame))
+                    self.processing_progress_signal.emit(index + 1, len(frames))
+                magnitude = np.abs(spectrum)
+                phase = np.angle(spectrum)
+                logarithmic = np.log1p(magnitude)
+                axes = "HW" if values.ndim == 2 else "THW"
+                time_point, time_unit = scientific_time_axis(data, len(frames))
+            metadata = _analysis_metadata(data)
+            metadata.update(
+                twoD_FFT=spectrum, magnitude_spectra=magnitude, phase_spectra=phase,
+                fft_shifted=True, scientific_axes=axes, source_axes=axes,
+                time_axis_kind="physical", time_axis_unit=time_unit, time_unit=time_unit,
+            )
+            self.cancellation_token.raise_if_cancelled()
+            self.processed_result.emit(ProcessedData(
+                data.timestamp, f"{data.name}@2DFT", "2D_Fourier_transform",
+                time_point=time_point, data_processed=logarithmic, out_processed=metadata,
+            ))
             return True
-        except Exception as e:
-            return self._emit_failure("数据处理失败", "2D_Fourier_transform", e, data)
+        except TaskCancelled:
+            return self._emit_cancelled()
+        except Exception as exc:
+            return self._emit_failure("二维傅里叶变换失败", "2D_Fourier_transform", exc, data)
 
     @pyqtSlot(object)
     @task_scoped
     def twoD_inverse_fourier_transform(self, data):
-        """
-        对2D傅里叶变换后的频域数据进行逆变换，恢复3D时序视频数据（空间域）
-
-        参数:
-        data: ProcessedData对象 或 原始数据。必须包含复数频域数据。
-
-        返回:
-        reconstructed_data: 逆傅里叶变换后恢复的空间域/图像数组
-        """
-        # 1. 尝试获取包含幅度和相位的"复数频域数据"
-        if isinstance(data, ProcessedData):
-            # 优先从 out_processed 中提取正变换时保存的完整复数数据 'twoD_FFT'
-            if 'twoD_FFT' in data.out_processed:
-                pure_data = data.out_processed['twoD_FFT']
-            else:
-                pure_data = data.data_processed
-        else:
-            pure_data = data.data_origin
-
-        # 确保 pure_data 是复数类型。如果丢失了相位信息（纯实数），逆变换将是不准确的。
-        if not np.iscomplexobj(pure_data):
-            print("警告: 输入数据不包含复数信息(缺失相位)，恢复的图像可能只有边缘或失真。")
-
+        """Reconstruct real images from complete, centered complex spectra."""
         try:
-            # 2. 形状与帧数解析
-            # 由于之前存入 out_processed 时可能被 squeeze 过，这里做一个稳健的维度处理
-            pure_data = np.atleast_3d(pure_data) if pure_data.ndim == 2 else pure_data
-
-            if data.timelength == 1 or pure_data.shape[0] == 1:
-                frames = 1
-                height, width = pure_data.shape[-2], pure_data.shape[-1]
-            else:
-                frames, height, width = pure_data.shape
-
-            # 预分配内存保存恢复的图像数据
-            # 正常逆变换后的图像应该是实数，所以预分配为 float
-            reconstructed_data = np.zeros((frames, height, width), dtype=np.float32)
-
-            self.processing_progress_signal.emit(0, frames)
-
-            # 3. 逐帧进行逆变换
-            for i in range(frames):
-                # 如果只有1帧且被强行升维，pure_data[i]的提取需要注意，但上面的 atleast_3d 和 正常3D数据都能兼容
-                frame_data = pure_data[i] if pure_data.ndim == 3 else pure_data
-
-                # 第一步：逆中心化 (将低频从中心移回左上角)
-                f_ishift = np.fft.ifftshift(frame_data)
-
-                # 第二步：2D逆傅里叶变换
-                img_back = np.fft.ifft2(f_ishift)
-
-                # 第三步：取实部 (由于计算精度问题，ifft2的结果通常带有极微小的虚部，取实部或取绝对值来消除)
-                # 注：如果你的原图包含负数，用 np.real()；如果原图全是正数值亮度，用 np.abs() 也可以。这里使用标准 np.real()
-                reconstructed_data[i] = np.real(img_back)
-
-                self.processing_progress_signal.emit(i + 1, frames)  # 进度+1
-
-            # 4. 封装并发送处理完成信号
-            # 继承上一步的属性，修改标识
+            metadata = _analysis_metadata(data)
+            source = metadata.get("twoD_FFT")
+            if source is None:
+                source = _primary_data_source(data)
+            self.cancellation_token.raise_if_cancelled()
+            with _array_view(source) as values:
+                frames = _frame_stack(values)
+                if not np.iscomplexobj(values):
+                    raise ValueError("逆傅里叶变换需要包含幅度和相位的完整复频谱")
+                dtype = np.empty((), dtype=values.dtype).real.dtype
+                _ensure_working_memory(data, values.size * dtype.itemsize * 2, "二维傅里叶逆变换")
+                reconstructed = np.empty(values.shape, dtype=dtype)
+                output_frames = reconstructed[np.newaxis, ...] if values.ndim == 2 else reconstructed
+                self.processing_progress_signal.emit(0, len(frames))
+                for index, frame in enumerate(frames):
+                    self.cancellation_token.raise_if_cancelled()
+                    output_frames[index] = np.fft.ifft2(np.fft.ifftshift(frame)).real
+                    self.processing_progress_signal.emit(index + 1, len(frames))
+                axes = "HW" if values.ndim == 2 else "THW"
+                time_point, time_unit = scientific_time_axis(data, len(frames))
+            metadata.update(
+                reconstructed_img=reconstructed, scientific_axes=axes, source_axes=axes,
+                time_axis_kind="physical", time_axis_unit=time_unit, time_unit=time_unit,
+            )
+            self.cancellation_token.raise_if_cancelled()
             self.processed_result.emit(ProcessedData(
-                data.timestamp,
-                f'{data.name}@2DIFFT',
-                "2D_Inverse_Fourier_transform",
-                time_point=data.time_point,
-                data_processed=np.squeeze(reconstructed_data),  # 默认主参数为恢复的图像
-                out_processed={
-                    'reconstructed_img': np.squeeze(reconstructed_data),
-                    **data.out_processed  # 保留之前的处理记录
-                }
+                data.timestamp, f"{data.name}@2DIFFT", "2D_Inverse_Fourier_transform",
+                time_point=time_point, data_processed=reconstructed, out_processed=metadata,
             ))
-
-            self.processing_progress_signal.emit(frames, frames)
             return True
+        except TaskCancelled:
+            return self._emit_cancelled()
+        except Exception as exc:
+            return self._emit_failure("二维傅里叶逆变换失败", "2D_Inverse_Fourier_transform", exc, data)
 
-        except Exception as e:
-            return self._emit_failure("数据处理失败", "2D_Inverse_Fourier_transform", e, data)
-
-    @pyqtSlot(object, int, int ,list, str, str, float)
+    @pyqtSlot(object, int, int, list, str, str, float)
     @task_scoped
-    def heartbeat_movement(self, data, step, base_num, after_series, save_path = "", export_mode = 'video', scale = 1):
-        """心肌细胞运动分析，使用
-        稠密光流 (Farneback算法)"""
-        # try:
-        timer = QElapsedTimer()
-        timer.start()
-        if isinstance(data, ProcessedData):
-            aim_data = data.data_processed
-            out_processed = data.out_processed
-        else:
-            aim_data = data.data_origin
-            out_processed = data.parameters
-
-        if base_num != -1:
-            # 固定基准帧模式
-            num = len(after_series)
-            pairs = [(base_num, current) for current in after_series]
-            # 时间点：相对于基准帧的时间
-            time_point = np.array(after_series) - base_num
-            logging.info(f"模式：固定基准帧 {base_num}, 比较 {num} 帧")
-            process_name = "比较模式"
-        else:
-            # 相邻连续帧模式
-            num = len(after_series) - 1
-            pairs = list(zip(after_series[:-1], after_series[1:]))
-            # 时间点：相对于序列第一帧的时间
-            time_point = np.array(after_series[1:]) - after_series[0]
-            logging.info(f"模式：相邻连续帧, 比较 {num} 组")
-            process_name = "连续分析"
-        self.processing_progress_signal.emit(0, num + 2)
-        h, w = aim_data[0].shape
-        # 建议直接初始化由 numpy 堆叠的大数组，比 list 推导式稍微快一点点且内存连续
-        flow_stack = np.zeros((num, h, w, 2), dtype=np.float32)
-        magnitude_stack = np.zeros((num, h, w), dtype=np.float32)
-        angle_stack = np.zeros((num, h, w), dtype=np.float32)
-        max_speed = np.zeros(num)
-        mean_speed = np.zeros(num)
-
-        self.processing_progress_signal.emit(1,num+2)
-
-        # 辅助函数：获取预处理后的图像 (带简单缓存),避免重复预处理
-        img_cache = {}
-
-        def get_processed_img(idx):
-            if idx not in img_cache:
-                # 这里的 clahe_and_blur 应该包含你之前的灰度拉伸+CLAHE+高斯模糊
-                img_cache[idx] = self.clahe_and_blur(aim_data[idx])
-            return img_cache[idx]
-
-        # 如果是固定基准帧，先缓存基准帧，避免循环里反复查
-        if base_num != -1:
-            base_img_fixed = get_processed_img(base_num)
-            base_num_series = base_num
-        else:
-            base_img_list = np.zeros((num, h, w), dtype=np.float32)
-            base_num_series = np.zeros(num, dtype=int)
-
-        for i, (idx_prev, idx_curr) in enumerate(pairs):
-            # 获取图像
-            if base_num != -1:
-                prev_gray = base_img_fixed
-            else:
-                prev_gray = get_processed_img(idx_prev)
-                base_img_list[i] = aim_data[idx_prev]
-                base_num_series[i] = idx_prev
-
-            next_gray = get_processed_img(idx_curr)
-
-            # 光流计算
-            flow = cv2.calcOpticalFlowFarneback(
-                prev_gray, next_gray, None,
-                pyr_scale=0.5, levels=3, winsize=15,
-                iterations=3, poly_n=5, poly_sigma=1.2,
-                flags=0)  # 目前参数都定死了
-
-            # 坐标转换与速度计算
-            mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-
-            # 真实物理速度计算
-            # 注意：这里的时间间隔是 (idx_curr - idx_prev)，在相邻模式下通常是1，但在固定模式下会变大
-            delta_frame = idx_curr - idx_prev
-            if delta_frame == 0: delta_frame = 1  # 防止除以0，虽然逻辑上不应该出现
-
-            factor = out_processed['space_step'] * out_processed['fps'] / delta_frame
-            magnitude_real = mag * factor
-
-            # 存入结果
-            flow_stack[i] = flow
-            magnitude_stack[i] = magnitude_real
-            angle_stack[i] = ang
-            max_speed[i] = np.max(magnitude_real)
-            mean_speed[i] = np.mean(magnitude_real)
-
-            # 内存管理：如果是相邻帧模式，prev_gray (idx_prev) 在下一轮就不会再用了，可以从缓存删除以省内存
-            if base_num == -1 and idx_prev in img_cache:
-                del img_cache[idx_prev]
-
-            # 发送进度
-            self.processing_progress_signal.emit(i + 2, num + 2)
-
-        # 5. 打包结果
-        # 注意：base_data 在相邻模式下没有单一值，现在存了数组，主要是后续绘图用
-        result_base_data = aim_data[base_num] if base_num != -1 else base_img_list
-
-        result = ProcessedData(data.timestamp,
-                                           f'{data.name}@heartbeat',
-                                           "Heartbeat",
-                                           time_point = time_point,
-                                           data_processed=flow_stack,
-                                           out_processed={'process_name':process_name,
-                                                          'sampling_step':step,
-                                                          "base_num": base_num_series,
-                                                          'base_data': result_base_data,
-                                                          'after_series': after_series,
-                                                          'magnitude_list': magnitude_stack,
-                                                          'angle_list': angle_stack,
-                                                          'max_speed': max_speed ,
-                                                          'mean_speed': mean_speed,
-                                                          **out_processed})
-
-        # 内部保存
-        if save_path and isinstance(save_path, str) and len(save_path) > 0:
-            logging.info("计算完成，开始后台生成视频...")
-            # 发送一个信号告诉UI正在保存（可选，让进度条显示"Saving..."）
-            self.processing_progress_signal.emit(num + 1, num + 2)
-
-            # try:
-                # 直接调用独立的保存函数
-                # 因为在 Agg 后端下运行，且数据是独立的，不会冲突
-            video_file = HeartbeatDraw.save_video_task(result, save_path, step, export_mode = export_mode, scale = 1/scale)
-            logging.info(f"视频已保存至: {video_file}")
-
-            # 你可以将视频路径放入 out_processed 以便 UI 知道
-            result.out_processed['saved_video_path'] = video_file
-
-            # except Exception as e:
-            #     logging.error(f"保存视频失败: {e}")
-
-        self.processing_progress_signal.emit(num + 2, num + 2)
-        self.processed_result.emit(result)
-        return True
-
-        # except Exception as e:
-        #     self.processed_result.emit({'type': "heartbeat", 'error': str(e)})
-        #     return False
+    def heartbeat_movement(self, data, step, base_num, after_series, save_path="", export_mode="video", scale=1):
+        """Calculate bounded-budget Farneback flow with atomic result publication."""
+        try:
+            metadata = _analysis_metadata(data)
+            fps = float(metadata.get("fps", 0))
+            space_step = float(metadata.get("space_step", 0))
+            if not np.isfinite(fps) or fps <= 0 or not np.isfinite(space_step) or space_step <= 0:
+                raise ValueError("光流分析需要有限且大于零的 FPS 和空间步长")
+            if isinstance(step, bool) or int(step) != step or step < 1:
+                raise ValueError("运动矢量采样步长必须为正整数")
+            if not np.isfinite(scale) or scale <= 0:
+                raise ValueError("运动箭头缩放必须为有限正数")
+            self.cancellation_token.raise_if_cancelled()
+            with _array_view(_primary_data_source(data)) as values:
+                if values.ndim != 3 or any(size == 0 for size in values.shape) or values.dtype.kind not in "biuf":
+                    raise ValueError("光流分析需要非空实数灰度 THW 数据")
+                series = []
+                for index in after_series:
+                    if isinstance(index, bool) or int(index) != index or not 0 <= int(index) < len(values):
+                        raise ValueError(f"帧编号超出有效范围: {index}")
+                    series.append(int(index))
+                if not series or any(right <= left for left, right in zip(series, series[1:])):
+                    raise ValueError("分析帧列表应为非空、递增且不重复的帧编号")
+                if base_num == -1:
+                    if len(series) < 2:
+                        raise ValueError("相邻帧光流至少需要两个时刻")
+                    pairs = list(zip(series[:-1], series[1:]))
+                    base_indices = np.asarray(series[:-1], dtype=int)
+                    offsets = np.asarray(series[1:]) - series[0]
+                    process_name = "连续分析"
+                else:
+                    if isinstance(base_num, bool) or int(base_num) != base_num or not 0 <= int(base_num) < len(values):
+                        raise ValueError("基准帧编号超出有效范围")
+                    pairs = [(int(base_num), index) for index in series]
+                    base_indices = int(base_num)
+                    offsets = np.asarray(series) - int(base_num)
+                    process_name = "比较模式"
+                count = len(pairs)
+                height, width = values.shape[1:]
+                pixels = height * width
+                output_bytes = count * pixels * np.dtype(np.float32).itemsize * 4
+                base_bytes = pixels * values.dtype.itemsize * (count if base_num == -1 else 1)
+                _ensure_working_memory(data, 2 * (output_bytes + base_bytes) + pixels * 64, "光流分析")
+                flow_stack = np.empty((count, height, width, 2), dtype=np.float32)
+                magnitudes = np.empty((count, height, width), dtype=np.float32)
+                angles = np.empty((count, height, width), dtype=np.float32)
+                max_speed = np.empty(count, dtype=np.float64)
+                mean_speed = np.empty(count, dtype=np.float64)
+                base_data = (
+                    np.empty((count, height, width), dtype=values.dtype)
+                    if base_num == -1 else np.array(values[int(base_num)], copy=True)
+                )
+                cache = {}
+                self.processing_progress_signal.emit(0, count)
+                for index, (previous, current) in enumerate(pairs):
+                    self.cancellation_token.raise_if_cancelled()
+                    for frame_index in (previous, current):
+                        if frame_index not in cache:
+                            cache[frame_index] = self.clahe_and_blur(values[frame_index])
+                    flow = cv2.calcOpticalFlowFarneback(
+                        cache[previous], cache[current], None,
+                        pyr_scale=0.5, levels=3, winsize=15, iterations=3,
+                        poly_n=5, poly_sigma=1.2, flags=0,
+                    )
+                    self.cancellation_token.raise_if_cancelled()
+                    magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+                    delta = abs(current - previous)
+                    speed = magnitude * (space_step * fps / delta) if delta else np.zeros_like(magnitude)
+                    flow_stack[index] = flow
+                    magnitudes[index] = speed
+                    angles[index] = angle
+                    max_speed[index] = np.max(speed)
+                    mean_speed[index] = np.mean(speed, dtype=np.float64)
+                    if base_num == -1:
+                        base_data[index] = values[previous]
+                    keep = {int(base_num), current} if base_num != -1 else {current}
+                    cache = {key: image for key, image in cache.items() if key in keep}
+                    self.processing_progress_signal.emit(index + 1, count)
+                self.cancellation_token.raise_if_cancelled()
+            metadata.update(
+                process_name=process_name, sampling_step=int(step), base_num=base_indices,
+                base_data=base_data, after_series=series, magnitude_list=magnitudes,
+                angle_list=angles, max_speed=max_speed, mean_speed=mean_speed,
+                time_seconds=offsets / fps, scientific_axes="THWC", source_axes="THWC",
+                gray_preprocessing="finite_frame_minmax_uint8_clahe_gaussian",
+            )
+            metadata.setdefault("space_unit", "px")
+            if save_path:
+                self.cancellation_token.raise_if_cancelled()
+                preview = SimpleNamespace(
+                    name=data.name, time_point=offsets,
+                    data_processed=flow_stack, out_processed=metadata,
+                )
+                metadata["saved_video_path"] = HeartbeatDraw.save_video_task(
+                    preview, save_path, step, export_mode=export_mode, scale=1 / scale,
+                )
+            self.cancellation_token.raise_if_cancelled()
+            result = ProcessedData(
+                data.timestamp, f"{data.name}@heartbeat", "Heartbeat",
+                time_point=offsets, data_processed=flow_stack, out_processed=metadata,
+            )
+            self.processed_result.emit(result)
+            return True
+        except TaskCancelled:
+            return self._emit_cancelled()
+        except Exception as exc:
+            return self._emit_failure("光流分析失败", "Heartbeat", exc, data)
 
     def stop(self):
         """请求中止处理"""
@@ -1899,19 +1847,21 @@ class MassDataProcessor(QObject):
 
     @staticmethod
     def clahe_and_blur(img):
-        """限制对比度自适应直方图均衡化+模糊处理"""
-        # CLAHE (限制对比度自适应直方图均衡化)
-        # 对于明场细胞图像，这是增强纹理的神器
-        # clipLimit: 阈值，越大对比度越强，但也可能放大噪声，建议 2.0-4.0
-        # tileGridSize: 局部窗口大小，(8,8)是标准值
+        """Convert finite scientific grayscale samples to OpenCV's uint8 input."""
+        values = np.asarray(img)
+        if values.ndim != 2 or values.dtype.kind not in "biuf" or not np.all(np.isfinite(values)):
+            raise ValueError("光流帧必须为有限实数二维灰度数组")
+        if values.dtype == np.uint8:
+            gray = np.ascontiguousarray(values)
+        else:
+            low, high = float(np.min(values)), float(np.max(values))
+            if high <= low:
+                gray = np.zeros(values.shape, dtype=np.uint8)
+            else:
+                scaled = (values.astype(np.float64) - low) * (255.0 / (high - low))
+                gray = np.clip(np.rint(scaled), 0, 255).astype(np.uint8)
         clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        img_clahe = clahe.apply(img)
-
-        # 轻微的高斯模糊
-        # 因为你的图像较小(300x200)，且我们做过增强，噪声也会变明显
-        # 用 (3,3) 的小核既能去噪又不至于损失太多细节
-        img_blur = cv2.GaussianBlur(img_clahe, (3, 3), 0)
-        return img_blur
+        return cv2.GaussianBlur(clahe.apply(gray), (3, 3), 0)
 
     # 上升/下降时间常数拟合(未启用)
     def fit_exponential_time(data, thr, mode='up', n=5):

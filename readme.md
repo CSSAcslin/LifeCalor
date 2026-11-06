@@ -4,12 +4,21 @@ LifeCalor 是一套基于 PyQt5 的本地科学成像数据分析工具。它面
 
 当前版本：`1.1.1`
 
+开发维护、代码入口、数值约定和验收状态见[项目总览与开发交接](AGENTS.md)。
+
 ## 快速开始
 
-开发环境中，在项目根目录运行：
+开发环境使用 Python 3.12。首次配置时，在项目根目录创建虚拟环境并安装依赖。已有 `.venv` 时可跳过创建步骤。
 
 ```powershell
-python core/MainWindow.py
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+完成安装后运行程序。
+
+```powershell
+.\.venv\Scripts\python.exe core/MainWindow.py
 ```
 
 推荐按以下顺序完成一次分析：
@@ -35,10 +44,16 @@ python core/MainWindow.py
 主菜单提供以下入口：
 
 - **选项**：常规与更新、外观与画布、绘图、计算与加速、寿命拟合以及缓存默认设置。
+- **控制台**：显示或隐藏控制台、任务面板。
+- **分析与处理**：分析预处理、统计与信号提取、时频与频域、寿命与物理参数、单通道电生理、曲线分析及心肌运动。
 - **高级操作**：坏点处理、多数据计算器和数据切片器。
 - **历史数据**：历史与缓存管理、导入历史、处理历史及完整数据树。
 - **使用指南**：内置的通用、超快成像和 EM-iSCAT 帮助。
 - **检查更新**：查询 GitHub Release，并由用户决定是否下载更新。
+
+从“分析与处理”选择寿命、传热、扩散或 EM 预处理时，会定位到左侧对应参数页。点击计算按钮后先确认输入数据，ROI 算法可从该数据对应的画布选择绘制区域、Anchor 或矩形。STFT/CWT 等入口复用各自的参数窗口。菜单和左面板共用同一提交路径，输入确认会显示实际历史项、shape、dtype、时间轴和单位。
+
+曲线分析复用“数据结果”绘图区的右键动作。功率谱密度采用 Welch 方法，并验证采样间隔与时间单位，频数分布按曲线幅值统计。区间主峰工具分析第一条可见曲线。坏帧处理、数据计算器和切片器集中在“高级操作”。
 
 ## 数据导入
 
@@ -134,7 +149,7 @@ STFT 当前使用 Python 实现。CWT 界面保留 Python/Julia 选项，正式�
 
 ## 多数据计算器
 
-从“数据操作 -> 数据计算器”打开。计算器启动时保持空白，不会自动载入全部历史数组。
+从“高级操作 -> 数据计算器”打开。计算器启动时保持空白，不会自动载入全部历史数组。
 
 1. 点击“添加数据”，从通用历史树中选择 `Data`、`ProcessedData` 或 `out_processed` 数组，系统依次分配 `A/B/C...`。
 2. 也可以点击“从文件导入”，复用主界面的通用导入任务，导入完成后加入下一个数据槽。
@@ -159,7 +174,7 @@ clip(abs(A), 0, 1)
 
 ## 数据切片器
 
-从“数据操作 -> 数据切片器”打开。切片器适合对空间范围和时间范围进行可视化裁剪，处理结果会生成新的 `ProcessedData`，保留来源、裁剪范围和基础 metadata，并可再次进入画布、历史树或计算器。
+从“高级操作 -> 数据切片器”打开。切片器适合对空间范围和时间范围进行可视化裁剪，处理结果会生成新的 `ProcessedData`，保留来源、裁剪范围和基础 metadata，并可再次进入画布、历史树或计算器。
 
 ## 数据结果与历史树
 
@@ -289,7 +304,7 @@ $env:LIFECALOR_GITHUB_TOKEN = "your-token"
 自动化测试使用标准库 `unittest`：
 
 ```powershell
-python -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
 自动化测试覆盖核心数据流、计算管线和 150% DPI 离屏界面烟测。`benchmarks/` 提供固定数据路径的耗时、内存变化和结果 Shape 基准，用于比较 STFT/CWT、导入、缓存和显示相关优化。1.1 的同契约 CPU/CUDA 基准可运行：
@@ -309,24 +324,23 @@ python benchmarks/benchmark_compute_11.py --algorithm lifetime_double --size med
 - STFT、CWT 已支持有界 CPU 和可选 CUDA。CUDA 在独立进程中延迟加载；请先在“硬件与策略”页执行快速自检。
 - CWT、EM 预处理和单/双指数寿命热图使用有界分块，大输出可直接写入用户缓存目录。
 - CWT 和单/双指数寿命已接入 CUDA worker；目标 GPU 上仍需执行数值一致性和真实性能验收，未完成实机验收前不会宣称正式加速交付。
-- Auto 只有在存在同设备、同算法、同精度的可信性能档案时才会选择 GPU；当前没有档案时保守使用 CPU。
+- Auto 在设备可用且支持当前算法时可选择 GPU，其余情况使用 CPU。单曲线 CWT 质量分析的 Auto 使用 CPU。实际执行后端记录在任务面板和结果 metadata 中。
 - “兼容现有”保持已验证的默认 dtype；后端选择和精度选择彼此独立。
 
 目标 NVIDIA 机器的完整验收步骤见 `docs/testing/lifecalor-1.1-acceptance.md`。
 ## 核心依赖
 
-项目当前没有统一的 requirements 文件。核心运行依赖包括：
+必需运行依赖及固定版本见 `requirements.txt`，使用 Python 3.12。
 
-- Python 3
-- PyQt5、pyqtgraph
+- PyQt5、PyQtWebEngine、pyqtgraph、PyOpenGL
 - NumPy、SciPy、pandas
 - tifffile、Pillow、OpenCV
 - h5py、sif_parser、PyWavelets
-- CuPy（NVIDIA CUDA 版 STFT、CWT 和单/双指数寿命可选；CPU-only 环境不需要）
 - Matplotlib
+- psutil、requests、Markdown、packaging、fonttools
 - emoji 2.14.1（完整表情标签校验）
 
-本项目目录配套的虚拟环境已经包含实际开发依赖。打包或迁移环境时，应以能够运行完整测试集为准补齐对应版本。
+PyWavelets 固定为 1.8.0，以匹配当前 CWT 核精度与数值回归基准。CuPy 属于可选 CUDA 加速依赖，按目标 NVIDIA 设备单独配置。迁移环境后应运行完整测试集验证兼容性。
 
 ## 工程结构
 
@@ -352,6 +366,6 @@ python benchmarks/benchmark_compute_11.py --algorithm lifetime_double --size med
 
 ## 打包与仓库边界
 
-现有 PyInstaller 配置位于 `LifeCalor.spec`、`core/LifeCalor.spec` 和 `core/MainWindow.spec`。实际发布前应确认使用哪一份配置作为唯一入口。
+PyInstaller 完整版使用 `core/LifeCalor.spec`，CPU 精简版使用 `core/LifeCalor-CPU.spec`。构建环境与验收要求见[计算运行时与 EXE 分发](docs/packaging/lifecalor-compute-runtime.md)。
 
 `build/`、`dist/`、`core/build/`、`core/dist/`、`__pycache__/`、日志、大型实验数据和临时图像均属于生成物或本地数据，不应作为核心源码维护或提交。
