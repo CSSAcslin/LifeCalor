@@ -25,6 +25,18 @@ from compute.worker import probe_cuda_capability_isolated
 from processing.time_axis import scientific_time_axis, source_time_metadata
 
 
+def _lifetime_time_axis(data, frame_step):
+    axis = getattr(data, "time_point", None)
+    length = data.datashape[0]
+    if axis is None or np.ndim(axis) != 1 or len(axis) != length:
+        raise ValueError("寿命分析需要与帧数匹配的一维时间轴")
+    times, unit = scientific_time_axis(data, length, legacy_time_step=frame_step)
+    times = np.asarray(times, dtype=np.float64)
+    if not np.all(np.isfinite(times)) or np.any(np.diff(times) <= 0):
+        raise ValueError("寿命分析需要有限且严格递增的时间轴")
+    return times, unit
+
+
 class LifetimeCalculator:
     """
     载流子寿命计算类（此类为静态方法类，不要放别的进来）
@@ -525,7 +537,7 @@ class CalculationThread(QObject):
         self.calculating_progress_signal.emit(1, 3)
         try:
             # 获取参数
-            time_points = data.time_point * time_unit
+            time_points, result_time_unit = _lifetime_time_axis(data, time_unit)
             self.calculating_progress_signal.emit(2, 3)
 
             # 执行区域分析
@@ -544,6 +556,9 @@ class CalculationThread(QObject):
                                                                       'model_type': model_type,
                                                                       'boundary': {'min':data.datamin, 'max':data.datamax},
                                                                       **(data.out_processed if isinstance(data,ProcessedData) else data.parameters),
+                                                                      'time_axis_kind': 'physical',
+                                                                      'time_axis_unit': result_time_unit,
+                                                                      'time_unit': result_time_unit,
                                                                       'compute': compatibility_metadata(
                                                                           'lifetime',
                                                                           (data.data_processed if isinstance(data, ProcessedData) else data.data_origin).dtype,
@@ -577,7 +592,7 @@ class CalculationThread(QObject):
         """Analyze the full lifetime map with bounded task-owned spatial blocks."""
         self._is_calculating = True
         try:
-            time_points = data.time_point * time_unit
+            time_points, result_time_unit = _lifetime_time_axis(data, time_unit)
             result, metadata = self._run_planned_lifetime(
                 data,
                 time_points,
@@ -642,6 +657,9 @@ class CalculationThread(QObject):
                     "model_type": model_type,
                     "result_fields": result_fields,
                     "active_result_field": result_fields[0],
+                    "time_axis_kind": "physical",
+                    "time_axis_unit": result_time_unit,
+                    "time_unit": result_time_unit,
                     "compute": metadata,
                 },
             ))
@@ -741,10 +759,12 @@ class CalculationThread(QObject):
             if isinstance(data, ProcessedData) and data.type_processed == "lifetime_distribution":
                 lifetime_map = data.data_processed
                 r_squared_map = data.out_processed.get("r_squared_map")
+                result_time_unit = data.out_processed.get("time_axis_unit") or data.out_processed.get("time_unit", "unknown")
             else:
+                time_points, result_time_unit = _lifetime_time_axis(data, time_unit)
                 result, metadata = self._run_planned_lifetime(
                     data,
-                    data.time_point * time_unit,
+                    time_points,
                     model_type,
                     pre_cov,
                     pre_size,
@@ -769,6 +789,9 @@ class CalculationThread(QObject):
                 "heat_transfer_map": heat_transfer_cov,
                 "r_squared_map": r_squared_map,
                 **(inherited or {}),
+                "time_axis_kind": "physical",
+                "time_axis_unit": result_time_unit,
+                "time_unit": result_time_unit,
             }
             if metadata is not None:
                 out_processed["compute"] = {

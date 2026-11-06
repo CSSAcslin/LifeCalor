@@ -7,6 +7,7 @@ import numpy as np
 
 
 _SECOND_BASED_RESULTS = {"ROI_stft", "ROI_cwt", "stft_quality", "cwt_quality"}
+_PHYSICAL_IMPORT_FORMATS = {"npy", "tiff", "video", "hdf5", "sif"}
 _TIME_UNITS = {"s", "ms", "us", "μs", "µs", "ns", "ps", "fs"}
 
 
@@ -35,7 +36,7 @@ def _positive(value):
     return result if np.isfinite(result) and result > 0 else 0.0
 
 
-def scientific_time_axis(data, length):
+def scientific_time_axis(data, length, *, legacy_time_step=None):
     """Return physical coordinates and a known time unit, or the unit 'unknown'."""
     metadata = source_time_metadata(data)
     source_format = (
@@ -79,9 +80,21 @@ def scientific_time_axis(data, length):
         or (source_format == "sif" and metadata.get("data_type") == "sif_folder")
         or metadata.get("time_axis_kind") == "frames"
     )
+    if legacy_time_step is not None and not physical:
+        # Lifetime's historic unknown sources stored frame coordinates. Registered
+        # importers already apply their time basis before constructing Data.
+        legacy_frames = legacy_frames or not (
+            second_based or source_format in _PHYSICAL_IMPORT_FORMATS
+            or metadata.get("time_basis") == "time_step"
+        )
     if axis is not None:
         if legacy_frames:
-            return axis * (time_step or 1.0), unit
+            step = time_step or 1.0
+            if legacy_time_step is not None:
+                step = _positive(legacy_time_step)
+                if not step:
+                    raise ValueError("帧时间步长必须为有限正数")
+            return axis * step, unit
         return axis, unit
 
     logging.warning(
