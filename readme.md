@@ -376,6 +376,6 @@ PyWavelets 固定为 1.8.0，以匹配当前 CWT 核精度与数值回归基准�
 
 PyInstaller 完整版使用 `core/LifeCalor.spec`，CPU 精简版使用 `core/LifeCalor-CPU.spec`。构建环境与验收要求见[计算运行时与 EXE 分发](docs/packaging/lifecalor-compute-runtime.md)。
 
-正式版本从 [GitHub Releases](https://github.com/CSSAcslin/LifeCalor/releases/tag/v1.1.2) 下载。`LifeCalor-v1.1.2.exe` 是包含 CPU/CUDA 的完整版，`LifeCalor-CPU-v1.1.2.exe` 是 CPU 精简版；校验文件为 `SHA256SUMS.txt`。两个发布包均包含“分析与处理”菜单和时空卷积，构建与包内验证记录见[正式发布验收](docs/testing/lifecalor-1.1.2-release.md)。
+正式版本从 [GitHub Releases](https://github.com/CSSAcslin/LifeCalor/releases/tag/v1.1.2) 下载。`LifeCalor-v1.1.2.exe` 是包含 CPU/CUDA 的完整版，`LifeCalor_CPU-v1.1.2.exe` 是 CPU 精简版；校验文件为 `SHA256SUMS.txt`。两个发布包均包含“分析与处理”菜单和时空卷积，构建与包内验证记录见[正式发布验收](docs/testing/lifecalor-1.1.2-release.md)。
 
 `build/`、`dist/`、`core/build/`、`core/dist/`、`__pycache__/`、日志、大型实验数据和临时图像均属于生成物或本地数据，不应作为核心源码维护或提交。

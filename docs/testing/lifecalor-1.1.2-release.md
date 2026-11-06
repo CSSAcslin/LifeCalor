@@ -22,7 +22,9 @@
 
 使用 `core/LifeCalor-CPU.spec` 与 `core/LifeCalor.spec` 标准构建，不使用归档补丁。两个 EXE 均检查内嵌版本、分析菜单模块、更新器辅助函数和科学时间轴引用。
 
-发布资产为 `LifeCalor-v1.1.2.exe`、`LifeCalor-CPU-v1.1.2.exe` 和 `SHA256SUMS.txt`。完整包包含 CPU/CUDA，CPU 精简包排除 CuPy/CUDA。实际包内 worker 不继承源码虚拟环境的模块路径。
+发布资产为 `LifeCalor-v1.1.2.exe`、`LifeCalor_CPU-v1.1.2.exe` 和 `SHA256SUMS.txt`。完整包包含 CPU/CUDA，CPU 精简包排除 CuPy/CUDA。实际包内 worker 不继承源码虚拟环境的模块路径。
+
+CPU 资产名使用下划线，使 GitHub 的资产排序先返回完整版，兼容旧版只选择首个安装包并按完整版文件名重启的更新器。新版更新器同时识别下划线和连字符的 CPU 标记；已用两种旧程序名及实际远端资产顺序核对选择结果。
 
 最终四轮独立验收全部正常退出，原始版本、模块断言、计算结果、大小及 SHA256 见[发布包原始记录](package-1.1.2-release.json)。
 

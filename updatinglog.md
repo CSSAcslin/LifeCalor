@@ -18,6 +18,7 @@
 - 固定可选 CUDA 和构建依赖，完整版收集 CUDA Toolkit 的 DLL 与 JIT 头文件，提供真实 EXE 工作进程及正常关闭验证脚本。
 - AVI 导入记录报告帧数与实际解码帧数，短解码时给出提示。真实 AVI/TIFF 验证前后的源文件大小、修改时间与 SHA256 一致。
 - 更新器区分 CPU 精简包与完整版，单 EXE 更新后按实际下载文件名重启，兼容旧程序名称未带版本号的情况。
+- CPU 发布附件命名为 `LifeCalor_CPU-v1.1.2.exe`，确保 GitHub 先返回 `LifeCalor-v1.1.2.exe`，兼容旧版按首个安装包执行自动更新的行为。
 - 补充菜单与输入上下文、坏帧窗口、曲线分析、数值边界和时序单位回归。完整集成后的测试与 CPU/CUDA 发布包结果见[正式发布验收](docs/testing/lifecalor-1.1.2-release.md)，合并前记录保留于[原 1.1.2 验收](docs/testing/lifecalor-1.1.2-acceptance.md)和[菜单合并验收](docs/testing/lifecalor-analysis-merge.md)。
 
 ### c 1.1.1 2026.9.22

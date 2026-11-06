@@ -78,7 +78,7 @@ $LASTEXITCODE
 - **打包。** PyInstaller 完整版使用 `core/LifeCalor.spec`，构建环境需提供 CuPy。CPU 精简版使用 `core/LifeCalor-CPU.spec`。两者均以 `core/MainWindow.py` 为入口。正式包基于 `6652905` 重建，用 `tools/verify_package.py` 验证包内 worker、主窗口、计算和关闭，详情见正式发布记录。源码运行日志在 `core/carrier_lifetime.log`，打包版日志在 `%LOCALAPPDATA%\LifeCalor\carrier_lifetime.log`。[完整版配置](core/LifeCalor.spec) · [CPU 配置](core/LifeCalor-CPU.spec) · [构建说明](docs/packaging/lifecalor-compute-runtime.md) · [正式 EXE 记录](docs/testing/package-1.1.2-release.json) · [合并前历史 EXE 记录](docs/testing/package-2026-11-06.json)
 - **后续版本线索。** 1.1.2 已交付 CPU 时空卷积工作台。卷积 CUDA 仍需完成通用 worker 注册、资源/回退策略和完整工具工作流验收。现有 CUDA 原型的局部数值对照记录可作为后续适配的起点。[卷积实现](core/compute/algorithms/convolution_pipeline.py) · [卷积回归](tests/test_compute_111_convolution.py) · [1.1.1 设计与实施记录](docs/superpowers/plans/2026-09-21-lifecalor-111-algorithms-and-options.md)
 
-正式发布使用标签 `v1.1.2`。发布资产为 `LifeCalor-v1.1.2.exe`、`LifeCalor-CPU-v1.1.2.exe` 和 `SHA256SUMS.txt`。两个 EXE 均基于发布收尾源码重建，包含分析菜单、时空卷积与更新器修复；最终产物哈希和独立包内执行结果见[发布包原始记录](docs/testing/package-1.1.2-release.json)。更新器按 CPU 标记选择同类资产，单 EXE 更新后按实际下载名重启。[更新器回归](tests/test_update_release_assets.py)
+正式发布使用标签 `v1.1.2`。发布资产为 `LifeCalor-v1.1.2.exe`、`LifeCalor_CPU-v1.1.2.exe` 和 `SHA256SUMS.txt`。两个 EXE 均基于发布收尾源码重建，包含分析菜单、时空卷积与更新器修复；最终产物哈希和独立包内执行结果见[发布包原始记录](docs/testing/package-1.1.2-release.json)。更新器按 CPU 标记选择同类资产，单 EXE 更新后按实际下载名重启。[更新器回归](tests/test_update_release_assets.py)
 
 形成新版本时，将用户可见变化记入 `updatinglog.md`，将实机结果填入对应的 `docs/testing/` 报告，再更新本文的源码基线、已验证环境和剩余验收项。
 

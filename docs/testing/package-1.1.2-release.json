@@ -38,7 +38,8 @@
       "qt_message_hook_cleanup_reference": true,
       "qt_message_hook_uninstaller_defined": true,
       "size_bytes": 239157578,
-      "sha256": "9c0168989cf6677e91ce7c11f95a592408cb77fbab1cf09c078ecd0a10af5f29"
+      "sha256": "9c0168989cf6677e91ce7c11f95a592408cb77fbab1cf09c078ecd0a10af5f29",
+      "release_asset_name": "LifeCalor_CPU-v1.1.2.exe"
     },
     "cuda": {
       "executable": "D:\\coding\\L\\LifeCalor\\dist\\LifeCalor.exe",
@@ -71,7 +72,8 @@
       "qt_message_hook_cleanup_reference": true,
       "qt_message_hook_uninstaller_defined": true,
       "size_bytes": 1343542785,
-      "sha256": "649f61b57246025d20b300c5198832ad8df884235b9593038845fd75649f182e"
+      "sha256": "649f61b57246025d20b300c5198832ad8df884235b9593038845fd75649f182e",
+      "release_asset_name": "LifeCalor-v1.1.2.exe"
     },
     "cuda_immediate_close": {
       "executable": "D:\\coding\\L\\LifeCalor\\dist\\LifeCalor.exe",
