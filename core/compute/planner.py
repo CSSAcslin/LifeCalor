@@ -110,9 +110,7 @@ def _select_backend(
     if requested is BackendPreference.CPU:
         return requested, "cpu", "用户指定 CPU", None
     if requested is BackendPreference.AUTO:
-        if usable_gpu is not None:
-            return requested, "gpu", f"自动策略选择已通过自检的设备 {usable_gpu.name}", usable_gpu
-        return requested, "cpu", "尚无该设备与算法的可信性能档案，自动模式保守使用 CPU", None
+        return requested, "cpu", "尚未启用 GPU 自动加速性能策略，自动模式保守使用 CPU", None
     if usable_gpu is not None:
         return requested, "gpu", f"使用设备 {usable_gpu.name}", usable_gpu
     if allow_cpu_fallback:

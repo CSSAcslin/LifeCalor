@@ -2,6 +2,11 @@ import os
 import sys
 import tempfile
 import unittest
+
+try:
+    from .qt_test_support import QtTestCase
+except ImportError:
+    from qt_test_support import QtTestCase
 from pathlib import Path
 from unittest.mock import patch
 
@@ -141,7 +146,7 @@ def _snapshot():
     )
 
 
-class PreferencesDialogTests(unittest.TestCase):
+class PreferencesDialogTests(QtTestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

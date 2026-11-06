@@ -387,8 +387,11 @@ class ComputeSettingsPage(QWidget):
         track_probe_thread(thread)
         thread.completed.connect(self._apply_snapshot)
         thread.failed.connect(self._probe_failed)
-        thread.finished.connect(lambda: self.refresh_button.setEnabled(True))
+        thread.finished.connect(self._probe_finished)
         thread.start()
+
+    def _probe_finished(self):
+        self.refresh_button.setEnabled(True)
 
     def _apply_snapshot(self, snapshot: HardwareSnapshot, allow_auto_test=True):
         if allow_auto_test:

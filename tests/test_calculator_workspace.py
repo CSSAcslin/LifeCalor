@@ -2,6 +2,11 @@ import os
 import sys
 import tempfile
 import unittest
+
+try:
+    from .qt_test_support import QtTestCase
+except ImportError:
+    from qt_test_support import QtTestCase
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -27,7 +32,7 @@ from widget.DataTreeWidget import DataHistoryTreeWidget
 from history.manifest import restore_history_item
 
 
-class CalculatorWorkspaceTests(unittest.TestCase):
+class CalculatorWorkspaceTests(QtTestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

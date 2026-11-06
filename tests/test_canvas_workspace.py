@@ -3,6 +3,11 @@ import sys
 import time
 import tempfile
 import unittest
+
+try:
+    from .qt_test_support import QtTestCase
+except ImportError:
+    from qt_test_support import QtTestCase
 from pathlib import Path
 
 import numpy as np
@@ -65,7 +70,7 @@ def make_image(name, value=0):
     return ImagingData.create_image(data)
 
 
-class CanvasWorkspaceTests(unittest.TestCase):
+class CanvasWorkspaceTests(QtTestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
@@ -310,7 +315,7 @@ class CanvasWorkspaceTests(unittest.TestCase):
         self.assertIn(long_name, canvas.toolTip())
         self.assertEqual(canvas.objectName(), "canvas_slot_0")
 
-class CanvasWorkspacePersistenceTests(unittest.TestCase):
+class CanvasWorkspacePersistenceTests(QtTestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

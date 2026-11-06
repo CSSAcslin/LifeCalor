@@ -19,8 +19,25 @@ class ConsoleHandler(QObject, logging.Handler):
         self.append_log.connect(parent.log_to_console)
         self.unhandled_error.connect(parent.handle_unhandled_exception)
 
+        self._previous_sys_excepthook = sys.excepthook
+        self._previous_thread_excepthook = threading.excepthook
+        self._closed = False
         sys.excepthook = self.handle_uncaught_exception
         threading.excepthook = self.handle_thread_exception
+
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            if sys.excepthook == self.handle_uncaught_exception:
+                sys.excepthook = self._previous_sys_excepthook
+            if threading.excepthook == self.handle_thread_exception:
+                threading.excepthook = self._previous_thread_excepthook
+            try:
+                self.append_log.disconnect()
+                self.unhandled_error.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+        logging.Handler.close(self)
 
     def emit(self, record):
         msg = self.format(record)

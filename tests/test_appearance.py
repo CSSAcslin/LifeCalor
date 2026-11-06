@@ -2,6 +2,11 @@ import os
 import sys
 import tempfile
 import unittest
+
+try:
+    from .qt_test_support import QtTestCase
+except ImportError:
+    from qt_test_support import QtTestCase
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -45,7 +50,7 @@ def _contrast(first, second):
     return (high + 0.05) / (low + 0.05)
 
 
-class AppearanceTests(unittest.TestCase):
+class AppearanceTests(QtTestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

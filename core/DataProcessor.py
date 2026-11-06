@@ -46,6 +46,7 @@ from compute.worker import (
     probe_cuda_capability_isolated,
 )
 from tasks import CancellationToken, TaskCancelled, TaskContextQueue, task_scoped
+from convolution.engine import ConvolutionPlan, execute_convolution
 
 
 def _primary_data_source(data):
@@ -533,6 +534,25 @@ class MassDataProcessor(QObject):
     def _emit_cancelled(self):
         self.processing_cancelled_signal.emit()
         return False
+
+    @pyqtSlot(object)
+    @task_scoped
+    def convolve(self, plan):
+        """Execute a task-owned convolution through the bounded CPU pipeline."""
+        try:
+            if not isinstance(plan, ConvolutionPlan):
+                raise TypeError("卷积任务类型无效")
+            result = execute_convolution(
+                plan, token=self.cancellation_token, task_id=self.task_id or "convolution",
+                progress=lambda current, total, _message: self.processing_progress_signal.emit(current, total),
+            )
+            self.processed_result.emit(result)
+            return True
+        except TaskCancelled:
+            return self._emit_cancelled()
+        except Exception as exc:
+            return self._emit_failure("时空卷积失败", "时空卷积", exc, getattr(plan, "source", None))
+
     @pyqtSlot(object, int, bool, object)
     @task_scoped
     def pre_process(self, data, bg_num=360, unfold=True, compute_options=None):

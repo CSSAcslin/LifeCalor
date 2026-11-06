@@ -68,6 +68,30 @@ class LifetimeCudaSolverCoreTests(unittest.TestCase):
             rtol=1e-4,
         )
 
+    def test_double_batch_avoids_saturating_lower_bound_transform(self):
+        times = np.linspace(0.0, 30.0, 200)
+        expected = np.asarray([
+            [30.0, 2.5, 15.0, 12.0, 0.0],
+            [35.0, 2.7, 16.0, 13.0, 1.0],
+            [40.0, 2.9, 17.0, 14.0, 2.0],
+            [45.0, 3.1, 18.0, 15.0, 3.0],
+        ])
+        traces = np.asarray([
+            first * np.exp(-times / tau1) + second * np.exp(-times / tau2) + baseline
+            for first, tau1, second, tau2, baseline in expected
+        ])
+        block = traces.T.reshape(times.size, 2, 2)
+        values, relative_times, mask, initial, _status, valid = _prepare_batch(
+            block, times, None, FIT_PARAMS, "double"
+        )
+        parameters, scores, converged = _solve_batch(
+            np, values[valid], relative_times[valid], mask[valid], initial[valid],
+            np.asarray(LIFETIME_SOLVER_CONTRACT["double_bounds"][0]), "double",
+        )
+        self.assertTrue(np.all(converged))
+        np.testing.assert_allclose(parameters, expected, rtol=1e-4, atol=1e-5)
+        np.testing.assert_allclose(scores, 1.0, atol=1e-10)
+
 
 if __name__ == "__main__":
     unittest.main()

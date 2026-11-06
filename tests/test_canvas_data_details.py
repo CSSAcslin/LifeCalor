@@ -1,6 +1,11 @@
 import os
 import sys
 import unittest
+
+try:
+    from .qt_test_support import QtTestCase
+except ImportError:
+    from qt_test_support import QtTestCase
 import weakref
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,7 +45,7 @@ class FakeCanvas(QWidget):
         return "sample"
 
 
-class CanvasDataDetailsTests(unittest.TestCase):
+class CanvasDataDetailsTests(QtTestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

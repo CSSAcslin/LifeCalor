@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "captured_at": "2026-11-06T07:20:17.751863+00:00",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "numpy": "2.5.4"
+  },
+  "algorithm": "cwt",
+  "size": "small",
+  "input_shape": [
+    256,
+    16,
+    16
+  ],
+  "input_dtype": "float32",
+  "requested_backend": "cpu",
+  "actual_backend": "cpu",
+  "precision_policy": "compatibility",
+  "compute_dtype": "float32",
+  "output_shape": [
+    256,
+    16,
+    16
+  ],
+  "output_fields": [],
+  "chunk_shape": [
+    256,
+    16,
+    16
+  ],
+  "chunk_count": 1,
+  "cpu_workers": 1,
+  "device": {
+    "name": "CPU",
+    "backend": "CPU",
+    "driver": "",
+    "total_memory_bytes": null
+  },
+  "cold_start_seconds": 0.01640259998384863,
+  "warm_seconds": [
+    0.014843000011751428,
+    0.015263099980074912,
+    0.01486640001530759,
+    0.015125200006878003
+  ],
+  "warm_median_seconds": 0.014995800011092797,
+  "peak_rss_delta_bytes": 2678784,
+  "peak_device_bytes": null,
+  "phase_seconds": {
+    "io": null,
+    "host_to_device": null,
+    "kernel_or_solver": null,
+    "device_to_host": null,
+    "total": [
+      0.01640259998384863,
+      0.014843000011751428,
+      0.015263099980074912,
+      0.01486640001530759,
+      0.015125200006878003
+    ]
+  },
+  "fallback_reason": "",
+  "notes": "GPU peak memory and phase timing are null until worker-side instrumentation is available; total time includes pipeline I/O."
+}

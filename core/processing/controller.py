@@ -97,6 +97,7 @@ class ProcessingController:
             "EM_pre_processed", "stft_quality", "cwt_quality", "ROI_stft", "ROI_cwt",
             "Accumulated_time_amplitude_map", "Single_channel_signal",
             "2D_Fourier_transform", "2D_Inverse_Fourier_transform", "Heartbeat",
+            "spatiotemporal_convolution",
         }
         if process_type in calculation_results:
             return self.complete("calculation")

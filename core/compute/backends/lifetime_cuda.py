@@ -176,6 +176,12 @@ def _solve_batch(cp, values, times, mask, initial, lower, model_type):
             step = cp.linalg.solve(hessian, gradient[..., None])[..., 0]
         except Exception:
             step = cp.matmul(cp.linalg.pinv(hessian), gradient[..., None])[..., 0]
+        # Keep a single accepted LM step from saturating softplus near a bound.
+        # Scaling the complete step preserves its direction in parameter space.
+        relative_step = cp.max(
+            cp.abs(step) / (1.0 + cp.abs(unconstrained)), axis=1
+        )
+        step = step / cp.maximum(relative_step, 1.0)[:, None]
         candidate = unconstrained + step
         candidate_parameters, _ = _parameters_from_unconstrained(
             cp, candidate, lower

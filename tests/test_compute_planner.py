@@ -16,7 +16,9 @@ if str(CORE) not in sys.path:
 
 from compute.model import (
     BackendPreference,
+    CapabilityStatus,
     ComputeRequest,
+    DeviceCapability,
     PrecisionPolicy,
     ResourceBudget,
 )
@@ -73,6 +75,23 @@ class ComputePlannerTests(unittest.TestCase):
         self.assertEqual(plan.actual_backend, "cpu")
         self.assertIn("保守", plan.backend_reason)
         self.assertLessEqual(plan.peak_host_bytes, 256 * 1024 * 1024)
+
+    def test_available_gpu_requires_explicit_selection_without_performance_evidence(self):
+        device = DeviceCapability(
+            device_id="nvidia:0", kind="gpu", name="Validated GPU",
+            status=CapabilityStatus.AVAILABLE, supported_algorithms=("stft",),
+        )
+        budget = ResourceBudget(
+            host_limit_bytes=256 * 1024 * 1024,
+            device_limit_bytes=128 * 1024 * 1024,
+        )
+        automatic = plan_compute(request(), budget, capabilities=(device,))
+        explicit = plan_compute(
+            request(backend=BackendPreference.GPU), budget, capabilities=(device,),
+        )
+        self.assertEqual(automatic.actual_backend, "cpu")
+        self.assertIn("性能策略", automatic.backend_reason)
+        self.assertEqual(explicit.actual_backend, "gpu")
 
     def test_gpu_request_falls_back_or_fails_according_to_policy(self):
         item = request(backend=BackendPreference.GPU)

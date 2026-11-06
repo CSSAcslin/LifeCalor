@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from PyQt5 import sip
 from PyQt5.QtCore import QObject, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import QMessageBox
 
@@ -93,6 +94,25 @@ class HistoryController:
         self.cache_write_worker = None
         self.cache_maintenance_threads = {}
         self._batch_cache_state = None
+        self._shutdown_requested = False
+
+    def prepare_shutdown(self):
+        """Cancel cache I/O and retain its unparented threads until they finish."""
+        self._shutdown_requested = True
+        if self._batch_cache_state is not None:
+            self._batch_cache_state["task"].token.cancel()
+        workers = [self.cache_load_worker, self.cache_write_worker]
+        threads = [self.cache_load_thread, self.cache_write_thread]
+        for thread, worker in self.cache_maintenance_threads.values():
+            threads.append(thread)
+            workers.append(worker)
+        for worker in workers:
+            if worker is not None and not sip.isdeleted(worker):
+                worker.cancel()
+        return tuple(
+            thread for thread in threads
+            if thread is not None and not sip.isdeleted(thread)
+        )
 
     def data_history_view(self):
         if not Data.history:
@@ -115,6 +135,8 @@ class HistoryController:
             self.load_cached_history_async(selected_data, 'processed_data')
 
     def load_cached_history_async(self, target, attr_name):
+        if self._shutdown_requested:
+            return
         if target is None:
             logging.warning("未找到可读取的历史数据")
             return
@@ -648,6 +670,8 @@ class HistoryController:
         return True
 
     def force_cache_history_item(self, identity, timestamp=None):
+        if self._shutdown_requested:
+            return
         if self._cache_write_busy("缓存落盘"):
             return
         target, _ = self.find_history_item(identity, timestamp)
@@ -683,6 +707,8 @@ class HistoryController:
             self.cache_write_worker = None
 
     def force_cache_history_items(self, identities):
+        if self._shutdown_requested:
+            return False
         if self._cache_write_busy("批量缓存落盘"):
             return False
         entries = []
@@ -714,6 +740,8 @@ class HistoryController:
         if state is None:
             return
         task = state["task"]
+        if self._shutdown_requested:
+            task.token.cancel()
         if task.token.is_cancelled:
             self.window.task_coordinator.cancelled(task.task_id, "批量缓存落盘已取消")
             self._batch_cache_state = None
@@ -828,6 +856,8 @@ class HistoryController:
         return self._start_cache_maintenance("clear")
 
     def _start_cache_maintenance(self, mode, active_refs=None):
+        if self._shutdown_requested:
+            return False
         title = "清除全部缓存" if mode == "clear" else "清理孤立缓存"
         task = self.window.task_coordinator.create_task(title, f"cache_{mode}")
         task.start()

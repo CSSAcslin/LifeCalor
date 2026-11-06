@@ -1,0 +1,1050 @@
+{
+  "date": "2026-11-06",
+  "root": "G:\\Data\\2026",
+  "scope": "bounded metadata-only candidate screening",
+  "limits": {
+    "directories": 30,
+    "file_names": 5000
+  },
+  "date_folders": [
+    {
+      "date": "0108",
+      "directories_checked": 5,
+      "file_names_checked": 25,
+      "limited": false,
+      "extensions": {
+        ".avi": 25
+      },
+      "directory_names": [
+        "0108",
+        "0108\\1x",
+        "0108\\3-no-work-electrodes",
+        "0108\\DP",
+        "0108\\NOx"
+      ]
+    },
+    {
+      "date": "0110",
+      "directories_checked": 3,
+      "file_names_checked": 18,
+      "limited": false,
+      "extensions": {
+        ".avi": 18
+      },
+      "directory_names": [
+        "0110",
+        "0110\\1",
+        "0110\\3"
+      ]
+    },
+    {
+      "date": "0114",
+      "directories_checked": 3,
+      "file_names_checked": 70,
+      "limited": false,
+      "extensions": {
+        ".avi": 63,
+        ".jpg": 7
+      },
+      "directory_names": [
+        "0114",
+        "0114\\2",
+        "0114\\xx"
+      ]
+    },
+    {
+      "date": "0115",
+      "directories_checked": 5,
+      "file_names_checked": 74,
+      "limited": false,
+      "extensions": {
+        ".avi": 51,
+        ".tif": 22,
+        ".jpg": 1
+      },
+      "directory_names": [
+        "0115",
+        "0115\\1",
+        "0115\\2",
+        "0115\\3",
+        "0115\\4"
+      ]
+    },
+    {
+      "date": "0122",
+      "directories_checked": 5,
+      "file_names_checked": 74,
+      "limited": false,
+      "extensions": {
+        ".avi": 64,
+        ".jpg": 5,
+        ".png": 5
+      },
+      "directory_names": [
+        "0122",
+        "0122\\ITO",
+        "0122\\ITO\\result",
+        "0122\\1-GH",
+        "0122\\2-GH"
+      ]
+    },
+    {
+      "date": "0123",
+      "directories_checked": 5,
+      "file_names_checked": 90,
+      "limited": false,
+      "extensions": {
+        ".avi": 52,
+        ".jpg": 1,
+        ".tif": 7,
+        ".png": 30
+      },
+      "directory_names": [
+        "0123",
+        "0123\\1-pbs",
+        "0123\\1-pbs\\result",
+        "0123\\2-GH",
+        "0123\\2-GH\\result"
+      ]
+    },
+    {
+      "date": "0202",
+      "directories_checked": 5,
+      "file_names_checked": 78,
+      "limited": false,
+      "extensions": {
+        ".avi": 58,
+        ".tif": 5,
+        ".csv": 10,
+        ".png": 5
+      },
+      "directory_names": [
+        "0202",
+        "0202\\GH",
+        "0202\\H20",
+        "0202\\h20-AFT",
+        "0202\\PBS"
+      ]
+    },
+    {
+      "date": "0306",
+      "directories_checked": 4,
+      "file_names_checked": 5000,
+      "limited": true,
+      "extensions": {
+        ".jpg": 2,
+        ".rar": 1,
+        ".avi": 1,
+        ".tif": 4996
+      },
+      "directory_names": [
+        "0306",
+        "0306\\ITO",
+        "0306\\ITO\\ITO",
+        "0306\\ITO\\ITO\\150-2D"
+      ]
+    },
+    {
+      "date": "0310",
+      "directories_checked": 11,
+      "file_names_checked": 5000,
+      "limited": true,
+      "extensions": {
+        ".zip": 1,
+        ".avi": 6,
+        ".tif": 4993
+      },
+      "directory_names": [
+        "0310",
+        "0310\\PC12",
+        "0310\\PC12\\1-360-100-TO-THISDISK",
+        "0310\\PC12\\1-360-100-TO-THISDISK\\360-AVI",
+        "0310\\PC12\\1-360-100-TO-THISDISK\\360-AVITIF",
+        "0310\\PC12\\1-360-100-TO-THISDISK\\360-TIF",
+        "0310\\PC12\\1-1560-150",
+        "0310\\PC12\\1-1560-150\\2-1560-AVI-10S",
+        "0310\\PC12\\1-1560-150\\2-1560-AVI-20S",
+        "0310\\PC12\\1-1560-150\\2-1560-AVI-30S",
+        "0310\\PC12\\1-1560-150\\2-1560-AVITIF-10S"
+      ]
+    },
+    {
+      "date": "0313",
+      "directories_checked": 5,
+      "file_names_checked": 80,
+      "limited": false,
+      "extensions": {
+        ".zip": 1,
+        ".jpg": 7,
+        ".avi": 35,
+        ".png": 28,
+        ".csv": 8,
+        ".xlsx": 1
+      },
+      "directory_names": [
+        "0313",
+        "0313\\HeLa",
+        "0313\\HeLa\\1",
+        "0313\\HeLa\\2",
+        "0313\\HeLa\\results"
+      ]
+    },
+    {
+      "date": "0324",
+      "directories_checked": 2,
+      "file_names_checked": 7,
+      "limited": false,
+      "extensions": {
+        ".avi": 7
+      },
+      "directory_names": [
+        "0324",
+        "0324\\1"
+      ]
+    },
+    {
+      "date": "0325",
+      "directories_checked": 3,
+      "file_names_checked": 25,
+      "limited": false,
+      "extensions": {
+        ".avi": 14,
+        ".png": 11
+      },
+      "directory_names": [
+        "0325",
+        "0325\\ITOPBS",
+        "0325\\result"
+      ]
+    },
+    {
+      "date": "0327",
+      "directories_checked": 3,
+      "file_names_checked": 35,
+      "limited": false,
+      "extensions": {
+        ".avi": 33,
+        ".png": 2
+      },
+      "directory_names": [
+        "0327",
+        "0327\\ITOPBS",
+        "0327\\result"
+      ]
+    },
+    {
+      "date": "0330",
+      "directories_checked": 5,
+      "file_names_checked": 20,
+      "limited": false,
+      "extensions": {
+        ".avi": 19,
+        ".png": 1
+      },
+      "directory_names": [
+        "0330",
+        "0330\\ITOPBS",
+        "0330\\ITOPBS2",
+        "0330\\result",
+        "0330\\result2"
+      ]
+    },
+    {
+      "date": "0402",
+      "directories_checked": 2,
+      "file_names_checked": 61,
+      "limited": false,
+      "extensions": {
+        ".tif": 61
+      },
+      "directory_names": [
+        "0402",
+        "0402\\fl"
+      ]
+    },
+    {
+      "date": "0411",
+      "directories_checked": 2,
+      "file_names_checked": 22,
+      "limited": false,
+      "extensions": {
+        ".jpg": 22
+      },
+      "directory_names": [
+        "0411",
+        "0411\\293-fl"
+      ]
+    },
+    {
+      "date": "0425",
+      "directories_checked": 1,
+      "file_names_checked": 4,
+      "limited": false,
+      "extensions": {
+        ".avi": 4
+      },
+      "directory_names": [
+        "0425"
+      ]
+    },
+    {
+      "date": "0511",
+      "directories_checked": 1,
+      "file_names_checked": 5,
+      "limited": false,
+      "extensions": {
+        ".avi": 5
+      },
+      "directory_names": [
+        "0511"
+      ]
+    },
+    {
+      "date": "0516",
+      "directories_checked": 2,
+      "file_names_checked": 10,
+      "limited": false,
+      "extensions": {
+        ".jpg": 9,
+        ".avi": 1
+      },
+      "directory_names": [
+        "0516",
+        "0516\\whitelight"
+      ]
+    },
+    {
+      "date": "0518",
+      "directories_checked": 1,
+      "file_names_checked": 12,
+      "limited": false,
+      "extensions": {
+        ".jpg": 11,
+        ".avi": 1
+      },
+      "directory_names": [
+        "0518"
+      ]
+    },
+    {
+      "date": "0603",
+      "directories_checked": 1,
+      "file_names_checked": 13,
+      "limited": false,
+      "extensions": {
+        ".jpg": 12,
+        ".avi": 1
+      },
+      "directory_names": [
+        "0603"
+      ]
+    },
+    {
+      "date": "0605",
+      "directories_checked": 1,
+      "file_names_checked": 19,
+      "limited": false,
+      "extensions": {
+        ".tif": 1,
+        ".jpg": 6,
+        ".avi": 12
+      },
+      "directory_names": [
+        "0605"
+      ]
+    },
+    {
+      "date": "0606",
+      "directories_checked": 1,
+      "file_names_checked": 15,
+      "limited": false,
+      "extensions": {
+        ".jpg": 7,
+        ".avi": 8
+      },
+      "directory_names": [
+        "0606"
+      ]
+    },
+    {
+      "date": "0615",
+      "directories_checked": 3,
+      "file_names_checked": 11,
+      "limited": false,
+      "extensions": {
+        ".avi": 5,
+        ".jpg": 6
+      },
+      "directory_names": [
+        "0615",
+        "0615\\au-60",
+        "0615\\au-60-nowater"
+      ]
+    },
+    {
+      "date": "0617",
+      "directories_checked": 1,
+      "file_names_checked": 21,
+      "limited": false,
+      "extensions": {
+        ".jpg": 21
+      },
+      "directory_names": [
+        "0617"
+      ]
+    },
+    {
+      "date": "0618",
+      "directories_checked": 3,
+      "file_names_checked": 88,
+      "limited": false,
+      "extensions": {
+        ".png": 8,
+        ".tif": 17,
+        ".avi": 52,
+        ".jpg": 11
+      },
+      "directory_names": [
+        "0618",
+        "0618\\60nmAu",
+        "0618\\60nmAu-EM"
+      ]
+    },
+    {
+      "date": "0709",
+      "directories_checked": 3,
+      "file_names_checked": 58,
+      "limited": false,
+      "extensions": {
+        ".png": 11,
+        ".tif": 6,
+        ".avi": 41
+      },
+      "directory_names": [
+        "0709",
+        "0709\\200nm",
+        "0709\\200nm-EM"
+      ]
+    },
+    {
+      "date": "0828",
+      "directories_checked": 4,
+      "file_names_checked": 2321,
+      "limited": false,
+      "extensions": {
+        ".png": 2,
+        ".tif": 2306,
+        ".avi": 13
+      },
+      "directory_names": [
+        "0828",
+        "0828\\Pt-plate-test",
+        "0828\\Pt-plate-test\\1-60nm-badsample",
+        "0828\\Pt-plate-test\\1-60nm-badsample\\tiff"
+      ]
+    }
+  ],
+  "tiff_headers_checked": [
+    {
+      "path": "G:\\Data\\2026\\0115\\1\\1-aft_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0115\\1\\2-bef_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0115\\2\\1-aft_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            220,
+            236
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0115\\2\\1-bef_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0115\\3\\1-bef_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0115\\3\\2-aft_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            220,
+            236
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0115\\4\\1-b-roi_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            40,
+            120
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0115\\4\\1-bef_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0123\\1-pbs\\3-b_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0123\\1-pbs\\4pair&5-b_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0123\\2-GH\\1-b_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0123\\2-GH\\2-b_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0202\\GH\\60x-b_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0202\\H20\\20x-b_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0202\\H20\\40x-b_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0202\\PBS\\60x-b_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0306\\ITO\\ITO\\150-2D\\1-I-1560-150_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            40,
+            100
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0306\\ITO\\ITO\\150-2D\\1-I-1560-150_1_10.tif",
+      "series": [
+        {
+          "shape": [
+            40,
+            100
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0310\\PC12\\1-360-100-TO-THISDISK\\360-AVITIF\\1-I-360-30_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            200,
+            200
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0310\\PC12\\1-360-100-TO-THISDISK\\360-AVITIF\\1-I-360-30_1_2.tif",
+      "series": [
+        {
+          "shape": [
+            200,
+            200
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0310\\PC12\\1-360-100-TO-THISDISK\\360-TIF\\1-I-360-30_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            200,
+            200
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0310\\PC12\\1-360-100-TO-THISDISK\\360-TIF\\1-I-360-30_1_2.tif",
+      "series": [
+        {
+          "shape": [
+            200,
+            200
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0310\\PC12\\1-1560-150\\2-1560-AVITIF-10S\\2-I-1560-150_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            40,
+            128
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0310\\PC12\\1-1560-150\\2-1560-AVITIF-10S\\2-I-1560-150_1_10.tif",
+      "series": [
+        {
+          "shape": [
+            40,
+            128
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0402\\fl\\kna1-40x_10_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0402\\fl\\kna1-40x_11_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0605\\diedcell-b_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0618\\60nmAu\\i1+water-300-medium_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            844,
+            880
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0618\\60nmAu\\i1+water-300-medium_2_1.tif",
+      "series": [
+        {
+          "shape": [
+            844,
+            880
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0709\\200nm\\b-na2so4_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            432,
+            360
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0709\\200nm\\b-nowater_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            432,
+            360
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0828\\Pt-plate-test\\1-60nm-badsample\\highlyscspicous-target-i6-upalittle_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0828\\Pt-plate-test\\1-60nm-badsample\\highlyscspicous-target1-upalittle_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            2040,
+            2048
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0828\\Pt-plate-test\\1-60nm-badsample\\tiff\\wi-407-30hz-100mv_1_1.tif",
+      "series": [
+        {
+          "shape": [
+            176,
+            316
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    },
+    {
+      "path": "G:\\Data\\2026\\0828\\Pt-plate-test\\1-60nm-badsample\\tiff\\wi-407-30hz-100mv_1_10.tif",
+      "series": [
+        {
+          "shape": [
+            176,
+            316
+          ],
+          "axes": "YX",
+          "dtype": "uint16"
+        }
+      ],
+      "ome": false,
+      "imagej": null
+    }
+  ],
+  "companion_headers_checked": [
+    {
+      "path": "G:\\Data\\2026\\0202\\PBS\\60X-AP.csv",
+      "header": "60x-i-367-30_1.avi_10@EM_pre-11@r_stft-13@trimmed@ROI_avg-17_x,60x-i-367-30_1.avi_10@EM_pre-11@r_stft-13@trimmed@ROI_avg-17_y,60x-i-367-30_1.avi_10@EM_pre-11@r_stft-13@trimmed@ROI_avg-18_x,60x-i-367-30_1.avi_10@EM_pre-11@r_stft-13@trimmed@ROI_avg-18_y,60x-i-367-30_1.avi_10@EM_pre-11@r_stft-13@trimmed@ROI_avg-19_x,60x-i-367-30_1.avi_10@EM_pre-11@r_stft-13@trimmed@ROI_avg-19_y,60x-i-367-30_1.avi_10@EM_pre-11@r_stft-13@trimmed@ROI_avg-20_x,60x-i-367-30_1.avi_10@EM_pre-11@r_stft-13@trimmed@ROI_avg-20_y,60x-i-367-30_1.avi_10@EM_pre-11@r_stft-13@trimmed@ROI_avg-21_x,60x-i-367-30_1.avi_10@EM_pre-11@r_stft-13@trimmed@ROI_avg-21_y,60x-i-367-30_1.avi_10@EM_pre-11@r_stft-13@trimmed@ROI_avg-17_x,60x-i-367-30_1.avi_10@EM_pre-11@r_stft-13@trimmed@ROI_avg-17_y,60x-i-367-30_1.avi_10@EM_pre-11@r_stft-13@trimmed@ROI_avg-18_x,60x-i-367-30_1.avi_10@EM_pre-11@r_stft-13@trimmed@ROI_avg-18_y,60x-i-367-30_1.avi_10@EM_pre-11@r_stft-13@trimmed@ROI_avg-19_x,60x-i-367-30_1.avi_10@EM_pre-11@r_stft-13@trimmed@ROI_a"
+    },
+    {
+      "path": "G:\\Data\\2026\\0202\\PBS\\60X-30-60-90-AP.csv",
+      "header": "60x-i-367-30-60-90_1.avi_22@EM_pre-23@r_stft-25@ROI_avg-27_x,60x-i-367-30-60-90_1.avi_22@EM_pre-23@r_stft-25@ROI_avg-27_y,60x-i-367-30-60-90_1.avi_22@EM_pre-23@r_stft-28@ROI_avg-29_x,60x-i-367-30-60-90_1.avi_22@EM_pre-23@r_stft-28@ROI_avg-29_y,60x-i-367-30-60-90_1.avi_22@EM_pre-23@r_stft-30@ROI_avg-31_x,60x-i-367-30-60-90_1.avi_22@EM_pre-23@r_stft-30@ROI_avg-31_y,60x-i-367-30-60-90_1.avi_22@EM_pre-23@r_stft-30@ROI_avg-32_x,60x-i-367-30-60-90_1.avi_22@EM_pre-23@r_stft-30@ROI_avg-32_y"
+    },
+    {
+      "path": "G:\\Data\\2026\\0202\\PBS\\60X-60-150-300-AP.csv",
+      "header": "60x-i-1560-60-150-300_1.avi_1@EM_pre-3@r_stft-5@ROI_avg-6_x,60x-i-1560-60-150-300_1.avi_1@EM_pre-3@r_stft-5@ROI_avg-6_y,60x-i-1560-60-150-300_1.avi_1@EM_pre-3@r_stft-7@ROI_avg-8_x,60x-i-1560-60-150-300_1.avi_1@EM_pre-3@r_stft-7@ROI_avg-8_y,60x-i-1560-60-150-300_1.avi_1@EM_pre-3@r_stft-9@ROI_avg-10_x,60x-i-1560-60-150-300_1.avi_1@EM_pre-3@r_stft-9@ROI_avg-10_y"
+    },
+    {
+      "path": "G:\\Data\\2026\\0202\\PBS\\40x-30-AP.csv",
+      "header": "40x-i-367-30_1.avi_11@EM_pre-12@r_stft-15@ROI_avg-17_x,40x-i-367-30_1.avi_11@EM_pre-12@r_stft-15@ROI_avg-17_y"
+    },
+    {
+      "path": "G:\\Data\\2026\\0202\\PBS\\40x-30-60-90-AP.csv",
+      "header": "40x-i-367-30-60-90_1.avi_2@EM_pre-3@r_stft-5@ROI_avg-6_x,40x-i-367-30-60-90_1.avi_2@EM_pre-3@r_stft-5@ROI_avg-6_y,40x-i-367-30-60-90_1.avi_2@EM_pre-3@r_stft-7@ROI_avg-8_x,40x-i-367-30-60-90_1.avi_2@EM_pre-3@r_stft-7@ROI_avg-8_y,40x-i-367-30-60-90_1.avi_2@EM_pre-3@r_stft-9@ROI_avg-10_x,40x-i-367-30-60-90_1.avi_2@EM_pre-3@r_stft-9@ROI_avg-10_y"
+    },
+    {
+      "path": "G:\\Data\\2026\\0202\\PBS\\20x-30.csv",
+      "header": "20x-i-367-30_1.avi_11@EM_pre-12@r_stft-14@ROI_avg-15_x,20x-i-367-30_1.avi_11@EM_pre-12@r_stft-14@ROI_avg-15_y"
+    },
+    {
+      "path": "G:\\Data\\2026\\0202\\PBS\\20x-30-60-90-AP-cmor3-3-stft1.csv",
+      "header": "20x-i-367-30-60-90_1.avi_1@EM_pre-2@r_stft-4@ROI_avg-5_x,20x-i-367-30-60-90_1.avi_1@EM_pre-2@r_stft-4@ROI_avg-5_y,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-6@ROI_avg-7_x,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-6@ROI_avg-7_y,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-8@ROI_avg-9_x,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-8@ROI_avg-9_y,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-10@ROI_avg-11_x,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-10@ROI_avg-11_y"
+    },
+    {
+      "path": "G:\\Data\\2026\\0202\\PBS\\20x-30-60-90-stft.csv",
+      "header": "20x-i-367-30-60-90_1.avi_1@EM_pre-2@r_stft-3@ROI_avg-7_x,20x-i-367-30-60-90_1.avi_1@EM_pre-2@r_stft-3@ROI_avg-7_y,20x-i-367-30-60-90_1.avi_1@EM_pre-2@r_stft-4@ROI_avg-8_x,20x-i-367-30-60-90_1.avi_1@EM_pre-2@r_stft-4@ROI_avg-8_y,20x-i-367-30-60-90_1.avi_1@EM_pre-2@r_stft-5@ROI_avg-9_x,20x-i-367-30-60-90_1.avi_1@EM_pre-2@r_stft-5@ROI_avg-9_y"
+    },
+    {
+      "path": "G:\\Data\\2026\\0202\\PBS\\20x-30-60-90-stft+cwt(baseline unleveled).csv",
+      "header": "20x-i-367-30-60-90_1.avi_1@EM_pre-2@r_stft-3@ROI_avg-7_x,20x-i-367-30-60-90_1.avi_1@EM_pre-2@r_stft-3@ROI_avg-7_y,20x-i-367-30-60-90_1.avi_1@EM_pre-2@r_stft-4@ROI_avg-8_x,20x-i-367-30-60-90_1.avi_1@EM_pre-2@r_stft-4@ROI_avg-8_y,20x-i-367-30-60-90_1.avi_1@EM_pre-2@r_stft-5@ROI_avg-9_x,20x-i-367-30-60-90_1.avi_1@EM_pre-2@r_stft-5@ROI_avg-9_y,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-10@ROI_avg-13_x,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-10@ROI_avg-13_y,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-11@ROI_avg-14_x,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-11@ROI_avg-14_y,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-12@ROI_avg-15_x,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-12@ROI_avg-15_y"
+    },
+    {
+      "path": "G:\\Data\\2026\\0202\\PBS\\20x-30-60-90-cwt(no sqrt).csv",
+      "header": "20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-4@ROI_avg-9_x,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-4@ROI_avg-9_y,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-5@ROI_avg-10_x,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-5@ROI_avg-10_y,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-6@ROI_avg-11_x,20x-i-367-30-60-90_1.avi_1@EM_pre-2@cwt-6@ROI_avg-11_y"
+    },
+    {
+      "path": "G:\\Data\\2026\\0313\\HeLa\\results\\360-50-extract.csv",
+      "header": "\"canvas0-(153,146)mean_x\",\"canvas0-(153,146)mean_y\""
+    },
+    {
+      "path": "G:\\Data\\2026\\0313\\HeLa\\results\\360-50-extract-addcell.csv",
+      "header": "\"canvas0-(153,146)mean_x\",\"canvas0-(153,146)mean_y\",\"canvas0-(36,147)mean_x\",\"canvas0-(36,147)mean_y\",\"canvas0-(155,153)mean_x\",\"canvas0-(155,153)mean_y\",\"canvas0-(100,135)mean_x\",\"canvas0-(100,135)mean_y\",\"canvas0-(159,39)mean_x\",\"canvas0-(159,39)mean_y\""
+    },
+    {
+      "path": "G:\\Data\\2026\\0313\\HeLa\\results\\360-30-extract.csv",
+      "header": "\"canvas0-(154,151)mean_x\",\"canvas0-(154,151)mean_y\",\"canvas0-(184,94)mean_x\",\"canvas0-(184,94)mean_y\",\"canvas0-(148,40)mean_x\",\"canvas0-(148,40)mean_y\",\"canvas0-(65,142)mean_x\",\"canvas0-(65,142)mean_y\""
+    },
+    {
+      "path": "G:\\Data\\2026\\0313\\HeLa\\results\\360-40-extract.csv",
+      "header": "\"canvas0-(161,138)mean_x\",\"canvas0-(161,138)mean_y\",\"canvas0-(158,37)mean_x\",\"canvas0-(158,37)mean_y\",\"canvas0-(60,148)mean_x\",\"canvas0-(60,148)mean_y\""
+    },
+    {
+      "path": "G:\\Data\\2026\\0313\\HeLa\\results\\360-60-extract.csv",
+      "header": "\"canvas0-(163,63)mean_x\",\"canvas0-(163,63)mean_y\",\"canvas0-(159,151)mean_x\",\"canvas0-(159,151)mean_y\",\"canvas0-(25,125)mean_x\",\"canvas0-(25,125)mean_y\""
+    },
+    {
+      "path": "G:\\Data\\2026\\0313\\HeLa\\results\\360-70-extract.csv",
+      "header": "x0000,y0000,\"canvas0-(162,154)mean_x\",\"canvas0-(162,154)mean_y\",\"canvas0-(122,38)mean_x\",\"canvas0-(122,38)mean_y\""
+    },
+    {
+      "path": "G:\\Data\\2026\\0313\\HeLa\\results\\dif-sampling-extract.csv",
+      "header": "x0000,y0000,360Hz_x,360Hz_y,493Hz_x,493Hz_y,694Hz_x,694Hz_y,694-cwt_x,694-cwt_y,936-cwt_x,936-cwt_y"
+    },
+    {
+      "path": "G:\\Data\\2026\\0313\\HeLa\\results\\936-60-extract.csv",
+      "header": "x0000,y0000,\"canvas1-(71,31)mean_x\",\"canvas1-(71,31)mean_y\",\"canvas1-(26,41)mean_x\",\"canvas1-(26,41)mean_y\""
+    }
+  ],
+  "candidate_for_physical_lifetime_validation": null,
+  "conclusion": "Within the checked scope, no calibrated acquisition time axis and identifiable carrier-decay source were established. Numbered TIFF files and processed curve X values alone were insufficient to assign ps/ns or a physical decay interpretation."
+}

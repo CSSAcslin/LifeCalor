@@ -2,6 +2,11 @@ import os
 import sys
 import time
 import unittest
+
+try:
+    from .qt_test_support import QtTestCase
+except ImportError:
+    from qt_test_support import QtTestCase
 from pathlib import Path
 
 import numpy as np
@@ -69,7 +74,7 @@ def make_data(name, value=0):
 def make_image(name, value=0):
     return ImagingData.create_image(make_data(name, value))
 
-class CanvasLifecycleTests(unittest.TestCase):
+class CanvasLifecycleTests(QtTestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

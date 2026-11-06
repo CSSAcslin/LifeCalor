@@ -254,9 +254,16 @@ class AviImporter(Importer):
         params.update({
             "file_path": str(request.path), "fps": fps or None,
             "source_fps": source_fps or None, "source_shape": tuple(array.shape),
+            "reported_frame_count": probe.shape[0],
+            "decoded_frame_count": len(frames),
             "source_dtype": str(array.dtype), "source_axes": "TYX",
             "scientific_axes": "TYX", "display_axes": "TYX",
         })
+        if len(frames) < probe.shape[0]:
+            params["import_warning"] = (
+                f"视频容器报告 {probe.shape[0]} 帧，实际解码 {len(frames)} 帧。"
+                "时间轴已按实际解码帧数建立，请核对采集数据完整性。"
+            )
         return ImportedPayload(array, array, _time_axis(array.shape, "TYX", params), "video", params, request.path.name)
 
 

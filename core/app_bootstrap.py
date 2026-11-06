@@ -31,3 +31,6 @@ def configure_application(app: QApplication, point_size: float = 10.0) -> None:
     app.setFont(font)
     QCoreApplication.setOrganizationName(ORGANIZATION_NAME)
     QCoreApplication.setApplicationName(APP_NAME)
+    from startup.shutdown import install_application_cleanup
+
+    install_application_cleanup(app)

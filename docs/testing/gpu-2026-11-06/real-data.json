@@ -1,0 +1,189 @@
+{
+  "date": "2026-11-06",
+  "python": "3.12.14",
+  "sources_before": {
+    "avi": {
+      "path": "G:\\Data\\2026\\0114\\no-150-b_1.avi",
+      "size_bytes": 5214382,
+      "mtime_ns": 1768367800000000000,
+      "sha256": "e7052124ab71037da31798c710a9679464f16f227f27eadfef132366d963a497"
+    },
+    "tiff": {
+      "path": "G:\\Data\\2026\\0115\\1\\1-aft_1_1.tif",
+      "size_bytes": 8364134,
+      "mtime_ns": 1768443254000000000,
+      "sha256": "ca9d7a196c6a06d9e5f608a94f788cbd530d66cffef08a7d4983efd866f95aee"
+    }
+  },
+  "avi": {
+    "imported_shape": [
+      491,
+      40,
+      88
+    ],
+    "dtype": "uint8",
+    "fps": 99.0,
+    "reported_frame_count": 989,
+    "decoded_frame_count": 491,
+    "import_warning": "视频容器报告 989 帧，实际解码 491 帧。时间轴已按实际解码帧数建立，请核对采集数据完整性。",
+    "roi_slices": [
+      [
+        0,
+        491
+      ],
+      [
+        4,
+        36
+      ],
+      [
+        28,
+        60
+      ]
+    ],
+    "roi_shape": [
+      491,
+      32,
+      32
+    ],
+    "algorithms": {
+      "stft": {
+        "parameters": {
+          "fps": 99.0,
+          "window_size": 64,
+          "noverlap": 32,
+          "nfft": 64,
+          "target_freq": 10.0,
+          "scale_range": 4.0
+        },
+        "window": "numpy.hanning(64)",
+        "runs": {
+          "cpu": {
+            "actual_backend": "cpu",
+            "elapsed_seconds": 0.011551700008567423,
+            "output_shape": [
+              17,
+              32,
+              32
+            ],
+            "dtype": "float32",
+            "output_path": "D:\\coding\\L\\LifeCalor\\.venv\\real-data-validation\\real-stft-cpu_data_processed_a7680f37c5a24c43b54dc24595c73531.npy"
+          },
+          "gpu": {
+            "actual_backend": "gpu",
+            "elapsed_seconds": 2.1021171000029426,
+            "output_shape": [
+              17,
+              32,
+              32
+            ],
+            "dtype": "float32",
+            "output_path": "D:\\coding\\L\\LifeCalor\\.venv\\real-data-validation\\real-stft-gpu_data_processed_28a74514f1df44828c42301896d7c310.npy"
+          }
+        },
+        "max_absolute_error": 9.313225746154785e-10,
+        "reference_peak": 0.006720797158777714
+      },
+      "cwt": {
+        "parameters": {
+          "fps": 99.0,
+          "target_freq": 10.0,
+          "scale_range": 4.0,
+          "total_scales": 8,
+          "wavelet": "morl"
+        },
+        "window": null,
+        "runs": {
+          "cpu": {
+            "actual_backend": "cpu",
+            "elapsed_seconds": 0.09393210001871921,
+            "output_shape": [
+              491,
+              32,
+              32
+            ],
+            "dtype": "float32",
+            "output_path": "D:\\coding\\L\\LifeCalor\\.venv\\real-data-validation\\real-cwt-cpu_data_processed_d518e9f9a9bc44a79d59605d4ddacf93.npy"
+          },
+          "gpu": {
+            "actual_backend": "gpu",
+            "elapsed_seconds": 1.4996859999955632,
+            "output_shape": [
+              491,
+              32,
+              32
+            ],
+            "dtype": "float32",
+            "output_path": "D:\\coding\\L\\LifeCalor\\.venv\\real-data-validation\\real-cwt-gpu_data_processed_b27a43322f1947be8cea52c1c4fa2b66.npy"
+          }
+        },
+        "max_absolute_error": 4.6566128730773926e-09,
+        "reference_peak": 0.020580852404236794
+      }
+    },
+    "preprocessing": {
+      "backend": "cpu",
+      "background_frames": 20,
+      "max_absolute_error": 0.0,
+      "reference_peak": 0.03750000149011612
+    }
+  },
+  "tiff": {
+    "imported_shape": [
+      2040,
+      2048
+    ],
+    "dtype": "uint16",
+    "source_axes": "YX",
+    "time_point": [
+      0.0
+    ],
+    "roi_slices": [
+      [
+        956,
+        1084
+      ],
+      [
+        960,
+        1088
+      ]
+    ],
+    "roi_shape": [
+      128,
+      128
+    ],
+    "scope": "single 2D image; no lifetime or temporal inference",
+    "convolution": {
+      "identity": {
+        "kernel_shape": [
+          1,
+          1
+        ],
+        "max_absolute_error": 0.0,
+        "reference_peak": 54980.0
+      },
+      "mean": {
+        "kernel_shape": [
+          3,
+          3
+        ],
+        "max_absolute_error": 0.0078125,
+        "reference_peak": 54155.5546875
+      }
+    }
+  },
+  "sources_after": {
+    "avi": {
+      "path": "G:\\Data\\2026\\0114\\no-150-b_1.avi",
+      "size_bytes": 5214382,
+      "mtime_ns": 1768367800000000000,
+      "sha256": "e7052124ab71037da31798c710a9679464f16f227f27eadfef132366d963a497"
+    },
+    "tiff": {
+      "path": "G:\\Data\\2026\\0115\\1\\1-aft_1_1.tif",
+      "size_bytes": 8364134,
+      "mtime_ns": 1768443254000000000,
+      "sha256": "ca9d7a196c6a06d9e5f608a94f788cbd530d66cffef08a7d4983efd866f95aee"
+    }
+  },
+  "source_integrity_unchanged": true
+}

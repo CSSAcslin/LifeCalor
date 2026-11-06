@@ -1,0 +1,4 @@
+-r requirements.txt
+# Use with an installed CUDA 13.x toolkit and a compatible NVIDIA driver.
+cupy-cuda13x==14.2.0
+cuda-pathfinder==1.8.6

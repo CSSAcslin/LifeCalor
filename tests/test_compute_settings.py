@@ -76,14 +76,14 @@ class ComputeSettingsTests(unittest.TestCase):
         self.assertEqual(store.load().backend_for("stft"), BackendPreference.CPU)
 
     def test_hardware_probe_does_not_import_cupy(self):
-        sys.modules.pop("cupy", None)
+        previous_cupy = sys.modules.get("cupy")
         with patch("compute.capabilities._nvidia_devices", return_value=[]), patch(
             "compute.capabilities._windows_display_devices", return_value=[]
         ):
             snapshot = probe_hardware()
 
         self.assertIsInstance(snapshot, HardwareSnapshot)
-        self.assertNotIn("cupy", sys.modules)
+        self.assertIs(sys.modules.get("cupy"), previous_cupy)
 
     def test_mainwindow_exposes_shared_compute_settings_page(self):
         source = (CORE / "MainWindow.py").read_text(encoding="utf-8")

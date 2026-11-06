@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -209,7 +210,15 @@ class StftPipelineTests(unittest.TestCase):
         self.assertGreater(_SplittingCudaWorker.calls, plan.chunk_count)
 
     def test_importing_compute_stack_does_not_import_cupy(self):
-        self.assertNotIn("cupy", sys.modules)
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import sys; sys.path.insert(0, sys.argv[1]); "
+             "import compute.algorithms.stft_pipeline, compute.backends.cpu; "
+             "assert 'cupy' not in sys.modules",
+             str(CORE)],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

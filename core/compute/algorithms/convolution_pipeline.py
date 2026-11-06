@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -11,15 +12,6 @@ from tasks.model import CancellationToken
 from compute.blocking import iter_block_plans
 from compute.executor import _close_loaded_mapping, _source_array
 from compute.io import ComputeNpySink
-
-
-_PAD_MODES = {
-    "reflect": "symmetric",
-    "mirror": "reflect",
-    "nearest": "edge",
-    "wrap": "wrap",
-    "constant": "constant",
-}
 
 
 def _normalize_origin(origin, ndim):
@@ -48,16 +40,44 @@ def convolution_halo(kernel_shape, origin=0):
     return tuple(before), tuple(after)
 
 
-def _pad_global_edges(block, pad_width, boundary, cval):
-    try:
-        mode = _PAD_MODES[str(boundary)]
-    except KeyError as exc:
-        raise ValueError(f"不支持的卷积边界模式: {boundary}") from exc
-    if not any(left or right for left, right in pad_width):
-        return np.asarray(block)
-    if mode == "constant":
-        return np.pad(block, pad_width, mode=mode, constant_values=cval)
-    return np.pad(block, pad_width, mode=mode)
+def convolve_region(array, kernel, core_slices, *, boundary="reflect", cval=0.0, origin=0):
+    """Compute a bounded region using neighbors from the global source.
+
+    Global coordinate mapping also handles wrap boundaries and kernels whose
+    halo is longer than the image, without wrapping or reflecting a local tile.
+    """
+    before, after = convolution_halo(kernel.shape, origin)
+    indices = []
+    valid_axes = []
+    for part, length, left, right in zip(core_slices, array.shape, before, after):
+        positions = np.arange(part.start - left, part.stop + right)
+        valid_axes.append((positions >= 0) & (positions < length))
+        if boundary == "wrap":
+            mapped = positions % length
+        elif boundary == "reflect":
+            folded = positions % (2 * length)
+            mapped = np.minimum(folded, 2 * length - 1 - folded)
+        elif boundary == "mirror":
+            period = max(1, 2 * length - 2)
+            folded = positions % period
+            mapped = np.minimum(folded, period - folded)
+        elif boundary in ("nearest", "constant"):
+            mapped = np.clip(positions, 0, length - 1)
+        else:
+            raise ValueError(f"不支持的卷积边界模式: {boundary}")
+        indices.append(mapped)
+    dtype = np.result_type(array.dtype, kernel.dtype, np.float32)
+    padded = np.asarray(array[np.ix_(*indices)], dtype=dtype)
+    if boundary == "constant":
+        for axis, valid in enumerate(valid_axes):
+            invalid_index = [slice(None)] * array.ndim
+            invalid_index[axis] = ~valid
+            padded[tuple(invalid_index)] = cval
+    convolved = ndimage.convolve(padded, np.asarray(kernel, dtype=dtype),
+                                mode="constant", cval=0.0, origin=origin, output=dtype)
+    local_core = tuple(slice(left, left + part.stop - part.start)
+                       for part, left in zip(core_slices, before))
+    return convolved[local_core].copy()
 
 
 def run_spatiotemporal_convolution(
@@ -90,12 +110,14 @@ def run_spatiotemporal_convolution(
         origin = _normalize_origin(origin, array.ndim)
         halo_before, halo_after = convolution_halo(weights.shape, origin)
         core_shape = tuple(int(value) for value in core_shape)
-        plans = tuple(iter_block_plans(
+        if len(core_shape) != array.ndim or any(size <= 0 for size in core_shape):
+            raise ValueError("core_shape 需要为每个轴提供正整数")
+        plans = iter_block_plans(
             array.shape,
             core_shape=core_shape,
             halo_before=halo_before,
             halo_after=halo_after,
-        ))
+        )
         output_dtype = np.result_type(array.dtype, weights.dtype, np.float32)
         if output_to_disk:
             if cache_dir is None:
@@ -108,24 +130,13 @@ def run_spatiotemporal_convolution(
         else:
             destination = np.empty(array.shape, dtype=output_dtype)
 
-        total = len(plans)
+        total = math.prod((size + step - 1) // step for size, step in zip(array.shape, core_shape))
         if progress is not None:
             progress(0, total, "正在执行分块时空卷积")
         for completed, plan in enumerate(plans, 1):
             token.raise_if_cancelled()
-            read_block = np.asarray(array[plan.read_slices], dtype=output_dtype)
-            padded = _pad_global_edges(
-                read_block, plan.pad_width, boundary, cval
-            )
-            convolved = ndimage.convolve(
-                padded,
-                np.asarray(weights, dtype=output_dtype),
-                mode="constant",
-                cval=0.0,
-                origin=origin,
-                output=output_dtype,
-            )
-            result = convolved[plan.local_core_slices]
+            result = convolve_region(array, weights, plan.output_slices,
+                                     boundary=boundary, cval=cval, origin=origin)
             if sink is not None:
                 sink.write_block(plan.output_slices, result)
             else:

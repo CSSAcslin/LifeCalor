@@ -2,6 +2,11 @@ import os
 import sys
 import tempfile
 import unittest
+
+try:
+    from .qt_test_support import QtTestCase
+except ImportError:
+    from qt_test_support import QtTestCase
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,7 +26,7 @@ from compute.dialog import ComputeSettingsDialog
 from ExtraDialog import CWTComputePop, STFTComputePop
 
 
-class ComputeDialogTests(unittest.TestCase):
+class ComputeDialogTests(QtTestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

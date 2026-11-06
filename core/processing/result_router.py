@@ -32,6 +32,7 @@ class ResultRouter:
             "EM_pre_processed": lambda _data: None,
             "2D_Fourier_transform": lambda _data: None,
             "2D_Inverse_Fourier_transform": lambda _data: None,
+            "spatiotemporal_convolution": self._convolution,
         }
 
     def register(self, process_type, handler):
@@ -57,6 +58,9 @@ class ResultRouter:
 
     def _roi_lifetime(self, data):
         self.window.result_display.display_lifetime_curve(data, self.window.time_unit_combo.currentText())
+
+    def _convolution(self, data):
+        self.window.add_new_canvas(data)
 
     def _lifetime_distribution(self, data):
         self.window.result_display.display_distribution_map(data, "指数衰减寿命分布图")

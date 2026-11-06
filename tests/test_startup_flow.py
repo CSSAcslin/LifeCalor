@@ -4,6 +4,11 @@ import sys
 import tempfile
 import time
 import unittest
+
+try:
+    from .qt_test_support import QtTestCase
+except ImportError:
+    from qt_test_support import QtTestCase
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -13,7 +18,7 @@ CORE = ROOT / "core"
 if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))
 
-from PyQt5.QtCore import QThread, Qt
+from PyQt5.QtCore import QThread, Qt, qWarning
 from PyQt5.QtWidgets import QApplication, QLabel, QMainWindow
 
 import resources_rc  # Register resources while the real Qt modules are active.
@@ -24,7 +29,7 @@ from startup.splash import StartupSplash
 from launcher import _configure_application_icon, _configure_appearance
 
 
-class StartupFlowTests(unittest.TestCase):
+class StartupFlowTests(QtTestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
@@ -151,6 +156,31 @@ class StartupFlowTests(unittest.TestCase):
                 if getattr(handler, "lifecalor_file_handler", False):
                     root.removeHandler(handler)
                     handler.close()
+
+    def test_native_qt_warning_is_flushed_to_file_without_gui_logging(self):
+        messages = []
+
+        class GuiHandler(logging.Handler):
+            def emit(self, record):
+                messages.append(record.getMessage())
+
+        root = logging.getLogger()
+        gui_handler = GuiHandler()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "native-qt.log"
+            install_early_logging(path)
+            root.addHandler(gui_handler)
+            try:
+                qWarning("LifeCalor native Qt diagnostic")
+                self.assertIn("LifeCalor native Qt diagnostic", path.read_text(encoding="utf-8"))
+                self.assertEqual(messages, [])
+            finally:
+                root.removeHandler(gui_handler)
+                gui_handler.close()
+                for handler in tuple(root.handlers):
+                    if isinstance(handler, logging.FileHandler):
+                        root.removeHandler(handler)
+                        handler.close()
 
 
 if __name__ == "__main__":

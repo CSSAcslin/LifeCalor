@@ -1,6 +1,11 @@
 import os
 import sys
 import unittest
+
+try:
+    from .qt_test_support import QtTestCase
+except ImportError:
+    from qt_test_support import QtTestCase
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -17,7 +22,7 @@ from tasks import TaskCoordinator, TaskStatus
 from tasks.panel import TaskPanel
 
 
-class ApplicationBootstrapTests(unittest.TestCase):
+class ApplicationBootstrapTests(QtTestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
@@ -46,7 +51,7 @@ class ApplicationBootstrapTests(unittest.TestCase):
         self.assertLess(source.index("from launcher import main"), source.index("import resources_rc"))
 
 
-class TaskPanelTests(unittest.TestCase):
+class TaskPanelTests(QtTestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

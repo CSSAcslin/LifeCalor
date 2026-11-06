@@ -2,6 +2,11 @@ import os
 import sys
 import tempfile
 import unittest
+
+try:
+    from .qt_test_support import QtTestCase
+except ImportError:
+    from qt_test_support import QtTestCase
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -31,7 +36,7 @@ from tasks import TaskCoordinator
 from tasks.panel import TaskPanel
 
 
-class ComputeResourceTests(unittest.TestCase):
+class ComputeResourceTests(QtTestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
@@ -79,7 +84,7 @@ class ComputeResourceTests(unittest.TestCase):
         self.assertGreaterEqual(recommendation.gpu_memory_percent, 10)
         self.assertLessEqual(recommendation.gpu_memory_percent, 75)
 
-    def test_auto_backend_uses_only_validated_algorithm_capability(self):
+    def test_explicit_gpu_uses_only_validated_algorithm_capability(self):
         gpu = DeviceCapability(
             "nvidia:0",
             "gpu",
@@ -96,7 +101,7 @@ class ComputeResourceTests(unittest.TestCase):
             dtype="float32",
             axes="THW",
             source=object(),
-            backend=BackendPreference.AUTO,
+            backend=BackendPreference.GPU,
             precision=PrecisionPolicy.COMPATIBILITY,
         )
         plan = plan_compute(

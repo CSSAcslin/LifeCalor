@@ -1,6 +1,11 @@
 import os
 import sys
 import unittest
+
+try:
+    from .qt_test_support import QtTestCase
+except ImportError:
+    from qt_test_support import QtTestCase
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,7 +22,7 @@ from PyQt5.QtWidgets import QApplication, QComboBox
 from ResultDisplayWidget import ResultDisplayWidget
 
 
-class LifetimeResultFieldTests(unittest.TestCase):
+class LifetimeResultFieldTests(QtTestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

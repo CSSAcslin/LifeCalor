@@ -1,0 +1,356 @@
+{
+  "date": "2026-11-06",
+  "python": "3.12.14",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "gpu": {
+    "device_id": "nvidia:0",
+    "name": "NVIDIA GeForce RTX 5070 Ti",
+    "free_memory_bytes": 15679356928,
+    "total_memory_bytes": 17066033152,
+    "driver": "13040",
+    "runtime": "13020",
+    "cupy": "14.2.0",
+    "checksum": 4825.048828125
+  },
+  "source": "deterministic synthetic signals",
+  "records": [
+    {
+      "algorithm": "cwt",
+      "dtype": "float32",
+      "wavelet": "cmor1-1.0",
+      "max_absolute_error": 2.384185791015625e-07,
+      "max_error_over_reference_peak": 2.770190533704908e-07
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "float32",
+      "wavelet": "cmor1.5-1.0",
+      "max_absolute_error": 2.384185791015625e-07,
+      "max_error_over_reference_peak": 2.9451535106045776e-07
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "float32",
+      "wavelet": "cmor3-3",
+      "max_absolute_error": 8.940696716308594e-08,
+      "max_error_over_reference_peak": 2.9907072743571177e-07
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "float32",
+      "wavelet": "cmor8-3",
+      "max_absolute_error": 7.450580596923828e-08,
+      "max_error_over_reference_peak": 4.073276285198097e-07
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "float32",
+      "wavelet": "cgau8",
+      "max_absolute_error": 4.76837158203125e-07,
+      "max_error_over_reference_peak": 2.95226875210995e-07
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "float32",
+      "wavelet": "mexh",
+      "max_absolute_error": 7.152557373046875e-07,
+      "max_error_over_reference_peak": 2.3926169582947723e-07
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "float32",
+      "wavelet": "morl",
+      "max_absolute_error": 4.76837158203125e-07,
+      "max_error_over_reference_peak": 2.351829176298877e-07
+    },
+    {
+      "algorithm": "stft",
+      "dtype": "float32",
+      "frequency": 0.0,
+      "max_absolute_error": 0.0,
+      "max_error_over_reference_peak": 0.0
+    },
+    {
+      "algorithm": "stft",
+      "dtype": "float32",
+      "frequency": 8.0,
+      "max_absolute_error": 1.1920928955078125e-07,
+      "max_error_over_reference_peak": 1.1904598925133763e-07
+    },
+    {
+      "algorithm": "stft",
+      "dtype": "float32",
+      "frequency": 32.0,
+      "max_absolute_error": 0.0,
+      "max_error_over_reference_peak": 0.0
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "float64",
+      "wavelet": "cmor1-1.0",
+      "max_absolute_error": 3.3306690738754696e-16,
+      "max_error_over_reference_peak": 3.8699114987454843e-16
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "float64",
+      "wavelet": "cmor1.5-1.0",
+      "max_absolute_error": 3.3306690738754696e-16,
+      "max_error_over_reference_peak": 4.1143322448857686e-16
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "float64",
+      "wavelet": "cmor3-3",
+      "max_absolute_error": 2.220446049250313e-16,
+      "max_error_over_reference_peak": 7.427502319401402e-16
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "float64",
+      "wavelet": "cmor8-3",
+      "max_absolute_error": 8.326672684688674e-17,
+      "max_error_over_reference_peak": 4.552241216961085e-16
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "float64",
+      "wavelet": "cgau8",
+      "max_absolute_error": 8.881784197001252e-16,
+      "max_error_over_reference_peak": 5.499028989713861e-16
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "float64",
+      "wavelet": "mexh",
+      "max_absolute_error": 1.7208456881689926e-15,
+      "max_error_over_reference_peak": 5.756437215612417e-16
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "float64",
+      "wavelet": "morl",
+      "max_absolute_error": 1.1102230246251565e-15,
+      "max_error_over_reference_peak": 5.475778152070317e-16
+    },
+    {
+      "algorithm": "stft",
+      "dtype": "float64",
+      "frequency": 0.0,
+      "max_absolute_error": 0.0,
+      "max_error_over_reference_peak": 0.0
+    },
+    {
+      "algorithm": "stft",
+      "dtype": "float64",
+      "frequency": 8.0,
+      "max_absolute_error": 5.551115123125783e-17,
+      "max_error_over_reference_peak": 5.5435104500597103e-17
+    },
+    {
+      "algorithm": "stft",
+      "dtype": "float64",
+      "frequency": 32.0,
+      "max_absolute_error": 0.0,
+      "max_error_over_reference_peak": 0.0
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "complex64",
+      "wavelet": "cmor1-1.0",
+      "max_absolute_error": 1.4901161193847656e-07,
+      "max_error_over_reference_peak": 3.4421526286273923e-07
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "complex64",
+      "wavelet": "cmor1.5-1.0",
+      "max_absolute_error": 1.4901161193847656e-07,
+      "max_error_over_reference_peak": 3.662223730081806e-07
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "complex64",
+      "wavelet": "cmor3-3",
+      "max_absolute_error": 5.960464477539063e-08,
+      "max_error_over_reference_peak": 3.9045966473571346e-07
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "complex64",
+      "wavelet": "cmor8-3",
+      "max_absolute_error": 4.470348358154297e-08,
+      "max_error_over_reference_peak": 4.793125124771039e-07
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "complex64",
+      "wavelet": "cgau8",
+      "max_absolute_error": 7.152557373046875e-07,
+      "max_error_over_reference_peak": 2.9772221663717396e-07
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "complex64",
+      "wavelet": "mexh",
+      "max_absolute_error": 7.152557373046875e-07,
+      "max_error_over_reference_peak": 2.389188824999325e-07
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "complex64",
+      "wavelet": "morl",
+      "max_absolute_error": 4.76837158203125e-07,
+      "max_error_over_reference_peak": 2.3436770347423168e-07
+    },
+    {
+      "algorithm": "stft",
+      "dtype": "complex64",
+      "frequency": 0.0,
+      "max_absolute_error": 7.450580596923828e-09,
+      "max_error_over_reference_peak": 2.955767180603641e-08
+    },
+    {
+      "algorithm": "stft",
+      "dtype": "complex64",
+      "frequency": 8.0,
+      "max_absolute_error": 5.960464477539063e-08,
+      "max_error_over_reference_peak": 7.94091766673922e-08
+    },
+    {
+      "algorithm": "stft",
+      "dtype": "complex64",
+      "frequency": 32.0,
+      "max_absolute_error": 0.0,
+      "max_error_over_reference_peak": 0.0
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "complex128",
+      "wavelet": "cmor1-1.0",
+      "max_absolute_error": 2.7755575615628914e-16,
+      "max_error_over_reference_peak": 6.411509729401382e-16
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "complex128",
+      "wavelet": "cmor1.5-1.0",
+      "max_absolute_error": 2.7755575615628914e-16,
+      "max_error_over_reference_peak": 6.821423018053835e-16
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "complex128",
+      "wavelet": "cmor3-3",
+      "max_absolute_error": 8.326672684688674e-17,
+      "max_error_over_reference_peak": 5.454659057658471e-16
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "complex128",
+      "wavelet": "cmor8-3",
+      "max_absolute_error": 6.938893903907228e-17,
+      "max_error_over_reference_peak": 7.439910758214618e-16
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "complex128",
+      "wavelet": "cgau8",
+      "max_absolute_error": 1.3322676295501878e-15,
+      "max_error_over_reference_peak": 5.545508428564259e-16
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "complex128",
+      "wavelet": "mexh",
+      "max_absolute_error": 1.3322676295501878e-15,
+      "max_error_over_reference_peak": 4.450211481966336e-16
+    },
+    {
+      "algorithm": "cwt",
+      "dtype": "complex128",
+      "wavelet": "morl",
+      "max_absolute_error": 8.881784197001252e-16,
+      "max_error_over_reference_peak": 4.3654386447249037e-16
+    },
+    {
+      "algorithm": "stft",
+      "dtype": "complex128",
+      "frequency": 0.0,
+      "max_absolute_error": 5.551115123125783e-17,
+      "max_error_over_reference_peak": 2.2022179746807648e-16
+    },
+    {
+      "algorithm": "stft",
+      "dtype": "complex128",
+      "frequency": 8.0,
+      "max_absolute_error": 2.220446049250313e-16,
+      "max_error_over_reference_peak": 2.958222020278371e-16
+    },
+    {
+      "algorithm": "stft",
+      "dtype": "complex128",
+      "frequency": 32.0,
+      "max_absolute_error": 1.3877787807814457e-17,
+      "max_error_over_reference_peak": 3.3041077391386153e-16
+    },
+    {
+      "algorithm": "lifetime_single",
+      "field": "lifetime_map",
+      "max_absolute_error": 1.6266987756807794e-12,
+      "max_error_over_reference_peak": 5.247415405421868e-13
+    },
+    {
+      "algorithm": "lifetime_single",
+      "field": "r_squared_map",
+      "max_absolute_error": 0.0,
+      "max_error_over_reference_peak": 0.0
+    },
+    {
+      "algorithm": "lifetime_single",
+      "field": "fit_status",
+      "all_statuses_equal": true
+    },
+    {
+      "algorithm": "lifetime_double",
+      "field": "tau1_map",
+      "max_absolute_error": 5.564437799421285e-13,
+      "max_error_over_reference_peak": 1.7949799352973695e-13
+    },
+    {
+      "algorithm": "lifetime_double",
+      "field": "tau2_map",
+      "max_absolute_error": 1.1894485396624077e-11,
+      "max_error_over_reference_peak": 7.929656931086773e-13
+    },
+    {
+      "algorithm": "lifetime_double",
+      "field": "amplitude1_map",
+      "max_absolute_error": 9.00257646208047e-12,
+      "max_error_over_reference_peak": 2.0005725471292383e-13
+    },
+    {
+      "algorithm": "lifetime_double",
+      "field": "amplitude2_map",
+      "max_absolute_error": 6.192379942149273e-12,
+      "max_error_over_reference_peak": 3.4402110789711457e-13
+    },
+    {
+      "algorithm": "lifetime_double",
+      "field": "baseline_map",
+      "max_absolute_error": 3.312017327061767e-12,
+      "max_error_over_reference_peak": 1.1040057756864208e-12
+    },
+    {
+      "algorithm": "lifetime_double",
+      "field": "r_squared_map",
+      "max_absolute_error": 0.0,
+      "max_error_over_reference_peak": 0.0
+    },
+    {
+      "algorithm": "lifetime_double",
+      "field": "fit_status",
+      "all_statuses_equal": true
+    }
+  ]
+}

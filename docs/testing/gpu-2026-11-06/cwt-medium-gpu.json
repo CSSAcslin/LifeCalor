@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "captured_at": "2026-11-06T07:28:29.299385+00:00",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "numpy": "2.5.4"
+  },
+  "algorithm": "cwt",
+  "size": "medium",
+  "input_shape": [
+    1024,
+    64,
+    64
+  ],
+  "input_dtype": "float32",
+  "requested_backend": "gpu",
+  "actual_backend": "gpu",
+  "precision_policy": "compatibility",
+  "compute_dtype": "float32",
+  "output_shape": [
+    1024,
+    64,
+    64
+  ],
+  "output_fields": [],
+  "chunk_shape": [
+    1024,
+    4,
+    64
+  ],
+  "chunk_count": 16,
+  "cpu_workers": 1,
+  "device": {
+    "name": "NVIDIA GeForce RTX 5070 Ti",
+    "backend": "CuPy 14.2.0 / CUDA 13020",
+    "driver": "13040",
+    "total_memory_bytes": 17066033152
+  },
+  "cold_start_seconds": 3.838822899997467,
+  "warm_seconds": [
+    2.8666062999982387,
+    3.8470706999942195,
+    2.890733700012788,
+    3.8549545999849215
+  ],
+  "warm_median_seconds": 3.368902200003504,
+  "peak_rss_delta_bytes": 19951616,
+  "peak_device_bytes": null,
+  "phase_seconds": {
+    "io": null,
+    "host_to_device": null,
+    "kernel_or_solver": null,
+    "device_to_host": null,
+    "total": [
+      3.838822899997467,
+      2.8666062999982387,
+      3.8470706999942195,
+      2.890733700012788,
+      3.8549545999849215
+    ]
+  },
+  "fallback_reason": "",
+  "notes": "GPU peak memory and phase timing are null until worker-side instrumentation is available; total time includes pipeline I/O."
+}

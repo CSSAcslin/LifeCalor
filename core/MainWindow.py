@@ -24,6 +24,9 @@ from UpdateModule import *
 from PlotGraphWidget import *
 from SpatialExtractor import SpatialExtractor
 from calculator.dialog import DataCalculatorDialog
+from convolution.dialog import ConvolutionDialog
+from convolution.engine import validate_convolution
+from dataclasses import replace
 from widget import TriStateSwitch
 from AppConfig import get_github_auth_header
 from settings import load_param_group
@@ -79,6 +82,7 @@ class MainWindow(QMainWindow):
     tDiFT_signal = pyqtSignal(object)
     heartbeat_signal = pyqtSignal(object, int, int ,list, str, str, float)
     calculator_signal = pyqtSignal(object)
+    convolution_signal = pyqtSignal(object)
     easy_process = pyqtSignal(object, str, object)
     roi_value_distribution_signal = pyqtSignal(object, np.ndarray, int, object, object, str)
     roi_processed_signal = pyqtSignal(object,np.ndarray,float,bool,bool,float)
@@ -160,6 +164,9 @@ class MainWindow(QMainWindow):
         self.cal_thread_open()
         self.EM_thread_open()
         self.log_startup_message()
+        from startup.shutdown import WindowShutdownController
+
+        self.shutdown_controller = WindowShutdownController(self)
 
     def _startup_step(self, text, current):
         reporter = self._startup_reporter
@@ -168,6 +175,8 @@ class MainWindow(QMainWindow):
 
     def start_deferred_services(self):
         """Start nonessential work only after the workspace is visible."""
+        if getattr(self, "_lifecalor_closing", False):
+            return
         if self._deferred_services_started:
             return
         self._deferred_services_started = True
@@ -178,6 +187,8 @@ class MainWindow(QMainWindow):
         logging.info("主窗口后台服务已启动")
     def _start_compute_hardware_probe(self):
         """Probe compute hardware after the main window is visible."""
+        if getattr(self, "_lifecalor_closing", False):
+            return
         if getattr(self, "_hardware_probe_thread", None) is not None:
             if self._hardware_probe_thread.isRunning():
                 return
@@ -194,6 +205,8 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _compute_hardware_snapshot_ready(self, snapshot):
+        if getattr(self, "_lifecalor_closing", False):
+            return
         from compute.capabilities import reconcile_probe_snapshot, set_cached_snapshot
         from compute.model import CapabilityStatus
         from compute.resources import recommend_resources
@@ -242,6 +255,8 @@ class MainWindow(QMainWindow):
             self._start_compute_cuda_self_test(candidate)
 
     def _start_compute_cuda_self_test(self, device=None):
+        if getattr(self, "_lifecalor_closing", False):
+            return
         if getattr(self, "_cuda_probe_thread", None) is not None:
             if self._cuda_probe_thread.isRunning():
                 return
@@ -261,6 +276,8 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _compute_cuda_capability_ready(self, capability):
+        if getattr(self, "_lifecalor_closing", False):
+            return
         from compute.capabilities import (
             update_cached_device_capability,
         )
@@ -1206,6 +1223,9 @@ class MainWindow(QMainWindow):
         data_cropper = advanced_menu.addAction('数据切片器')
         data_cropper.triggered.connect(self.data_crop)
 
+        convolution_tool = advanced_menu.addAction('时空卷积')
+        convolution_tool.triggered.connect(self.process_convolution)
+
         # 历史数据管理
         data_menu = self.menu.addMenu('历史数据')
         history_cache_manager = data_menu.addAction('历史与缓存管理')
@@ -1378,6 +1398,8 @@ class MainWindow(QMainWindow):
     def update_dialog(self):
         """显示更新对话框
         注：更新功能中使用的线程都是直接继承QThread的方法，因为功能比较简单"""
+        if getattr(self, "_lifecalor_closing", False):
+            return
         dialog = UpdateDialog(self)
         dialog.download_progress.connect(self.update_progress)
         dialog.update_status.connect(self.update_status)
@@ -1386,6 +1408,8 @@ class MainWindow(QMainWindow):
 
     def auto_update_check(self):
         """设置自动检查更新"""
+        if getattr(self, "_lifecalor_closing", False):
+            return
         # 检查设置，避免过于频繁检查
         self.settings.beginGroup("sys")
         last_check = self.settings.value("last_update_check")
@@ -1411,6 +1435,8 @@ class MainWindow(QMainWindow):
 
     def check_updates_on_startup(self):
         """启动时检查更新"""
+        if getattr(self, "_lifecalor_closing", False):
+            return
         logging.info("正在检查更新...")
         self.update_status("检查更新中",'working')
 
@@ -1426,6 +1452,8 @@ class MainWindow(QMainWindow):
 
     def handle_startup_update(self, update_info):
         """处理启动时发现的更新"""
+        if getattr(self, "_lifecalor_closing", False):
+            return
         if not update_info['update_available']:
             return
 
@@ -1453,6 +1481,8 @@ class MainWindow(QMainWindow):
 
     def handle_check_completed(self, has_update):
         """处理检查完成"""
+        if getattr(self, "_lifecalor_closing", False):
+            return
         if not has_update:
             QMessageBox.information(self,"提示","当前已是最新版本")
             logging.info("已是最新版本")
@@ -1600,6 +1630,7 @@ class MainWindow(QMainWindow):
         self.tDiFT_signal.connect(self.mass_data_processor.twoD_inverse_fourier_transform)
         self.heartbeat_signal.connect(self.mass_data_processor.heartbeat_movement)
         self.calculator_signal.connect(self.mass_data_processor.calculation_operation)
+        self.convolution_signal.connect(self.mass_data_processor.convolve)
         self.mass_data_processor.calculator_completed.connect(self._calculator_completed)
         self.mass_data_processor.calculator_failed.connect(self._calculator_failed)
         self.mass_data_processor.processing_error_signal.connect(
@@ -2786,6 +2817,63 @@ class MainWindow(QMainWindow):
             seen.add(identity)
             sources.append(source)
         return sources
+
+    def process_convolution(self):
+        existing = getattr(self, "convolution_dialog", None)
+        if existing is not None:
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return True
+        dialog = ConvolutionDialog(self.calculator_sources, self)
+        self.convolution_dialog = dialog
+        dialog.execute_requested.connect(self._submit_convolution_plan)
+        dialog.cancel_requested.connect(self._cancel_convolution)
+        dialog.closed.connect(self._convolution_closed)
+        self.task_coordinator.task_finished.connect(dialog.task_finished)
+        dialog.show()
+        return True
+
+    def _convolution_closed(self):
+        dialog = getattr(self, "convolution_dialog", None)
+        if dialog is not None:
+            self.task_coordinator.task_finished.disconnect(dialog.task_finished)
+            dialog.execute_requested.disconnect(self._submit_convolution_plan)
+            dialog.cancel_requested.disconnect(self._cancel_convolution)
+            dialog.closed.disconnect(self._convolution_closed)
+        self.convolution_dialog = None
+
+    def _cancel_convolution(self):
+        dialog = getattr(self, "convolution_dialog", None)
+        if dialog is not None and dialog.task_id is not None:
+            self.task_coordinator.cancel_task(dialog.task_id)
+
+    def _submit_convolution_plan(self, plan):
+        dialog = getattr(self, "convolution_dialog", None)
+        if dialog is None or dialog.task_id is not None:
+            return False
+        try:
+            options = self.get_compute_options("spatiotemporal_convolution")
+            limit_mb = min(int(options["host_memory_limit_mb"]), int(self.tool_params["memory_budget_mb"]))
+            plan = replace(
+                plan, memory_limit_bytes=limit_mb * 1024 * 1024,
+                resident_bytes=estimate_resident_bytes(self.calculator_sources()),
+                disk_threshold_bytes=int(self.tool_params["cache_threshold_mb"]) * 1024 * 1024,
+                cache_dir=str(self.tool_params["cache_directory"]),
+            )
+            validation = validate_convolution(plan)
+        except (ValueError, MemoryError) as exc:
+            dialog.status.setText(str(exc))
+            return False
+        task = self.processing_controller.begin("avi_thread", "em_processing", "时空卷积")
+        dialog.bind_task(task)
+        self.task_coordinator.configure_execution(
+            task.task_id, requested_backend="cpu", actual_backend="cpu",
+            precision=validation.dtype.name, device="CPU", stage="时空卷积",
+            resource_summary=f"分块 {validation.core_shape}，工作内存 {validation.working_bytes} bytes",
+        )
+        self.convolution_signal.emit(plan)
+        return True
 
     def process_math(self):
         """Open or focus the non-modal multi-source calculation workspace."""

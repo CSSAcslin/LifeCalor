@@ -52,6 +52,7 @@ def stft_frequency_trace(
     nfft,
     target_freq,
     scale_range=0.0,
+    output_dtype="float32",
 ):
     """Compute the frozen STFT amplitude contract for one or many traces."""
     array = np.asarray(values)
@@ -86,4 +87,4 @@ def stft_frequency_trace(
         np.abs(selected_coefficients) * factors.reshape(factor_shape),
         axis=-2,
     )
-    return frequencies, times, magnitude.astype(np.float32, copy=False), selected
+    return frequencies, times, magnitude.astype(np.dtype(output_dtype), copy=False), selected

@@ -6,6 +6,11 @@ import sys
 import tempfile
 import types
 import unittest
+
+try:
+    from .qt_test_support import QtTestCase
+except ImportError:
+    from qt_test_support import QtTestCase
 from pathlib import Path
 
 import numpy as np
@@ -32,7 +37,7 @@ from history.manifest import (
 )
 
 
-class HistoryTimestampDisplayTests(unittest.TestCase):
+class HistoryTimestampDisplayTests(QtTestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
@@ -79,7 +84,7 @@ class HistoryTimestampDisplayTests(unittest.TestCase):
         dialog.close()
 
 
-class HistoryCacheManagerTests(unittest.TestCase):
+class HistoryCacheManagerTests(QtTestCase):
     def setUp(self):
         self.cache_dir = Path(tempfile.mkdtemp())
 
@@ -386,7 +391,7 @@ class HistoryCacheManagerTests(unittest.TestCase):
         self.assertEqual(content["items"], [])
 
 
-class HistoryCacheArchitectureTests(unittest.TestCase):
+class HistoryCacheArchitectureTests(QtTestCase):
     def test_mainwindow_and_history_controller_expose_unified_manager(self):
         main_source = (CORE / "MainWindow.py").read_text(encoding="utf-8")
         history_source = (CORE / "history" / "controller.py").read_text(encoding="utf-8")

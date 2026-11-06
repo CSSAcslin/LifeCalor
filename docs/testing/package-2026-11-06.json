@@ -1,0 +1,43 @@
+{
+  "date": "2026-11-06",
+  "source_revision": "a3bf420 + 1.1.2 working tree",
+  "checks": {
+    "cpu": {
+      "executable": "D:\\coding\\L\\LifeCalor\\dist\\LifeCalor-CPU.exe",
+      "backend": "cpu",
+      "cuda_available": false,
+      "main_window_ready": true,
+      "normal_close_exit_code": 0,
+      "embedded_version": "1.1.2",
+      "size_bytes": 239117378,
+      "sha256": "212397c5a045bacd2f57b31dfea30b79701f3aecc195cced15d21b0a3453e74b"
+    },
+    "cuda": {
+      "executable": "D:\\coding\\L\\LifeCalor\\dist\\LifeCalor.exe",
+      "backend": "gpu",
+      "cuda_available": true,
+      "device": "NVIDIA GeForce RTX 5070 Ti",
+      "stft_max_absolute_error": 5.960464477539063e-08,
+      "fitted_lifetimes": {
+        "single": [
+          2.5000000000008966
+        ],
+        "double": [
+          2.4999999999559486,
+          11.999999999346791
+        ]
+      },
+      "main_window_ready": true,
+      "normal_close_exit_code": 0,
+      "embedded_version": "1.1.2",
+      "size_bytes": 1343501454,
+      "sha256": "b012ffa0fe81c73e4dba30ca958910e03cbdea59ef0f7ac283fc5a796268f7be"
+    },
+    "cuda_immediate_close": {
+      "executable": "D:\\coding\\L\\LifeCalor\\dist\\LifeCalor.exe",
+      "backend": "gpu",
+      "main_window_ready": true,
+      "normal_close_exit_code": 0
+    }
+  }
+}

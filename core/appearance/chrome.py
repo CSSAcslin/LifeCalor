@@ -30,6 +30,7 @@ _PROJECT_MODULE_PREFIXES = (
     "SpatialExtractor",
     "UpdateModule",
     "calculator.",
+    "convolution.",
     "history.",
     "importing.",
     "widget.",

@@ -30,6 +30,7 @@ def stft_block_cpu(block, params, *, compute_dtype, output_dtype):
         nfft=params["nfft"],
         target_freq=params["target_freq"],
         scale_range=params.get("scale_range", 0.0),
+        output_dtype=output_dtype,
     )
     output = magnitude.T.reshape(magnitude.shape[-1], height, width)
     return (

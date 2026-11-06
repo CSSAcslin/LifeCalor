@@ -1,6 +1,11 @@
 import os
 import sys
 import unittest
+
+try:
+    from .qt_test_support import QtTestCase
+except ImportError:
+    from qt_test_support import QtTestCase
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,7 +29,7 @@ from widget.EmojiPicker import EmojiPickerDialog, EmojiTagSlot
 from widget.DataTreeWidget import DataHistoryTreeWidget
 
 
-class HistoryMetadataUiTests(unittest.TestCase):
+class HistoryMetadataUiTests(QtTestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

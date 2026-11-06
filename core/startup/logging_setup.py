@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import traceback
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -12,6 +13,45 @@ from app_metadata import APP_NAME
 _FILE_HANDLER_MARKER = "lifecalor_file_handler"
 _BUFFER_HANDLER_MARKER = "lifecalor_startup_buffer"
 _LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
+_QT_FILE_HANDLER = None
+_QT_MESSAGE_HANDLER_INSTALLED = False
+
+
+def _qt_message_to_file(message_type, context, message):
+    """Write Qt diagnostics directly to disk without calling GUI handlers."""
+    handler = _QT_FILE_HANDLER
+    if handler is None or handler._closed:
+        return
+    try:
+        text = str(message)
+        if "shared QObject was deleted directly" in text:
+            text += "\n" + "".join(traceback.format_stack())
+        levels = {
+            0: logging.DEBUG,
+            1: logging.WARNING,
+            2: logging.ERROR,
+            3: logging.CRITICAL,
+            4: logging.INFO,
+        }
+        record = logging.LogRecord(
+            "qt", levels.get(int(message_type), logging.WARNING),
+            context.file or "", context.line, "Qt: %s", (text,), None,
+        )
+        handler.handle(record)
+        handler.flush()
+    except Exception:
+        # A Qt message callback must not raise back into Qt, including during exit.
+        pass
+
+
+def _install_qt_file_logging(handler):
+    global _QT_FILE_HANDLER, _QT_MESSAGE_HANDLER_INSTALLED
+    _QT_FILE_HANDLER = handler
+    if not _QT_MESSAGE_HANDLER_INSTALLED:
+        from PyQt5.QtCore import qInstallMessageHandler
+
+        qInstallMessageHandler(_qt_message_to_file)
+        _QT_MESSAGE_HANDLER_INSTALLED = True
 
 
 class StartupBufferHandler(logging.Handler):
@@ -50,6 +90,7 @@ def ensure_file_logging(log_file=None):
             except (AttributeError, OSError):
                 same_path = False
             if same_path:
+                _install_qt_file_logging(handler)
                 return handler
             logger.removeHandler(handler)
             handler.close()
@@ -59,6 +100,7 @@ def ensure_file_logging(log_file=None):
     handler.setFormatter(logging.Formatter(_LOG_FORMAT))
     setattr(handler, _FILE_HANDLER_MARKER, True)
     logger.addHandler(handler)
+    _install_qt_file_logging(handler)
     return handler
 
 
