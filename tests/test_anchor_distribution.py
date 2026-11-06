@@ -80,7 +80,7 @@ class AnchorDistributionTests(unittest.TestCase):
         extra_source = (CORE / "ExtraDialog.py").read_text(encoding="utf-8")
 
         self.assertIn('self.roi_distribution_btn = QPushButton("选区分布统计")', main_source)
-        self.assertIn("self.roi_distribution_btn.clicked.connect(self.process_roi_value_distribution)", main_source)
+        self.assertIn('self.analysis_controller.connect_button(self.roi_distribution_btn, "statistics.distribution")', main_source)
         self.assertIn("roi_value_distribution_signal", main_source)
         self.assertIn("get_roi_value_distribution", main_source)
         self.assertIn("class ValueDistributionDialog", extra_source)

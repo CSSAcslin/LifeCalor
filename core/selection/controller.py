@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from typing import Any, Callable
 
 from .policy import select_data
@@ -21,8 +22,20 @@ class SelectionController:
         self.roi_dialog_factory = roi_dialog_factory
         self.warning = warning
         self.logger = logger
+        self._prepared_input = None
+
+    @contextmanager
+    def prepared(self, data, mask=None):
+        previous = self._prepared_input
+        self._prepared_input = (data, mask)
+        try:
+            yield
+        finally:
+            self._prepared_input = previous
 
     def select_data(self, aim_type: str | list = "all"):
+        if self._prepared_input is not None:
+            return self._prepared_input[0]
         aim_data = select_data(
             mode=self.window.mode,
             raw_data=self.window.data,
@@ -56,6 +69,8 @@ class SelectionController:
         return aim_data
 
     def select_roi(self, select=False):
+        if self._prepared_input is not None:
+            return self._prepared_input[1]
         roi_dialog_factory = self.roi_dialog_factory or self._default_roi_dialog_factory
         return select_roi(
             mode=self.window.mode,

@@ -2,7 +2,7 @@
 
 LifeCalor 是基于 PyQt5 的本地科学成像分析工具。超快成像工作流从衰减曲线提取载流子寿命、生成像素级寿命图并分析扩散。EM-iSCAT 工作流从图像序列提取 STFT/CWT 时频信号，支持全细胞和单通道分析。两条工作流共用多画布、ROI、数据计算器、历史缓存和导出。[用户操作手册](readme.md)
 
-**交接基线（2026-11-06）**　当前源码版本 `1.1.2`，基于 `main` 的 `a3bf420`（1.1.1）开发。本轮稳定性修复、GPU 验收、时空卷积和依赖文档随 1.1.2 一并归档。后续接手时先运行 `git status --short --branch` 和 `git log -1 --oneline`，再判断本文哪些结论适用于当前版本。[版本常量](core/app_metadata.py) · [版本变更记录](updatinglog.md)
+**交接基线（2026-11-06）**　当前源码版本 `1.1.2`，本次集成基于主线提交 `1798dde`（稳定性、GPU 验收与时空卷积）和分析菜单提交 `72e74ba`。下文分别保留两条基线的历史验收，合并后的验证状态见[菜单合并验收](docs/testing/lifecalor-analysis-merge.md)。后续接手时先运行 `git status --short --branch` 和 `git log -1 --oneline`，再判断本文哪些结论适用于当前版本。[版本常量](core/app_metadata.py) · [版本变更记录](updatinglog.md)
 
 ## 建立环境与启动
 
@@ -33,6 +33,7 @@ EM-iSCAT 共用上述任务与结果机制。对应的工作对象是 `MassDataP
 | 更新内容 | 首先看哪里 | 对应回归用例 |
 | --- | --- | --- |
 | 新增文件格式 | 在 [readers.py](core/importing/readers.py) 实现探测与读取，加入 [default_importer_registry](core/importing/registry.py)。界面的文件过滤器和显式格式入口在 `MainWindow.load_general_file()` 与 `ImportManager.type_all`。 | [导入注册与格式](tests/test_importer_registry.py) |
+| 修改分析菜单、输入确认或参数导航 | [分析动作目录](core/analysis/catalog.py) 描述动作与参数页，[分析控制器](core/analysis/controller.py) 复用左面板提交，[输入确认](core/analysis/dialog.py) 校验来源、时间轴及匹配 ROI。 | [分析菜单](tests/test_analysis_menu.py)、[工作对象数值](tests/test_analysis_worker_numerics.py)、[曲线分析](tests/test_curve_analysis_actions.py) |
 | 新增算法、修改精度或分块 | [内置算法规格](core/compute/registry.py) 定义轴、dtype、输出字段和后端处理函数。[规划器](core/compute/planner.py) 生成执行计划，[算法目录](core/compute/algorithms/) 实现各条管线。`core/AlgorithmRegistry.py` 是运行时可调用对象注册的兼容入口。 | [算法规格与分块](tests/test_compute_111_registry_and_blocks.py)、[计算契约](tests/test_compute_contracts.py) |
 | 修改画布、播放、ROI 或 Anchor | [ImageDisplayWindow.py](core/ImageDisplayWindow.py) 处理画布交互，[display](core/display/) 负责显示源、帧渲染、缓存、时间轴和布局，[selection](core/selection/) 连接数据与选区。 | [显示生命周期](tests/test_canvas_lifecycle.py)、[时间轴与播放](tests/test_time_axis_and_playback.py)、[Anchor 统计](tests/test_anchor_distribution.py) |
 | 计算器、切片或结果元数据 | [计算器引擎](core/calculator/engine.py) 用 AST 白名单验证并执行表达式，[元数据策略](core/calculator/metadata.py) 处理尺度和轴继承。[SpatialExtractor.py](core/SpatialExtractor.py) 是交互式切片入口。 | [表达式计算](tests/test_calculator_engine.py)、[计算器工作区](tests/test_calculator_workspace.py) |
@@ -59,6 +60,8 @@ EM-iSCAT 共用上述任务与结果机制。对应的工作对象是 `MassDataP
 
 ## 验证与发布
 
+**本次菜单合并验收。** 默认完整回归发现 497 项，488 项通过、9 项目标 GPU 用例跳过；开启 `LIFECALOR_RUN_CUDA_TESTS=1` 并指定可写的 `CUPY_CACHE_DIR` 后，497 项全部通过。两次最终进程退出码均为 0，实际主窗口、卷积窗口和正常关闭检查也通过。中间诊断记录与复现命令见[菜单合并验收](docs/testing/lifecalor-analysis-merge.md)。
+
 选择上表中与改动对应的用例先跑，再执行全套。下面以寿命管线为例。`benchmarks/benchmark_compute_11.py` 可用同一算法、规模和精度比较 CPU/GPU，`benchmark_data_path.py` 用于数据路径基准。
 
 ```powershell
@@ -68,9 +71,13 @@ $LASTEXITCODE
 .\.venv\Scripts\python.exe benchmarks/benchmark_compute_11.py --algorithm stft --size small --backend cpu --repetitions 1
 ```
 
-- **本机稳定性。** 原 Windows 原生访问冲突已定位到残留 Qt 窗口和异步回调的生命周期。最终开启 GPU 测试时 437 项全部通过，默认模式发现 437 项、跳过 9 项 GPU 专用测试，其余通过，进程退出码均为 0。忙碌任务下的关闭行为也通过非阻塞回归。每次验证继续记录断言结果与进程退出码。[1.1.2 完整验收](docs/testing/lifecalor-1.1.2-acceptance.md)
+- **合并前的 1.1.2 稳定性验收。** 原 Windows 原生访问冲突已定位到残留 Qt 窗口和异步回调的生命周期。最终开启 GPU 测试时 437 项全部通过，默认模式发现 437 项、跳过 9 项 GPU 专用测试，其余通过，进程退出码均为 0。忙碌任务下的关闭行为也通过非阻塞回归。这些结果对应主线 `1798dde`；合并后需重新记录断言结果与进程退出码。[1.1.2 完整验收](docs/testing/lifecalor-1.1.2-acceptance.md)
 - **GPU 与真实数据。** RTX 5070 Ti 已完成 STFT、CWT、单/双指数已知信号的数值对照，以及 small/medium 四算法 CPU/GPU 基准。真实 AVI 的 491 帧 ROI 通过 STFT/CWT 对照，真实单页 TIFF 通过二维图像卷积对照。两份原文件的大小、修改时间与 SHA256 前后相同。带明确时间轴的真实寿命衰减序列仍需补充验收。目标 CUDA 用例由 `LIFECALOR_RUN_CUDA_TESTS=1` 开启。[目标机报告](docs/testing/2026-11-06-rtx5070ti-validation.md) · [CUDA 数值测试](tests/test_compute_111_cuda_prototypes.py) · [扩展回归](tests/test_cuda_target_workflows.py)
-- **打包。** PyInstaller 完整版使用 `core/LifeCalor.spec`，构建环境需提供 CuPy。CPU 精简版使用 `core/LifeCalor-CPU.spec`。两者均以 `core/MainWindow.py` 为入口。1.1.2 两个 EXE 已通过包内 worker 自检、主窗口显示和正常关闭，完整版额外通过 STFT、单/双指数拟合及立即关闭验证，退出码均为 0。用 `tools/verify_package.py` 复验，版本、大小与 SHA256 见原始记录。源码运行日志在 `core/carrier_lifetime.log`，打包版日志在 `%LOCALAPPDATA%\LifeCalor\carrier_lifetime.log`。[完整版配置](core/LifeCalor.spec) · [CPU 配置](core/LifeCalor-CPU.spec) · [构建说明](docs/packaging/lifecalor-compute-runtime.md) · [EXE 验收记录](docs/testing/package-2026-11-06.json)
+- **打包。** PyInstaller 完整版使用 `core/LifeCalor.spec`，构建环境需提供 CuPy。CPU 精简版使用 `core/LifeCalor-CPU.spec`。两者均以 `core/MainWindow.py` 为入口。合并前的 1.1.2 两个 EXE 已通过包内 worker 自检、主窗口显示和正常关闭，完整版额外通过 STFT、单/双指数拟合及立即关闭验证，退出码均为 0。这些 EXE 尚不包含本次分析菜单改动。重新打包后用 `tools/verify_package.py` 复验，历史版本、大小与 SHA256 见原始记录。源码运行日志在 `core/carrier_lifetime.log`，打包版日志在 `%LOCALAPPDATA%\LifeCalor\carrier_lifetime.log`。[完整版配置](core/LifeCalor.spec) · [CPU 配置](core/LifeCalor-CPU.spec) · [构建说明](docs/packaging/lifecalor-compute-runtime.md) · [EXE 验收记录](docs/testing/package-2026-11-06.json)
 - **后续版本线索。** 1.1.2 已交付 CPU 时空卷积工作台。卷积 CUDA 仍需完成通用 worker 注册、资源/回退策略和完整工具工作流验收。现有 CUDA 原型的局部数值对照记录可作为后续适配的起点。[卷积实现](core/compute/algorithms/convolution_pipeline.py) · [卷积回归](tests/test_compute_111_convolution.py) · [1.1.1 设计与实施记录](docs/superpowers/plans/2026-09-21-lifecalor-111-algorithms-and-options.md)
 
 形成新版本时，将用户可见变化记入 `updatinglog.md`，将实机结果填入对应的 `docs/testing/` 报告，再更新本文的源码基线、已验证环境和剩余验收项。
+
+2026-11-06 已完成全程序计算算法盘点与首期“分析与处理”菜单。菜单位于“控制台”和“高级操作”之间，复用共享输入确认、匹配 ROI、独立参数导航及原有任务管线。科学曲线带时间单位进入 PSD，双指数热图与区域拟合各有明确的模型控件。高级操作保留坏帧处理、数据计算器、切片器和时空卷积四个入口，时空卷积只在此处提供入口。[算法分类与菜单规划](docs/superpowers/plans/2026-11-06-lifecalor-analysis-menu.md)
+
+分析菜单提交 `72e74ba` 的历史验收为新增 60 项专项通过，全套 465 项中 461 项通过、4 项目标 CUDA 用例跳过，进程退出码 0；早期出现的 Windows 退出异常保留于[菜单接入验收](docs/testing/lifecalor-analysis-menu.md)。主线 1.1.2 已单独修复 Qt 生命周期并完成实机 GPU 与 EXE 验收。本次合并保留这些修复，新的测试汇总与进程退出码以[菜单合并验收](docs/testing/lifecalor-analysis-merge.md)为准。

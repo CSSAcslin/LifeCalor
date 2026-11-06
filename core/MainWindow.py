@@ -52,6 +52,8 @@ from app_metadata import APP_VERSION
 from startup.logging_setup import ensure_file_logging, resolve_log_path, take_startup_messages
 from appearance import get_theme_manager
 from preferences import PreferencesController
+from analysis import AnalysisController
+from analysis.catalog import ACTION_BY_ID
 
 
 class MainWindow(QMainWindow):
@@ -85,6 +87,7 @@ class MainWindow(QMainWindow):
     convolution_signal = pyqtSignal(object)
     easy_process = pyqtSignal(object, str, object)
     roi_value_distribution_signal = pyqtSignal(object, np.ndarray, int, object, object, str)
+    roi_statistics_signal = pyqtSignal(object, np.ndarray, str, str)
     roi_processed_signal = pyqtSignal(object,np.ndarray,float,bool,bool,float)
     cache_progress_signal = pyqtSignal(object, object, str)
 
@@ -111,6 +114,10 @@ class MainWindow(QMainWindow):
         self.space_step = 1.0
         self.idx = None
         self.vector_array = None
+        self.vector_source = None
+        self.vectorROI_data = None
+        self._bad_frame_busy = False
+        self._bad_frame_dialog = None
         self.focus_canvas = None
         self.cache_progress_signal.connect(self.cache_progress_update)
         self._startup_step("正在读取设置", 1)
@@ -130,6 +137,7 @@ class MainWindow(QMainWindow):
         self.export_controller = ExportController(self)
         self.history_controller = HistoryController(self)
         self.preferences_controller = PreferencesController(self)
+        self.analysis_controller = AnalysisController(self)
         self.canvas_signal_binder = CanvasSignalBinder(self)
         self.display_canvas_controller = DisplayCanvasController(self)
         self.log_file = self.get_log_path()
@@ -859,10 +867,10 @@ class MainWindow(QMainWindow):
         # 寿命模型选择
         lifetime_layout = QHBoxLayout()
         lifetime_layout.addWidget(QLabel("寿命模型："))
-        self.model_combo = QComboBox()
-        self.model_combo.addItems(["单指数衰减", "双指数-仅区域"])
-        lifetime_layout.addWidget(self.model_combo)
-        lifetime_layout.addWidget(InfoButton("<div style='white-space: pre;'><b>寿命模型</b>：双指数有问题不要用<br><b>卷积处理</b>：建议首选smooth或gaussian</div>"))
+        self.heatmap_model_combo = QComboBox()
+        self.heatmap_model_combo.addItems(["单指数衰减", "双指数衰减"])
+        lifetime_layout.addWidget(self.heatmap_model_combo)
+        lifetime_layout.addWidget(InfoButton("双指数分别保存两个寿命、振幅、基线、R²和拟合状态。"))
         # 区域分析设置
         # operation_layout.addSpacing(10)
         operation_mode_layout = QHBoxLayout()
@@ -940,9 +948,9 @@ class MainWindow(QMainWindow):
         lifetime_layout = QHBoxLayout()
         lifetime_layout.addWidget(QLabel("寿命模型:"))
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["单指数衰减", "双指数-仅区域"])
+        self.model_combo.addItems(["单指数衰减", "双指数衰减"])
         lifetime_layout.addWidget(self.model_combo)
-        lifetime_layout.addWidget(InfoButton("双指数没做好，不要用"))
+        lifetime_layout.addWidget(InfoButton("对所选区域的平均衰减曲线进行单指数或双指数拟合。"))
         coord_layout = QHBoxLayout()
         coord_layout.addWidget(QLabel("中心X:"))
         coord_layout.addWidget(self.region_x_input)
@@ -1031,7 +1039,7 @@ class MainWindow(QMainWindow):
         process_set_layout2 = QHBoxLayout()
         process_set_layout2.addWidget(QLabel("窗选择："))
         process_set_layout2.addWidget(self.stft_window_select)
-        self.stft_quality_btn = QPushButton("stft质量评价（功率密度谱）")
+        self.stft_quality_btn = QPushButton("STFT 质量分析（时频谱）")
         self.retransform_input = QTextEdit()
         self.retransform_input.setPlaceholderText("频率范围设定，若留空，则取质量评价中的设置值")
         self.retransform_input.setFixedHeight(30)
@@ -1051,7 +1059,7 @@ class MainWindow(QMainWindow):
         self.cwt_program_select = QComboBox()
         self.cwt_program_select.addItems(["python","julia"])
         cwt_set_layout1.addWidget(self.cwt_program_select)
-        self.cwt_quality_btn = QPushButton("cwt质量检验（功率谱）")
+        self.cwt_quality_btn = QPushButton("CWT 质量分析（尺度时序谱）")
         self.cwt_process_btn = QPushButton("执行连续小波变换")
         cwt_layout.addLayout(cwt_set_layout1)
         cwt_layout.addWidget(self.cwt_quality_btn)
@@ -1090,7 +1098,7 @@ class MainWindow(QMainWindow):
 
         single_channel_GROUP = self.QGroupBoxCreator(style='inner')
         single_channel_layout = QVBoxLayout()
-        self.atam_btn = QPushButton("累计时间振幅图")
+        self.atam_btn = QPushButton("时间平均振幅图")
         self.tDgf_btn = QPushButton("选区二维高斯拟合")
         self.sscs_btn = QPushButton("简单单通道提取")
         single_channel_layout.addWidget(self.atam_btn)
@@ -1133,7 +1141,7 @@ class MainWindow(QMainWindow):
         Other_layout.addWidget(self.tDFT_btn2)
         self.tDiFT_btn = QPushButton("二维傅里叶逆变换")
         Other_layout.addWidget(self.tDiFT_btn)
-        self.atam_btn2 = QPushButton("累计时间振幅图")
+        self.atam_btn2 = QPushButton("时间平均振幅图")
         Other_layout.addWidget(self.atam_btn2)
         self.heartbeat_btn = QPushButton("心肌细胞跳动分析")
         Other_layout.addWidget(self.heartbeat_btn)
@@ -1165,6 +1173,38 @@ class MainWindow(QMainWindow):
             self.fps_input.setEnabled(True)
             self.time_step_input.setEnabled(True)
             self.time_unit_combo.setEnabled(True)
+
+    def show_analysis_page(self, spec):
+        """Navigate analysis parameters independently of the import selector."""
+        page = spec.page
+        if page in ("region", "lifetime", "heat", "diffusion"):
+            self.between_stack.setCurrentIndex(1)
+            self.FS_mode_combo.setCurrentIndex(
+                {"region": 1, "lifetime": 0, "heat": 0, "diffusion": 2}[page]
+            )
+            target = {
+                "region": self.analyze_region_btn, "lifetime": self.analyze_btn,
+                "heat": self.heat_transfer_btn, "diffusion": self.vector_signal_btn,
+            }[page]
+        elif page == "em" or spec.action_id.startswith(("transform.stft", "transform.cwt", "channel.")):
+            self.between_stack.setCurrentIndex(2)
+            self.EM_mode_combo.setCurrentIndex(int(spec.action_id.startswith("transform.cwt")))
+            self.after_process_select.setCurrentIndex(int(spec.action_id.startswith("channel.")))
+            target = self.preprocess_data_btn
+        else:
+            self.between_stack.setCurrentIndex(3)
+            target = self.signal_extract
+        self.modes_panel.setTitle("分析设置 · " + spec.title.rstrip("…"))
+        uses_time_step = page in ("region", "lifetime", "heat", "diffusion")
+        uses_fps = page == "em" or spec.action_id.startswith(("transform.stft", "transform.cwt", "channel."))
+        self.time_step_input.setEnabled(not uses_fps)
+        self.time_unit_combo.setEnabled(not uses_fps)
+        self.fps_input.setEnabled(not uses_time_step)
+        self.param_dock.show()
+        self.left_panel.ensureWidgetVisible(target)
+        target.setFocus(Qt.OtherFocusReason)
+        if page:
+            self.update_status("请确认参数，点击对应计算按钮选择输入数据")
 
     def mode_switch_change(self, mode:int):
         """模式改变后"""
@@ -1206,6 +1246,8 @@ class MainWindow(QMainWindow):
         toggle_tasks = view_menu.addAction("显示/隐藏任务面板")
         toggle_tasks.setToolTip("查看每个后台任务的独立进度、状态、耗时和取消入口")
         toggle_tasks.triggered.connect(lambda: self._toggle_activity_panel(self.task_panel))
+
+        self.analysis_menu = self.analysis_controller.build_menu(self.menu)
 
         # 高级操作
         advanced_menu = self.menu.addMenu("高级操作")
@@ -1578,10 +1620,17 @@ class MainWindow(QMainWindow):
         self.amend_data_signal.connect(self.proc_thread.amend_data)
         self.detect_bad_frames_auto_signal.connect(self.proc_thread.detect_bad_frames_auto)
         self.fix_bad_frames_signal.connect(self.proc_thread.fix_bad_frames)
+        self.detect_bad_frames_auto_signal.connect(self._bad_frame_started)
+        self.fix_bad_frames_signal.connect(self._bad_frame_started)
+        self.proc_thread.bad_frames_detected.connect(self._bad_frame_finished)
+        self.proc_thread.bad_frames_fixed.connect(self._bad_frame_finished)
+        self.proc_thread.bad_frame_failed.connect(self._bad_frame_finished)
         self.proc_thread.plot_singal.connect(self.graph_plot.handle_plot_signal)
-        self.proc_thread.plot_series_signal.connect(self.graph_plot.handle_from_image)
-        self.proc_thread.processing_error_signal.connect(self._handle_processing_error)
+        self.proc_thread.processing_error_signal.connect(
+            lambda error: self._handle_processing_error(error, "statistics")
+        )
         self.roi_value_distribution_signal.connect(self.proc_thread.get_roi_value_distribution)
+        self.roi_statistics_signal.connect(self.proc_thread.get_fast_selection)
 
     def cal_thread_open(self):
         """计算线程相关 以及信号槽连接都放在这里了"""
@@ -1653,35 +1702,35 @@ class MainWindow(QMainWindow):
         self.general_file_btn.clicked.connect(self.load_general_file)
         self.general_format_selector.currentIndexChanged.connect(
             lambda index: self.general_color_policy.setEnabled(index in (0, 2)))
-        self.analyze_region_btn.clicked.connect(self.region_analyze_start)
-        self.analyze_btn.clicked.connect(self.distribution_analyze_start)
-        self.heat_transfer_btn.clicked.connect(self.heat_transfer_start)
+        self.analysis_controller.connect_button(self.analyze_region_btn, "lifetime.region")
+        self.analysis_controller.connect_button(self.analyze_btn, "lifetime.map")
+        self.analysis_controller.connect_button(self.heat_transfer_btn, "physics.heat")
         self.FS_mode_combo.currentIndexChanged.connect(self.FS_mode_stack.setCurrentIndex)
         # self.PA_mode_combo.currentIndexChanged.connect(self.PA_mode_stack.setCurrentIndex)
         self.EM_mode_combo.currentIndexChanged.connect(self.EM_mode_stack.setCurrentIndex)
         self.after_process_select.currentIndexChanged.connect(self.after_process_stack.setCurrentIndex)
-        self.preprocess_data_btn.clicked.connect(self.pre_process_EM)
-        self.stft_process_btn.clicked.connect(self.process_EM_stft)
-        self.stft_quality_btn.clicked.connect(self.quality_EM_stft)
-        self.cwt_quality_btn.clicked.connect(self.quality_EM_cwt)
-        self.cwt_process_btn.clicked.connect(self.process_EM_cwt)
+        self.analysis_controller.connect_button(self.preprocess_data_btn, "preprocess.em")
+        self.analysis_controller.connect_button(self.stft_process_btn, "transform.stft")
+        self.analysis_controller.connect_button(self.stft_quality_btn, "transform.stft_quality")
+        self.analysis_controller.connect_button(self.cwt_quality_btn, "transform.cwt_quality")
+        self.analysis_controller.connect_button(self.cwt_process_btn, "transform.cwt")
         self.EM_output_btn.clicked.connect(self.export_EM_data)
-        self.atam_btn.clicked.connect(self.process_atam)
-        self.atam_btn2.clicked.connect(self.process_atam)
-        self.tDgf_btn.clicked.connect(self.process_tDgf)
-        self.sscs_btn.clicked.connect(self.process_simple_scs)
-        self.roi_signal_btn.clicked.connect(self.roi_signal_avg)
-        self.tDFT_btn.clicked.connect(self.process_tDFT)
-        self.tDFT_btn2.clicked.connect(self.process_tDFT)
-        self.tDiFT_btn.clicked.connect(self.process_tDiFT)
-        self.vector_signal_btn.clicked.connect(self.vectorROI_signal_show)
+        self.analysis_controller.connect_button(self.atam_btn, "statistics.time_mean")
+        self.analysis_controller.connect_button(self.atam_btn2, "statistics.time_mean")
+        self.analysis_controller.connect_button(self.tDgf_btn, "channel.gaussian")
+        self.analysis_controller.connect_button(self.sscs_btn, "channel.simple")
+        self.analysis_controller.connect_button(self.roi_signal_btn, "statistics.roi")
+        self.analysis_controller.connect_button(self.tDFT_btn, "transform.fft2")
+        self.analysis_controller.connect_button(self.tDFT_btn2, "transform.fft2")
+        self.analysis_controller.connect_button(self.tDiFT_btn, "transform.ifft2")
+        self.analysis_controller.connect_button(self.vector_signal_btn, "physics.diffusion")
         self.select_frames_btn.clicked.connect(self.vectorROI_selection)
         self.diffusion_coefficient_btn.clicked.connect(self.result_display.plot_variance_evolution)
         self.roi_fast_btn.clicked.connect(self.fast_roi_result)
-        self.heartbeat_btn.clicked.connect(self.process_heartbeat)
+        self.analysis_controller.connect_button(self.heartbeat_btn, "motion.heartbeat")
         self.basic_math_btn.clicked.connect(self.process_math)
-        self.signal_extract.clicked.connect(self.process_signal_avg)
-        self.roi_distribution_btn.clicked.connect(self.process_roi_value_distribution)
+        self.analysis_controller.connect_button(self.signal_extract, "statistics.mean")
+        self.analysis_controller.connect_button(self.roi_distribution_btn, "statistics.distribution")
         self.export_image_btn.clicked.connect(self.export_image)
         self.export_data_btn.clicked.connect(self.export_data)
         # 成像绘制信号
@@ -1981,18 +2030,29 @@ class MainWindow(QMainWindow):
     """编辑设置对话框"""
     def bad_frame_edit_dialog(self):
         """显示坏点处理对话框"""
-        if self.data is None and self.processed_data is None:
+        if self._bad_frame_dialog is not None:
+            self._bad_frame_dialog.raise_()
+            return
+        if self._bad_frame_busy:
+            report_warning(self, "坏帧处理", "上一项检测或修复正在结束，请稍后再试。")
+            return
+        if self.data is None:
             logging.warning("无数据，请先加载数据文件")
             return
 
-        dialog = BadFrameDialog(self)
-        self.update_status("坏点修复ing", 'working')
-        if dialog.exec_():
-            # 更新图像显示
-            # self.time_label.setText(self.image_display.update_time_slice(0))
-            # self.time_slider.setValue(0)
-            logging.info(f"坏点处理完成，修复了 {len(dialog.bad_frames)} 个坏帧")
-        self.update_status("准备就绪", 'idle')
+        dialog = BadFrameDialog(self, data=self.data)
+        self._bad_frame_dialog = dialog
+        try:
+            if dialog.exec_() and getattr(dialog, "repaired_data", None) is not None:
+                self.import_result(dialog.repaired_data)
+        finally:
+            self._bad_frame_dialog = None
+
+    def _bad_frame_started(self, *_args):
+        self._bad_frame_busy = True
+
+    def _bad_frame_finished(self, *_args):
+        self._bad_frame_busy = False
 
     def calculation_set_edit_dialog(self):
         """兼容旧入口：定位统一选项的寿命拟合页。"""
@@ -2086,6 +2146,7 @@ class MainWindow(QMainWindow):
             task = self.processing_controller.active(category)
         if task is None:
             return
+        details = {**task.execution_details, **details}
         self.task_coordinator.configure_execution(
             task.task_id,
             attempt_id=plan.request.attempt_id,
@@ -2187,8 +2248,11 @@ class MainWindow(QMainWindow):
         """特殊标签页类型处理"""
         if tab_type == 'roi':
             # 如果是roi结果
+            if self.vector_source is None or self.vector_array is None:
+                self.time_slider_vertical.setVisible(False)
+                return
             self.time_slider_vertical.setVisible(True)
-            self.time_slider_vertical.setMaximum(self.data.timelength - 1)
+            self.time_slider_vertical.setMaximum(self.vector_array.shape[0] - 1)
             self.time_slider_vertical.setValue(0)
         elif tab_type == 'pre-scs':
             self.time_slider_vertical.setVisible(True)
@@ -2209,7 +2273,7 @@ class MainWindow(QMainWindow):
                 reuse_current = reuse_current
 
             )
-        elif self.processed_data.type_processed == 'Single_channel_signal' and not data.out_processed['thr_known']:
+        elif data is not None and data.type_processed == 'Single_channel_signal' and not data.out_processed['thr_known']:
             thr = idx/10
             for m in range(self.processed_data.framesize):
                 if data.out_processed['mean_signal'][m] > thr:
@@ -2337,13 +2401,16 @@ class MainWindow(QMainWindow):
     """各种计算方法"""
     def vectorROI_signal_show(self):
         """向量选取信号全部展示"""
-        if not hasattr(self, 'data') or self.data is None:
-            logging.warning("无数据，请先加载数据文件")
+        selected = self.data_selection("data")
+        if selected is None:
             return
-        if self.vector_array is None :
-            logging.warning("未选取向量直线ROI")
+        if self.vector_array is None or self.vector_source is None:
+            report_warning(self, "扩散分析", "请先在输入数据的画布上确认矢量直线 ROI。")
             return
-        elif self.data.timelength == self.vector_array.shape[0]:
+        if selected.timestamp != self.vector_source.timestamp:
+            report_warning(self, "扩散分析", "线剖面属于其它数据，请在所选数据上重新确认线 ROI。")
+            return
+        elif selected.timelength == self.vector_array.shape[0]:
             # self.time_slider_vertical.setVisible(True)
             # self.time_slider_vertical.setMaximum(self.data['data_origin'].shape[0] - 1)
             # self.time_slider_vertical.setValue(0)
@@ -2355,6 +2422,9 @@ class MainWindow(QMainWindow):
 
     def vectorROI_selection(self):
         """向量选取信号选择展示"""
+        if self.vector_array is None or self.vector_source is None:
+            report_warning(self, "扩散分析", "请先确认有效的矢量直线 ROI。")
+            return False
         self.max_frame = self.vector_array.shape[0] - 1
         frames = ToolBucket.parse_frame_input(self.frame_input.toPlainText(),self.max_frame)
         if not frames :
@@ -2381,6 +2451,9 @@ class MainWindow(QMainWindow):
             logging.info(f"输入帧数{frames}，帧数有效可以处理")
 
         # 收集选定帧的数据
+        if len(set(frames)) < 2:
+            report_warning(self, "扩散分析", "请选择至少两个不同的有效时刻。")
+            return False
         self.vectorROI_data = {f: self.vector_array[f] for f in frames}
 
         # 信号拟合和绘制
@@ -2400,13 +2473,28 @@ class MainWindow(QMainWindow):
         self.update_status('计算进行中...', 'working')
         self.time_step = float(self.time_step_input.value())
         center = (self.region_y_input.value(), self.region_x_input.value())
+        height, width = aim_data.framesize
+        self.region_x_input.setMaximum(max(0, width - 1))
+        self.region_y_input.setMaximum(max(0, height - 1))
+        if not (0 <= center[0] < height and 0 <= center[1] < width):
+            report_warning(self, "区域参数", "区域中心超出所选数据范围，请调整后重新执行。")
+            return False
         shape = 'square' if self.region_shape_combo.currentText() == "正方形" else 'circle'
         size = self.region_size_input.value()
         model_type = 'single' if self.model_combo.currentText() == "单指数衰减" else 'double'
         mask = PublicEasyMethod.quick_mask(aim_data.framesize, center = center, shape = shape,size = size)
+        if not np.any(mask):
+            report_warning(self, "区域参数", "请选择包含有效像素的区域。")
+            return False
         focus_canvas = self.image_display.current_canvas()
+        if focus_canvas is None or getattr(focus_canvas.data, "timestamp_inherited", None) != aim_data.timestamp:
+            focus_canvas = next(
+                (canvas for canvas in self.image_display.display_canvas
+                 if getattr(canvas.data, "timestamp_inherited", None) == aim_data.timestamp),
+                None,
+            )
         if focus_canvas is None:
-            report_warning(self, "图像错误", "请先显示并选中一个画布")
+            report_warning(self, "图像错误", "请先将所选输入显示到画布上。")
             return False
         focus_canvas.add_fast_selection(*center, mask)
         self.ensure_task_thread_running("calc_thread", "calculation")
@@ -2421,10 +2509,9 @@ class MainWindow(QMainWindow):
         # 如果线程没了，要创建
         if not self.is_thread_active("calc_thread"):
             self.cal_thread_open()
-        self.ensure_task_thread_running("calc_thread", "calculation")
         self.update_status('长时计算进行中...', 'working')
         self.time_step = float(self.time_step_input.value())
-        model_type = 'single' if self.model_combo.currentText() == "单指数衰减" else 'double'
+        model_type = 'single' if self.heatmap_model_combo.currentText() == "单指数衰减" else 'double'
         pre_cov = self.pre_cov_combo.currentText() if self.pre_cov_combo.currentIndex() != 0 else None
         post_cov = self.post_cov_combo.currentText() if self.post_cov_combo.currentIndex() != 0 else None
         pre_size = self.pre_cov_size.value() if self.pre_cov_combo.currentIndex() != 0 else None
@@ -2440,6 +2527,7 @@ class MainWindow(QMainWindow):
             if self.multiprocess_check.isChecked() else 1
         )
         compute_options["cpu_workers"] = workers
+        self.ensure_task_thread_running("calc_thread", "calculation")
         self.start_dis_cal_signal.emit(
             aim_data, self.time_step, model_type, pre_cov, pre_size, post_cov, post_size,
             workers > 1, workers, compute_options,
@@ -2454,10 +2542,9 @@ class MainWindow(QMainWindow):
             return False
         if not self.is_thread_active("calc_thread"):
             self.cal_thread_open()
-        self.ensure_task_thread_running("calc_thread", "calculation")
         self.update_status('传热系数计算进行中...', 'working')
         self.time_step = float(self.time_step_input.value())
-        model_type = 'single' if self.model_combo.currentText() == "单指数衰减" else 'double'
+        model_type = 'single' if self.heatmap_model_combo.currentText() == "单指数衰减" else 'double'
         pre_cov = self.pre_cov_combo.currentText() if self.pre_cov_combo.currentIndex() != 0 else None
         post_cov = self.post_cov_combo.currentText() if self.post_cov_combo.currentIndex() != 0 else None
         pre_size = self.pre_cov_size.value() if self.pre_cov_combo.currentIndex() != 0 else None
@@ -2473,6 +2560,7 @@ class MainWindow(QMainWindow):
             if self.multiprocess_check.isChecked() else 1
         )
         compute_options["cpu_workers"] = workers
+        self.ensure_task_thread_running("calc_thread", "calculation")
         self.start_heat_cal_signal.emit(
             aim_data, self.time_step, model_type, pre_cov, pre_size, post_cov, post_size,
             workers > 1, workers, compute_options,
@@ -2481,7 +2569,7 @@ class MainWindow(QMainWindow):
 
     def diffusion_calculation_start(self):
         """扩散系数计算"""
-        data = self.data_selection('data')
+        data = self.vector_source
         if data is None:
             return logging.warning('无数据载入')
         elif self.vectorROI_data is None:
@@ -2492,7 +2580,7 @@ class MainWindow(QMainWindow):
             self.cal_thread_open()
 
 
-        self.ensure_task_thread_running("calc_thread", "calculation")
+        self.ensure_task_thread_running("calc_thread", "calculation", action_id="physics.diffusion", source=data)
         self.update_status('计算进行中...', 'working')
         self.time_step = float(self.time_step_input.value())
         self.space_step = float(self.space_step_input.value())
@@ -2667,6 +2755,15 @@ class MainWindow(QMainWindow):
 
         return None
 
+    def process_roi_statistics(self):
+        data = self.data_selection()
+        mask = self.roi_selection(True)
+        if data is None or mask is None:
+            return False
+        method = self.analysis_controller.current_method
+        name = f"{display_name_for(data)}-ROI-{method}"
+        self.roi_statistics_signal.emit(data, mask, method, name)
+        return True
 
     def _default_distribution_frame_index(self, data):
         if getattr(data, "ndim", 0) != 3:
@@ -2725,8 +2822,8 @@ class MainWindow(QMainWindow):
         aim_data = self.data_selection()
         if aim_data is None:
             return False
-        if aim_data.ndim not in [2, 3]:
-            logging.info("数据无法被处理，请重选数据")
+        if aim_data.ndim != 3:
+            report_warning(self, "时间平均振幅图", "需要 THW 时间序列。")
             return False
         self.ensure_task_thread_running("avi_thread", "em_processing")
         self.atam_signal.emit(aim_data)
@@ -3092,6 +3189,8 @@ class MainWindow(QMainWindow):
                                                         ROI_applied=True)
             elif draw_type == "v_line":
                 self.vector_array = result.getPixelValues(draw_data, self.space_step, self.time_step)
+                self.vector_source = draw_data
+                self.vectorROI_data = None
             elif draw_type == "pixel_roi":
                 bool_mask = result[1]
                 if dialog.inverse_check.isChecked():
@@ -3156,9 +3255,20 @@ class MainWindow(QMainWindow):
         thread = getattr(self, thread_name, None)
         return thread_is_active(thread, expected_type=QThread, is_deleted=sip.isdeleted)
 
-    def ensure_task_thread_running(self, thread_name: str, task_key: str) -> bool:
+    def ensure_task_thread_running(self, thread_name: str, task_key: str, *, action_id=None, source=None) -> bool:
         """Register one operation and ensure its persistent worker thread is running."""
-        self.processing_controller.begin(thread_name, task_key)
+        action = ACTION_BY_ID[action_id] if action_id else self.analysis_controller.current_action
+        task = self.processing_controller.begin(
+            thread_name, task_key, action.title.rstrip("…") if action else None
+        )
+        source = source if source is not None else self.analysis_controller.current_input
+        if action is not None and source is not None:
+            task.execution_details.update({
+                "analysis_action_id": action.action_id,
+                "input_name": source.name,
+                "input_timestamp": source.timestamp,
+            })
+            self.task_coordinator.task_updated.emit(task)
         return True
 
     def export_image(self):

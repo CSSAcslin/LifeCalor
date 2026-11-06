@@ -182,17 +182,49 @@ class ToolBucket:
 
 # 坏帧处理对话框
 class BadFrameDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, data=None):
         super().__init__(parent)
         self.setWindowTitle("坏帧处理")
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
         self.setMinimumWidth(400)
-
-        self.init_ui()
+        self.data = data if data is not None else getattr(parent, "data", None)
         self.bad_frames = []
+        self.repaired_data = None
+        self._operation = None
+        self._closed = False
+        self._subscriptions = []
+        self.init_ui()
+        worker = getattr(parent, "proc_thread", None)
+        signal_handlers = (
+            ("bad_frames_detected", self._detected),
+            ("bad_frames_fixed", self._fixed),
+            ("bad_frame_failed", self._failed),
+        )
+        self._worker_ready = worker is not None and all(
+            hasattr(worker, name) for name, _handler in signal_handlers
+        )
+        if self._worker_ready:
+            for name, handler in signal_handlers:
+                signal = getattr(worker, name)
+                signal.connect(handler)
+                self._subscriptions.append((signal, handler))
+        self.finished.connect(self._disconnect_worker)
+        self.update_ui_state()
+        if self.data is None:
+            self.status_label.setText("请先选择需要修复的原始数据")
+        elif not self._worker_ready:
+            self.status_label.setText("坏帧处理工作对象尚未就绪")
 
     def init_ui(self):
         layout = QVBoxLayout()
+
+        self.source_label = QLabel(
+            f"目标数据　{getattr(self.data, 'name', '未选择')}\n"
+            f"数据形状　{getattr(self.data, 'datashape', ())}"
+        )
+        self.source_label.setTextFormat(Qt.PlainText)
+        self.source_label.setWordWrap(True)
+        layout.addWidget(self.source_label)
 
         # 检测方法选择
         method_group = QGroupBox("坏帧检测方法")
@@ -230,9 +262,6 @@ class BadFrameDialog(QDialog):
         manual_layout.addWidget(self.frame_input)
         manual_group.setLayout(manual_layout)
 
-        # 处理方法选择
-        process_group = QGroupBox("坏帧处理方法")
-
         # 帧平均参数
         avg_group = QGroupBox("修复参数")
         avg_layout = QVBoxLayout()
@@ -256,18 +285,21 @@ class BadFrameDialog(QDialog):
         button_layout.addWidget(self.apply_btn)
         button_layout.addWidget(self.cancel_btn)
 
+        self.status_label = QLabel()
+        self.status_label.setWordWrap(True)
+
         # 组装布局
         layout.addWidget(method_group)
         layout.addWidget(auto_group)
         layout.addWidget(manual_group)
         layout.addWidget(avg_group)
+        layout.addWidget(self.status_label)
         layout.addLayout(button_layout)
 
         self.setLayout(layout)
 
         # 初始状态
         self.auto_radio.toggled.connect(self.update_ui_state)
-        self.update_ui_state()
 
     def event(self, event):
         if event.type() == QEvent.EnterWhatsThisMode:
@@ -295,44 +327,127 @@ class BadFrameDialog(QDialog):
 
     def update_ui_state(self):
         """根据选择的方法更新UI状态"""
+        busy = self._operation is not None
         auto_selected = self.auto_radio.isChecked()
-        self.threshold_spin.setEnabled(auto_selected)
-        self.frame_input.setEnabled(not auto_selected)
+        self.auto_radio.setEnabled(not busy)
+        self.manual_radio.setEnabled(not busy)
+        self.threshold_spin.setEnabled(auto_selected and not busy)
+        self.frame_input.setEnabled(not auto_selected and not busy)
+        self.n_frames_spin.setEnabled(not busy)
+        self.apply_btn.setEnabled(
+            not busy and not self._closed and self.data is not None and self._worker_ready
+        )
+        self.cancel_btn.setText("关闭窗口" if busy else "取消")
 
-    def get_bad_frames(self) -> List[int] :
-        """获取用户选择的坏帧列表"""
-        if self.auto_radio.isChecked():
-            return self.parent().detect_bad_frames_auto_signal.emit(
-                self.parent().data.origin,
-                self.threshold_spin.value()
-            )
-        else:
-            try:
-                return [int(x.strip()) for x in self.frame_input.text().split(",") if x.strip()]
-            except ValueError:
-                report_warning(self, "输入错误", "请输入有效的帧号，用逗号分隔")
-                return []
+    def _validate_bad_frames(self, frames):
+        shape = tuple(getattr(self.data, "datashape", ()))
+        if len(shape) != 3 or shape[0] < 1:
+            raise ValueError("请选择带时间轴的二维成像序列")
+        if any(
+            isinstance(index, (bool, np.bool_))
+            or not isinstance(index, (int, np.integer))
+            for index in frames
+        ):
+            raise ValueError("帧号必须是整数")
+        indices = sorted(set(int(index) for index in frames))
+        if indices and (indices[0] < 0 or indices[-1] >= shape[0]):
+            raise ValueError(f"帧号应在 0 到 {shape[0] - 1} 之间")
+        return indices
+
+    def get_bad_frames(self) -> List[int]:
+        """读取并校验手动输入的帧号。自动检测由后台结果信号返回。"""
+        text = self.frame_input.text().replace("，", ",").replace(";", ",").replace("；", ",")
+        try:
+            frames = [int(part.strip()) for part in text.split(",") if part.strip()]
+        except ValueError as exc:
+            raise ValueError("请输入整数帧号，用逗号分隔") from exc
+        if not frames:
+            raise ValueError("请输入需要修复的帧号")
+        return self._validate_bad_frames(frames)
+
+    def _set_operation(self, operation, message):
+        self._operation = operation
+        self.status_label.setText(message)
+        self.update_ui_state()
 
     def apply_fix(self):
-        """应用修复并关闭对话框"""
-        self.bad_frames = self.get_bad_frames()
-        if not self.bad_frames:
-            QMessageBox.information(self, "无坏帧", "未检测到需要修复的坏帧")
+        """提交检测或修复，等待工作对象报告完成。"""
+        if self._closed or self._operation is not None or not self._worker_ready:
             return
+        try:
+            self._validate_bad_frames([])
+            if self.auto_radio.isChecked():
+                self._set_operation("detecting", "正在检测坏帧…")
+                self.parent().detect_bad_frames_auto_signal.emit(
+                    self.data.data_origin, float(self.threshold_spin.value())
+                )
+            else:
+                self.bad_frames = self.get_bad_frames()
+                self._submit_fix()
+        except ValueError as exc:
+            self._set_operation(None, str(exc))
+            report_warning(self, "输入错误", str(exc))
 
-        n_frames = self.n_frames_spin.value()
-        aim_data = self.parent().data
-
-        # 修复数据
+    def _submit_fix(self):
+        self._set_operation("fixing", f"正在修复 {len(self.bad_frames)} 个坏帧…")
         self.parent().fix_bad_frames_signal.emit(
-            aim_data,
-            self.bad_frames,
-            n_frames
+            self.data, list(self.bad_frames), self.n_frames_spin.value()
         )
 
+    def _detected(self, frames):
+        if self._closed or self._operation != "detecting":
+            return
+        try:
+            self.bad_frames = self._validate_bad_frames(frames)
+        except ValueError as exc:
+            self._set_operation(None, str(exc))
+            report_warning(self, "检测结果无效", str(exc))
+            return
+        if not self.bad_frames:
+            self._set_operation(None, "未检测到需要修复的坏帧，可调整敏感度或手动输入")
+            return
+        self._submit_fix()
+
+    def _fixed(self, data):
+        if self._closed or self._operation != "fixing":
+            return
+        parameters = getattr(data, "parameters", {}) or {}
+        source_timestamp = getattr(self.data, "timestamp", None)
+        matches_source = data is self.data or (
+            source_timestamp is not None
+            and parameters.get("bad_frame_source_timestamp") == source_timestamp
+        )
+        if not matches_source:
+            return
+        self.repaired_data = data
+        self._set_operation(None, f"已修复 {len(self.bad_frames)} 个坏帧")
+        logging.info("坏帧修复完成，数据 %s，帧号 %s", self.data.name, self.bad_frames)
         self.accept()
-        QMessageBox.information(self, "修复完成", f"已修复 {len(self.bad_frames)} 个坏帧")
-        logging.info(f"已修复 {len(self.bad_frames)} 个坏帧")
+
+    def _failed(self, error):
+        if self._closed or self._operation is None:
+            return
+        from diagnostics import show_app_error
+
+        self._set_operation(None, error.message)
+        show_app_error(self, error)
+
+    def _disconnect_worker(self, *_args):
+        self._closed = True
+        for signal, handler in self._subscriptions:
+            try:
+                signal.disconnect(handler)
+            except (TypeError, RuntimeError):
+                pass
+        self._subscriptions.clear()
+
+    def reject(self):
+        self._disconnect_worker()
+        super().reject()
+
+    def closeEvent(self, event):
+        self._disconnect_worker()
+        super().closeEvent(event)
 
 # 计算设置对话框
 class CalculationSetDialog(QDialog):
@@ -2213,7 +2328,10 @@ class HeartBeatFrameSelectDialog(QDialog):
         if motion_frames:
             if not self.parent.avi_thread.isRunning():
                 self.parent.avi_thread.start()
-            self.parent.ensure_task_thread_running("avi_thread", "em_processing")
+            self.parent.ensure_task_thread_running(
+                "avi_thread", "em_processing",
+                action_id="motion.heartbeat", source=self.data,
+            )
             self.parent.heartbeat_signal.emit(self.data, self.step_input.value(),
                                               self.base_frame_input.value(),
                                               motion_frames, self.get_path(),

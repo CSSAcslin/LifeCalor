@@ -498,35 +498,40 @@ class ResultDisplayWidget(QTabWidget):
         if not hasattr(self, "dif_result"):
             logging.warning("请按照顺序点击按钮")
             return
+        times, variances = np.asarray(self.dif_result["sigma"], dtype=float)
+        valid = np.isfinite(times) & np.isfinite(variances) & (variances >= 0)
+        times, variances = times[valid], variances[valid]
+        if len(times) < 2 or np.unique(times).size < 2:
+            logging.warning("扩散系数需要至少两个有效拟合时刻")
+            return
+        slope = self.dif_result.get("variance_slope")
+        intercept = self.dif_result.get("variance_intercept")
+        if slope is None or intercept is None:
+            slope, intercept = np.polyfit(times, variances, 1)
+        coefficient = self.dif_result.get("diffusion_coefficient", slope / 2)
         self.current_mode = "var"
         figure, canvas, index, title, tab = self.create_tab(self.current_mode, '方', reuse_current)
-
         ax = figure.add_subplot(111)
         show_grid = self.plot_settings['show_grid']
-
-        times = self.dif_result["sigma"][0]
-        variances = self.dif_result["sigma"][1]
-        sigma_trim = self.dif_result["sigma"][:, self.dif_result["sigma"][1, :] != 0]
         # 绘制数据点
         ax.scatter(times, variances, c='r', s=50, label='方差数据')
 
         # 线性拟合
-        slope, intercept = np.polyfit(times, variances, 1)
         fit_line = slope * times + intercept
         ax.plot(times, fit_line, 'b--',
-                label=f'线性拟合 (D={slope / 2:.2e})')
+                label=f'线性拟合 (D={coefficient:.2e})')
 
         # 设置图表属性
         ax.set_title("高斯方差随时间演化")
-        ax.set_xlabel("时间 (s)")
-        ax.set_ylabel("方差 (μm²)")
+        ax.set_xlabel("时间（所选时间单位）")
+        ax.set_ylabel("方差（所选空间单位²）")
         ax.grid(show_grid)
         ax.legend()
         canvas.draw()
 
         self.current_dataframe = pd.DataFrame({
-            'time': self.dif_result['time_series'],
-            'sigma': sigma_trim[1],
+            'time': times,
+            'sigma': variances,
         })
         self.store_tab_data(tab, self.current_mode, data=self.data)
 

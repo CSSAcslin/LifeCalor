@@ -1,4 +1,5 @@
 import sys
+import logging
 import numpy as np
 import pyqtgraph as pg
 from PyQt5.QtGui import QColor, QCursor
@@ -33,11 +34,15 @@ class PlotGraphWidget(QWidget):
             's': 0,
             'ms': -3,
             'us': -6, 'μs': -6,  # 支持微秒的两种写法
-            'ns': -9
+            'ns': -9,
+            'ps': -12,
+            'fs': -15,
         }
         self.base_unit = None  # 用于存储第一个添加的数据的单位
         self.data_items = []
         self.data_cache = {}
+        self.curve_time_units = {}
+        self._analysis_validation_cache = {}
         self.precomputed_histogram_items = set()
 
         # 悬浮取值标签 (替代原来的十字光标)
@@ -241,14 +246,15 @@ class PlotGraphWidget(QWidget):
         x_data = array[:, 0].copy()  # 复制一份X轴数据，避免修改原数组
         y_data = array[:, 1]
 
-        # 处理单位
-        if time_unit and time_unit in self.unit_powers:
-            if self.base_unit is None:
-                self.base_unit = time_unit
-                self.plot_widget.setLabel('bottom', text='Time', units=self.base_unit)
-            elif time_unit != self.base_unit:
-                power_diff = self.unit_powers[time_unit] - self.unit_powers[self.base_unit]
+        # Cache a curve's unit after converting its X values to the plot's time basis.
+        curve_unit = time_unit or self.base_unit or 's'
+        if not precomputed_hist and self.base_unit is None:
+            self.base_unit = curve_unit
+        if not precomputed_hist and curve_unit in self.unit_powers:
+            if self.base_unit in self.unit_powers:
+                power_diff = self.unit_powers[curve_unit] - self.unit_powers[self.base_unit]
                 x_data = x_data * (10 ** power_diff)
+                curve_unit = self.base_unit
 
         # 构造 Pen
         pen = pg.mkPen(color=color, width=width)
@@ -269,22 +275,20 @@ class PlotGraphWidget(QWidget):
         self.data_items.append(item)
         # 加入缓存
         self.data_cache[item] = (x_data, y_data)
+        self.curve_time_units[item] = curve_unit
+        item.visibleChanged.connect(self._curve_state_changed)
         if precomputed_hist:
             self.precomputed_histogram_items.add(item)
         else:
             self.precomputed_histogram_items.discard(item)
 
-        # 根据当前选中的模式立即进行转换
-        if precomputed_hist:
-            self.action_hist.setChecked(True)
-            self._apply_precomputed_histogram(item)
-        elif self.action_psd.isChecked():
-            self._apply_psd(item)
-        elif self.action_hist.isChecked():
-            self._apply_histogram(item)
+        target_action = self.action_hist if precomputed_hist else self._analysis_action
+        if not self.update_analysis_mode(target_action):
+            self.update_analysis_mode(self.action_time)
 
         self._setup_legend_interaction(item)
         self._apply_legend_theme(self._current_theme_colors()["text"])
+        self.refresh_analysis_actions()
         # 自适应显示
         if len(self.data_items) == 1:
             self.plot_widget.autoRange()
@@ -338,7 +342,6 @@ class PlotGraphWidget(QWidget):
             item.setVisible(not is_visible)
             target_sample.setOpacity(0.5 if is_visible else 1.0)
             target_label.setOpacity(0.5 if is_visible else 1.0)
-            self._update_peak_analysis()
 
         # 绑定重写的方法
         target_label.mouseClickEvent = mouseClickEvent
@@ -359,264 +362,323 @@ class PlotGraphWidget(QWidget):
         self.legend.addItem(item, new_name)
         self._setup_legend_interaction(item)  # 重新绑定事件
         self._apply_legend_theme(self._current_theme_colors()["text"])
+        self._curve_state_changed()
 
     def _remove_curve(self, item):
         self.plot_widget.removeItem(item)
         self.legend.removeItem(item)
         self.data_items.remove(item)
         del self.data_cache[item]
+        self.curve_time_units.pop(item, None)
+        self._analysis_validation_cache.pop(item, None)
+        self.precomputed_histogram_items.discard(item)
         self.hover_label.hide()
-        self._update_peak_analysis()
+        self._curve_state_changed()
 
     def clear_all(self):
         """清空所有绘图内容"""
         self.plot_widget.clear()
         self.plot_widget.addItem(self.peak_region)  # 保留组件
         self.plot_widget.addItem(self.peak_marker)
+        self.plot_widget.addItem(self.hover_point)
         self.legend.clear()
         self.data_items.clear()
         self.data_cache.clear()
+        self.curve_time_units.clear()
+        self._analysis_validation_cache.clear()
+        self.precomputed_histogram_items.clear()
         self.base_unit = None  # 重置基准时间单位
         self.hover_label.hide()
         self.hover_point.hide()
-        # self.peak_marker.hide()
-        self.peak_info_label.hide()
+        self._toggle_peak_analyzer(False)
+        self._analysis_action = self.action_time
+        self.action_time.setChecked(True)
+        self.refresh_analysis_actions()
         self._update_labels_position()
 
     def init_custom_context_menu(self):
-        """向右键菜单添加自定义功能"""
-        # 获取pyqtgraph 原生的 ViewBox 的菜单
-        plot_item = self.plot_widget.plotItem
-        ctrl_menu = plot_item.ctrlMenu
-
-        # 创建一个 "Analysis" 子菜单
+        """Create actions that can be shared by the plot and the main menu."""
+        ctrl_menu = self.plot_widget.plotItem.ctrlMenu
         self.analysis_menu = QMenu("Analysis 信号分析", self.plot_widget)
         ctrl_menu.addMenu(self.analysis_menu)
-
-        # 创建三个视图动作
-        self.action_time = QAction("Time Domain (恢复时域)", self.plot_widget, checkable=True)
-        self.action_psd = QAction("PSD (功率谱密度)", self.plot_widget, checkable=True)
-        self.action_hist = QAction("Histogram (频数分布)", self.plot_widget, checkable=True)
-
-        # 默认选中时域
+        self.action_time = QAction("恢复原始曲线", self.plot_widget, checkable=True)
+        self.action_psd = QAction("功率谱密度（Welch）", self.plot_widget, checkable=True)
+        self.action_hist = QAction("曲线幅值频数分布", self.plot_widget, checkable=True)
         self.action_time.setChecked(True)
+        self._analysis_action = self.action_time
 
-        # 使用 QActionGroup 实现单选互斥
         self.analysis_group = QActionGroup(self.plot_widget)
-        for act in (self.action_time, self.action_psd, self.action_hist):
-            self.analysis_group.addAction(act)
-            self.analysis_menu.addAction(act)
+        for action in (self.action_time, self.action_psd, self.action_hist):
+            self.analysis_group.addAction(action)
+            self.analysis_menu.addAction(action)
         self.analysis_group.triggered.connect(self.update_analysis_mode)
 
-        # 寻峰工具开关
         ctrl_menu.addSeparator()
-        self.action_peak = QAction("Peak Analyzer (寻峰工具)", self.plot_widget, checkable=True)
-        self.action_peak.triggered.connect(self._toggle_peak_analyzer)
+        self.action_peak = QAction("区间主峰分析", self.plot_widget, checkable=True)
+        self.action_peak.toggled.connect(self._toggle_peak_analyzer)
         ctrl_menu.addAction(self.action_peak)
+        ctrl_menu.aboutToShow.connect(self.refresh_analysis_actions)
+        self.analysis_menu.aboutToShow.connect(self.refresh_analysis_actions)
+        self.refresh_analysis_actions()
 
-    """分析模式"""
-    def update_analysis_mode(self, action):
-        """统一处理不同分析模式的切换"""
-        if action == self.action_time:
-            # === 恢复时域 ===
-            label_unit = self.base_unit if self.base_unit else 's'
-            self.plot_widget.setLabel('bottom', "Time", units=label_unit)
-            self.plot_widget.setLabel('left', "Amplitude")
-            self.plot_widget.setLogMode(x=False, y=False)
-            for item in self.data_items:
-                if item in self.data_cache:
-                    x, y = self.data_cache[item]
-                    item.setData(x, y)
-                    item.setFillLevel(None)
+    def _curve_arrays(self, item, minimum_samples=1):
+        x_values, y_values = self.data_cache[item]
+        if np.iscomplexobj(x_values) or np.iscomplexobj(y_values):
+            raise ValueError("曲线分析需要实数坐标和幅值")
+        x_values = np.asarray(x_values, dtype=np.float64)
+        y_values = np.asarray(y_values, dtype=np.float64)
+        if x_values.ndim != 1 or y_values.ndim != 1 or x_values.size != y_values.size:
+            raise ValueError("曲线需要等长的一维坐标和幅值")
+        if x_values.size < minimum_samples:
+            raise ValueError(f"至少需要 {minimum_samples} 个采样点")
+        if not np.all(np.isfinite(x_values)) or not np.all(np.isfinite(y_values)):
+            raise ValueError("曲线包含非有限坐标或幅值")
+        return x_values, y_values
 
-        elif action == self.action_psd:
-            # === 切换 PSD ===
-            self._toggle_peak_analyzer(False)
-            self.plot_widget.setLabel('bottom', "Frequency (Hz)")
-            self.plot_widget.setLabel('left', "PSD (V²/Hz)")
-            self.plot_widget.setLogMode(x=False, y=True)
-            for item in self.data_items:
-                self._apply_psd(item)
+    def _psd_inputs(self, item):
+        if item in self.precomputed_histogram_items:
+            raise ValueError("预计算频数分布不能作为时间序列计算 PSD")
+        x_values, y_values = self._curve_arrays(item, minimum_samples=2)
+        unit = self.curve_time_units.get(item, self.base_unit or 's')
+        if unit not in self.unit_powers:
+            raise ValueError(f"不支持的时间单位 {unit}")
+        with np.errstate(over='ignore', invalid='ignore'):
+            differences = np.diff(x_values)
+        if not np.all(np.isfinite(differences)) or np.any(differences <= 0):
+            raise ValueError("PSD 时间坐标必须严格递增")
+        spacing = differences[0]
+        if not np.allclose(differences, spacing, rtol=1e-5, atol=spacing * 1e-8):
+            raise ValueError("PSD 需要均匀采样的时间序列")
+        interval = spacing * 10.0 ** self.unit_powers[unit]
+        if not np.isfinite(interval) or interval <= 0 or not np.isfinite(1.0 / interval):
+            raise ValueError("采样间隔无法转换为有限采样率")
+        return y_values, 1.0 / interval
 
-        elif action == self.action_hist:
-            # === 切换频数分布 (Histogram) ===
-            self._toggle_peak_analyzer(False)
-            self.plot_widget.setLabel('bottom', "Amplitude Value (幅度)")
-            self.plot_widget.setLabel('left', "Count (频数)")
-            self.plot_widget.setLogMode(x=False, y=False)  # 直方图不看对数
-            for item in self.data_items:
-                if item in self.precomputed_histogram_items:
-                    self._apply_precomputed_histogram(item)
-                else:
-                    self._apply_histogram(item)
+    def _peak_curve_arrays(self, item):
+        if item in self.precomputed_histogram_items:
+            raise ValueError("预计算频数分布不能作为时序主峰分析对象")
+        x_values, y_values = self._curve_arrays(item, minimum_samples=3)
+        with np.errstate(over='ignore', invalid='ignore'):
+            differences = np.diff(x_values)
+        if not np.all(np.isfinite(differences)) or np.any(differences <= 0):
+            raise ValueError("主峰分析的坐标必须严格递增")
+        return x_values, y_values
 
-        # 刷新坐标轴范围
-        self.plot_widget.autoRange()
+    def _peak_inputs(self):
+        item = next((curve for curve in self.data_items
+                     if curve.isVisible() and curve in self.data_cache), None)
+        if item is None:
+            raise ValueError("请先显示一条可分析的曲线")
+        x_values, y_values = self._peak_curve_arrays(item)
+        return item, x_values, y_values
 
-    def _apply_precomputed_histogram(self, item):
-        """显示已经由算法计算好的频数分布，避免二次 histogram。"""
-        if item not in self.data_cache:
-            return
-        x_values, counts = self.data_cache[item]
-        self.plot_widget.setLabel('bottom', "Value (实际值)")
-        self.plot_widget.setLabel('left', "Count (频数)")
-        self.plot_widget.setLogMode(x=False, y=False)
-        item.setData(x_values, counts)
-        item.setFillLevel(0)
-        pen = item.opts.get('pen')
-        color = pen.color().name() if pen is not None else '#4CAF50'
-        item.setBrush(pg.mkBrush(color + '80'))
+    def _cached_analysis_errors(self, item):
+        inputs = self.data_cache[item]
+        unit = self.curve_time_units.get(item, self.base_unit or 's')
+        histogram = item in self.precomputed_histogram_items
+        cached = self._analysis_validation_cache.get(item)
+        if cached is not None:
+            cached_inputs, cached_unit, cached_histogram, errors = cached
+            if cached_inputs is inputs and cached_unit == unit and cached_histogram == histogram:
+                return errors
+        errors = {}
+        for name, validator in (
+            ('psd', self._psd_inputs), ('hist', self._curve_arrays),
+            ('peak', self._peak_curve_arrays),
+        ):
+            try:
+                validator(item)
+                errors[name] = ''
+            except (ValueError, TypeError, OverflowError) as exc:
+                errors[name] = str(exc)
+        self._analysis_validation_cache[item] = (inputs, unit, histogram, errors)
+        return errors
 
-    def _apply_psd(self, item):
-        """计算并应用 PSD 到单个 Item"""
-        if item not in self.data_cache:
-            return
-
-        x_time, y_amp = self.data_cache[item]
-
-        # 1. 计算采样率 (假设均匀采样)
-        if len(x_time) > 1:
-            dt = np.mean(np.diff(x_time))
-            if self.base_unit in ['ms']:
-                dt *= 1e-3
-            elif self.base_unit in ['us', 'μs']:
-                dt *= 1e-6
-            elif self.base_unit in ['ns']:
-                dt *= 1e-9
-            fs = 1.0 / dt
-        else:
-            fs = 1.0
-
-        # # 2. 计算 FFT
-        # n = len(y_amp)
-        # fft_res = np.fft.fft(y_amp)
-        # fft_freq = np.fft.fftfreq(n, d=1 / fs)
-        #
-        # # 3. 计算功率谱密度 (Power Spectral Density)
-        # # 只取正频率部分
-        # pos_mask = fft_freq > 0
-        # freqs = fft_freq[pos_mask]
-        # # 简单的归一化: |FFT|^2 / (fs * N)
-        # psd = (np.abs(fft_res[pos_mask]) ** 2) / (fs * n)
-        # # 4. 更新绘图数据
-        # item.setData(freqs, psd)
-        seg_len = min(4096, len(y_amp))
-        f, Pxx_den = signal.welch(y_amp, fs, nperseg=seg_len)  # Welch 方法更平滑
-        item.setData(f, Pxx_den)
-        item.setFillLevel(None)
-
-    def _apply_histogram(self, item):
-        """统计分布计算 (Numpy Histogram)"""
-        if item not in self.data_cache: return
-        x_time, y_data = self.data_cache[item]
-
-        # 1. 使用 Numpy 计算直方图
-        # bins='auto' 会自动使用最科学的算法(Freedman-Diaconis)决定分桶数量
-        counts, bins = np.histogram(y_data, bins='auto')
-
-        # 2. 计算每个 Bin 的中心点作为 X 轴坐标
-        x_centers = (bins[:-1] + bins[1:]) / 2
-
-        # 3. 更新图表
-        # 因为你原本用的是折线图 PlotDataItem，直接传进去会画出“频率多边形(Frequency Polygon)”
-        # 这种图线在数学意义上和柱状直方图是完全等效的，且性能更好。
-        item.setData(x_centers, counts)
-
-        # 可选视觉优化: 让线下面有阴影填充，看起来更像分布图
-        item.setFillLevel(0)
-        item.setBrush(pg.mkBrush(color=item.opts['pen'].color().name() + '80')) # 加点透明度
-
-
-    def _restore_item_data(self, item):
-        """从缓存恢复原始数据"""
-        if item in self.data_cache:
-            x, y = self.data_cache[item]
-            item.setData(x, y)
-
-    """寻峰功能"""
-    def _toggle_peak_analyzer(self, checked):
-        if checked:
-            self.update_analysis_mode(self.action_time)
-            # 初始化区间到当前视图的中间 1/3
-            view_range = self.plot_widget.viewRange()[0]
-            mid = sum(view_range) / 2
-            span = (view_range[1] - view_range[0]) / 6
-            self.peak_region.setRegion([mid - span, mid + span])
-
-            self.peak_region.show()
-            self.peak_info_label.show()
+    def _curve_state_changed(self):
+        self.refresh_analysis_actions()
+        if self.action_peak.isChecked():
             self._update_peak_analysis()
+
+    def refresh_analysis_actions(self):
+        """Refresh menus from cached validation without recalculating curves."""
+        items = [item for item in self.data_items if item in self.data_cache]
+        self.action_time.setEnabled(bool(items))
+        self.action_time.setToolTip("恢复当前绘图区的原始数据" if items else "请先添加曲线")
+        for action, name in ((self.action_psd, 'psd'), (self.action_hist, 'hist')):
+            reason = "请先添加曲线" if not items else ""
+            for item in items:
+                error = self._cached_analysis_errors(item)[name]
+                if error:
+                    reason = f"{item.opts.get('name', '曲线')} — {error}"
+                    break
+            action.setEnabled(not reason)
+            action.setToolTip(reason or f"计算当前绘图区全部 {len(items)} 条曲线，包含隐藏曲线")
+        peak_item = next((item for item in items if item.isVisible()), None)
+        peak_reason = (
+            self._cached_analysis_errors(peak_item)['peak'] if peak_item is not None
+            else "请先显示一条可分析的曲线"
+        )
+        peak_tip = peak_reason or f"分析第一条可见曲线 {peak_item.opts.get('name', '曲线')} 的选定区间"
+        self.action_peak.setEnabled(not peak_reason)
+        self.action_peak.setToolTip(peak_tip)
+        if self.action_peak.isChecked() and peak_reason:
+            self._toggle_peak_analyzer(False)
+
+    def update_analysis_mode(self, action):
+        """Prepare every curve before committing a change of plot-wide mode."""
+        if not self.data_cache:
+            self._analysis_action.setChecked(True)
+            self.refresh_analysis_actions()
+            return False
+        prepared = []
+        try:
+            for item in self.data_items:
+                if item not in self.data_cache:
+                    continue
+                if action is self.action_time:
+                    x_values, y_values = self.data_cache[item]
+                elif action is self.action_psd:
+                    y_values, sampling_rate = self._psd_inputs(item)
+                    with np.errstate(over='ignore', invalid='ignore'):
+                        x_values, y_values = signal.welch(
+                            y_values, sampling_rate, nperseg=min(4096, y_values.size)
+                        )
+                    if not np.all(np.isfinite(y_values)):
+                        raise ValueError("PSD 结果包含非有限值")
+                elif action is self.action_hist:
+                    x_values, y_values = self._curve_arrays(item)
+                    if item not in self.precomputed_histogram_items:
+                        y_values, bins = np.histogram(y_values, bins='auto')
+                        x_values = bins[:-1] + np.diff(bins) / 2
+                else:
+                    raise ValueError("未知曲线分析模式")
+                prepared.append((item, x_values, y_values))
+        except (ValueError, TypeError, OverflowError, MemoryError) as exc:
+            self._analysis_action.setChecked(True)
+            self._analysis_validation_cache.clear()
+            self.refresh_analysis_actions()
+            action.setToolTip(str(exc))
+            logging.warning("曲线分析未执行：%s", exc)
+            return False
+
+        if action is not self.action_time:
+            self._toggle_peak_analyzer(False)
+        self._analysis_action = action
+        action.setChecked(True)
+        if action is self.action_psd:
+            self.plot_widget.setLabel('bottom', "Frequency", units='Hz')
+            self.plot_widget.setLabel('left', "PSD (幅值²/Hz)")
+        elif action is self.action_hist:
+            self.plot_widget.setLabel('bottom', "Value (实际值)")
+            self.plot_widget.setLabel('left', "Count (频数)")
         else:
+            if all(item in self.precomputed_histogram_items for item, _, _ in prepared):
+                self.plot_widget.setLabel('bottom', "Value (实际值)")
+                self.plot_widget.setLabel('left', "Count (频数)")
+            else:
+                self.plot_widget.setLabel('bottom', "Time", units=self.base_unit or 's')
+                self.plot_widget.setLabel('left', "Amplitude")
+        self.plot_widget.setLogMode(x=False, y=action is self.action_psd)
+        for item, x_values, y_values in prepared:
+            item.setData(x_values, y_values)
+            item.setFillLevel(0 if action is self.action_hist else None)
+            brush = None
+            if action is self.action_hist:
+                pen = item.opts.get('pen')
+                color = pen.color() if pen is not None else QColor('#4CAF50')
+                color.setAlpha(128)
+                brush = pg.mkBrush(color)
+            item.setBrush(brush)
+        self.plot_widget.autoRange()
+        self._curve_state_changed()
+        return True
+
+    def _toggle_peak_analyzer(self, checked):
+        if self.action_peak.isChecked() != bool(checked):
+            self.action_peak.setChecked(bool(checked))
+            return
+        if not checked:
             self.peak_region.hide()
             self.peak_info_label.hide()
             self.peak_marker.hide()
+            return
+        try:
+            self._peak_inputs()
+        except (ValueError, TypeError, OverflowError) as exc:
+            self._toggle_peak_analyzer(False)
+            self.action_peak.setToolTip(str(exc))
+            logging.warning("主峰分析未开启：%s", exc)
+            return
+        self.update_analysis_mode(self.action_time)
+        view_range = self.plot_widget.viewRange()[0]
+        midpoint = sum(view_range) / 2
+        span = (view_range[1] - view_range[0]) / 6
+        self.peak_region.setRegion([midpoint - span, midpoint + span])
+        self.peak_region.show()
+        self.peak_info_label.show()
+        self._update_peak_analysis()
+
+    def _show_peak_issue(self, message):
+        self.peak_info_label.setText(message)
+        self.peak_info_label.adjustSize()
+        self.peak_marker.hide()
+        self._update_labels_position()
 
     def _update_peak_analysis(self):
-        """核心寻峰算法计算"""
-        if not self.action_peak.isChecked(): return
-        min_x, max_x = self.peak_region.getRegion()
-
-        # 寻找当前第一条可见的曲线作为分析对象
-        target_item = None
-        for item in self.data_items:
-            if item.isVisible() and item in self.data_cache:
-                target_item = item
-                break
-
-        if target_item is None:
-            self.peak_info_label.setText("未找到可见曲线")
-            self.peak_info_label.adjustSize()
-            self._update_labels_position()
-            self.peak_marker.hide()
+        if not self.action_peak.isChecked():
             return
-
-        x, y = self.data_cache[target_item]
-
-        # 截取区间数据
-        mask = (x >= min_x) & (x <= max_x)
-        x_roi, y_roi = x[mask], y[mask]
-
-        if len(x_roi) < 3:
-            self.peak_info_label.setText("区间数据过少")
-            self.peak_info_label.adjustSize()
-            self._update_labels_position()
-            self.peak_marker.hide()
+        try:
+            target_item, x_values, y_values = self._peak_inputs()
+        except (ValueError, TypeError, OverflowError) as exc:
+            self._show_peak_issue(str(exc))
             return
-
-        # 1. 线性基线扣除 (基于区间两端点)
-        baseline = np.interp(x_roi, [x_roi[0], x_roi[-1]], [y_roi[0], y_roi[-1]])
-        y_corr = y_roi - baseline
-
-        # 2. 寻找最高峰
-        peak_idx = np.argmax(y_corr)
-        peak_x = x_roi[peak_idx]
-        peak_y_rel = y_corr[peak_idx]  # 相对基线高度
-        peak_y_abs = y_roi[peak_idx]  # 绝对高度
-
-        # 3. 计算峰面积 (梯形积分)
-        area = np.trapz(y_corr, x_roi)
-
-        # 4. 计算半高宽 FWHM
-        half_max = peak_y_rel / 2
-
-        # 寻找左半高点
-        left_idx = np.where(y_corr[:peak_idx] <= half_max)[0]
-        left_x = x_roi[left_idx[-1]] if len(left_idx) > 0 else x_roi[0]
-
-        # 寻找右半高点
-        right_idx = np.where(y_corr[peak_idx:] <= half_max)[0]
-        right_x = x_roi[peak_idx + right_idx[0]] if len(right_idx) > 0 else x_roi[-1]
-
+        minimum, maximum = self.peak_region.getRegion()
+        if not np.isfinite(minimum) or not np.isfinite(maximum) or maximum <= minimum:
+            self._show_peak_issue("请选择有限且非空的分析区间")
+            return
+        mask = (x_values >= minimum) & (x_values <= maximum)
+        x_roi, y_roi = x_values[mask], y_values[mask]
+        if x_roi.size < 3:
+            self._show_peak_issue("区间数据过少，至少需要 3 个采样点")
+            return
+        with np.errstate(over='ignore', invalid='ignore'):
+            baseline = np.interp(x_roi, [x_roi[0], x_roi[-1]], [y_roi[0], y_roi[-1]])
+            y_corrected = y_roi - baseline
+        if not np.all(np.isfinite(y_corrected)):
+            self._show_peak_issue("基线扣除结果包含非有限值")
+            return
+        peak_index = int(np.argmax(y_corrected))
+        peak_x, peak_y = x_roi[peak_index], y_roi[peak_index]
+        peak_height = y_corrected[peak_index]
+        threshold = np.finfo(float).eps * max(np.max(np.abs(y_roi)), np.finfo(float).tiny) * 16
+        if peak_height <= threshold:
+            self._show_peak_issue("区间内没有可量化的正向主峰")
+            return
+        with np.errstate(over='ignore', invalid='ignore'):
+            area = np.trapezoid(y_corrected, x_roi)
+        if not np.isfinite(area):
+            self._show_peak_issue("峰面积无法表示为有限值")
+            return
+        half_height = peak_height / 2
+        left_indices = np.flatnonzero(y_corrected[:peak_index] <= half_height)
+        right_indices = np.flatnonzero(y_corrected[peak_index:] <= half_height)
+        if not left_indices.size or not right_indices.size:
+            self._show_peak_issue("分析区间未覆盖主峰两侧的半高边界")
+            return
+        left_x = x_roi[left_indices[-1]]
+        right_x = x_roi[peak_index + right_indices[0]]
         fwhm = right_x - left_x
-
-        # 五角星标峰
-        self.peak_marker.setData([peak_x], [peak_y_abs])
+        if not np.isfinite(fwhm) or fwhm <= 0:
+            self._show_peak_issue("半高宽无法表示为有限正数")
+            return
+        self.peak_marker.setData([peak_x], [peak_y])
         self.peak_marker.show()
-        info = (f"◆ 寻峰 {target_item.opts['name']}\n"
-                f"  Peak X: {peak_x:.4g}\n"
-                f"  Peak Y: {peak_y_abs:.4g} (净高 {peak_y_rel:.4g})\n"
-                f"  FWHM: {fwhm:.4g}\n"
-                f"  Area: {area:.4g}")
-        self.peak_info_label.setText(info)
+        self.peak_info_label.setText(
+            f"◆ 寻峰 {target_item.opts.get('name', '曲线')}\n"
+            f"  Peak X: {peak_x:.4g}\n"
+            f"  Peak Y: {peak_y:.4g} (净高 {peak_height:.4g})\n"
+            f"  FWHM: {fwhm:.4g}\n"
+            f"  Area: {area:.4g}"
+        )
         self.peak_info_label.adjustSize()
-        self._update_labels_position()  # 重新计算位置，防止文字过长溢出
+        self._update_labels_position()
